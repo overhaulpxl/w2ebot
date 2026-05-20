@@ -36,7 +36,23 @@ Fitur spesial untuk menghargai member yang nge-boost server:
 ### 5. 🎉 Interaksi Sosial & Hiburan
 - **Ulang Tahun Otomatis**: Bot mendeteksi tanggal lahir member (dari `birthdays.json`). Di hari H, bot akan mengucapkan selamat dan otomatis memberikan kado 1000 Koin!
 - **Silsilah Keluarga (Family Tree)**: Sistem unik di mana pengguna bisa membentuk keluarga (pasangan & anak). Bot bisa membuat gambar grafis silsilah yang menyatukan semua avatar anggota keluarga dalam satu gambar *Family Tree*!
-- **Custom Music Bot**: Kemampuan untuk memutar lagu, skip, pause, dan kontrol penuh untuk menemani waktu nongkrong kalian.
+### 6. 🎵 Sistem Music Bot (Basic & Premium)
+Bot ini memiliki dua sistem music bot terpisah yang sangat canggih untuk menemani nongkrong di Voice Channel:
+
+#### 🎧 Basic Music Bot (`music_bot.py`)
+Music bot reguler dengan fitur super lengkap yang bisa dipakai siapa saja:
+- **Play dari YT & Spotify**: Memutar lagu langsung dari link YouTube, Spotify, atau judul lagu (`!w2eplay` atau `!play`).
+- **Antrean & Kontrol Lengkap**: Fitur antrean (`!w2equeue`), acak (`!w2eshuffle`), hapus (`!w2eclear`), pause/resume, skip, stop, dan atur volume (`!w2evolume`).
+- **Session Ownership**: Cegah orang lain mengganggu lagumu dengan sistem *ownership* (`w2eclaim`, `w2etransfer`).
+- **Interactive UI**: Status lagu (*Now Playing*) disertai progress bar dan tombol kontrol interaktif (`!np`).
+
+#### 💎 Custom/Premium Music Bot (`w2e_custom_music_bot.py`)
+Music bot tingkat lanjut yang bersifat eksklusif (hanya bisa diakses oleh member yang di-**whitelist** oleh Admin):
+- **Sistem Whitelist**: Hanya pengguna VIP/Booster yang di-whitelist yang bisa memerintah bot ini (`!whitelist @user`).
+- **Pencari Lirik Otomatis**: Fitur pencarian lirik lagu langsung dari Genius API (`!lyrics`).
+- **Statistik Mendengarkan (Music Profile)**: Melacak kebiasaan mendengarkanmu! Cek `!profile` untuk melihat total lagu diputar, total durasi dengar, sumber favorit (Spotify/YT), dan *Top 3 Tracks* favoritmu.
+- **Autoplay**: Jika antrean habis, bot akan pintar memilih lagu selanjutnya berdasarkan histori lagu yang kamu putar sebelumnya.
+- **Premium API Server**: Berjalan di port 8082, menyediakan integrasi API untuk web agar bisa memantau dan mengontrol musik dari luar Discord.
 
 ---
 
