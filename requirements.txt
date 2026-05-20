@@ -1,0 +1,9 @@
+discord.py
+google-generativeai
+yt-dlp
+aiohttp
+beautifulsoup4
+gTTS
+Pillow
+spotipy
+PyNaCl
