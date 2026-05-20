@@ -36,23 +36,28 @@ Fitur spesial untuk menghargai member yang nge-boost server:
 ### 5. 🎉 Interaksi Sosial & Hiburan
 - **Ulang Tahun Otomatis**: Bot mendeteksi tanggal lahir member (dari `birthdays.json`). Di hari H, bot akan mengucapkan selamat dan otomatis memberikan kado 1000 Koin!
 - **Silsilah Keluarga (Family Tree)**: Sistem unik di mana pengguna bisa membentuk keluarga (pasangan & anak). Bot bisa membuat gambar grafis silsilah yang menyatukan semua avatar anggota keluarga dalam satu gambar *Family Tree*!
+
+---
+
 ### 6. 🎵 Sistem Music Bot (Basic & Premium)
-Bot ini memiliki dua sistem music bot terpisah yang sangat canggih untuk menemani nongkrong di Voice Channel:
+Bot ini memiliki dua sistem music bot terpisah yang saling melengkapi untuk menemani nongkrong di Voice Channel.
 
 #### 🎧 Basic Music Bot (`music_bot.py`)
-Music bot reguler dengan fitur super lengkap yang bisa dipakai siapa saja:
-- **Play dari YT & Spotify**: Memutar lagu langsung dari link YouTube, Spotify, atau judul lagu (`!w2eplay` atau `!play`).
-- **Antrean & Kontrol Lengkap**: Fitur antrean (`!w2equeue`), acak (`!w2eshuffle`), hapus (`!w2eclear`), pause/resume, skip, stop, dan atur volume (`!w2evolume`).
-- **Session Ownership**: Cegah orang lain mengganggu lagumu dengan sistem *ownership* (`w2eclaim`, `w2etransfer`).
-- **Interactive UI**: Status lagu (*Now Playing*) disertai progress bar dan tombol kontrol interaktif (`!np`).
+Bot musik reguler untuk publik tanpa batasan khusus:
+- **Pemrosesan Super Cepat**: Mengekstrak metadata dari playlist Spotify & YouTube dalam sekejap tanpa menyebabkan lag server.
+- **Sistem Session & Ownership**: Orang pertama yang memutar lagu menjadi *Session Owner* untuk mencegah sabotase antrean. Owner bisa mentransfer hak dengan `w2etransfer` atau direbut dengan `w2eclaim` jika owner AFK.
+- **Interactive Now Playing (`!np`)**: Menampilkan *Progress Bar* visual (contoh: `[▬▬▬▬▬▬🔘▬▬▬▬▬▬▬] 2:30 / 4:00`) disertai tombol kontrol Discord UI (Pause/Skip/Stop) yang bisa diklik.
+- **Sistem Looping Lengkap (`w2eloop`)**: Bisa mengulang satu lagu (TRACK), mengulang seluruh antrean (QUEUE), atau mati (OFF).
+- **Web API Server (Port 8080)**: Mengizinkan kontrol musik secara remote dari web dashboard lewat endpoint API (`/api/status`, `/api/pause`, `/api/skip`).
 
 #### 💎 Custom/Premium Music Bot (`w2e_custom_music_bot.py`)
-Music bot tingkat lanjut yang bersifat eksklusif (hanya bisa diakses oleh member yang di-**whitelist** oleh Admin):
-- **Sistem Whitelist**: Hanya pengguna VIP/Booster yang di-whitelist yang bisa memerintah bot ini (`!whitelist @user`).
-- **Pencari Lirik Otomatis**: Fitur pencarian lirik lagu langsung dari Genius API (`!lyrics`).
-- **Statistik Mendengarkan (Music Profile)**: Melacak kebiasaan mendengarkanmu! Cek `!profile` untuk melihat total lagu diputar, total durasi dengar, sumber favorit (Spotify/YT), dan *Top 3 Tracks* favoritmu.
-- **Autoplay**: Jika antrean habis, bot akan pintar memilih lagu selanjutnya berdasarkan histori lagu yang kamu putar sebelumnya.
-- **Premium API Server**: Berjalan di port 8082, menyediakan integrasi API untuk web agar bisa memantau dan mengontrol musik dari luar Discord.
+Bot musik tingkat lanjut bergaya VIP dengan *Quality of Life* dan analitik ekstrem:
+- **Sistem Security Whitelist**: Sangat eksklusif! Semua pesan akan diabaikan jika pengguna tidak terdaftar di *whitelist* (diatur via `!whitelist @user`).
+- **Sistem Tracking & Profiling Musik (`!profile`)**: Melacak secara diam-diam tiap detik lagu yang kamu dengarkan! Mencatat Total Play, Total Menit Mendengarkan, Sumber Favorit (Spotify/YT), Top 3 Tracks favorit, dan mencatat teman VC-mu ke dalam `premium_music_stats.json`.
+- **Scraping Lirik Cerdas (`!lyrics`)**: Secara otomatis mencari lirik ke API Genius.com untuk lagu yang sedang diputar tanpa perlu menulis ulang judul lagunya.
+- **Autoplay Machine Logic**: Musik tak akan pernah mati. Jika antrean kosong, bot mengecek Histori Lagu dan mencari lagu rekomendasi selanjutnya menggunakan algoritma *Autoplay*.
+- **Rich Embed Player**: Memunculkan status pemutar yang sangat rapi dilengkapi Thumbnail Album asli yang ditarik dari Spotify/YouTube.
+- **Premium Web API Server (Port 8082)**: Server API independen untuk memantau status premium dan mengatur whitelist melalui jaringan luar.
 
 ---
 
@@ -61,7 +66,6 @@ Pastikan kamu telah menginstal semua library Python yang dibutuhkan:
 ```bash
 pip install -r requirements.txt
 ```
-*(Termasuk `discord.py`, `google-generativeai`, `Pillow`, `aiohttp`, `gtts`, dsb)*
 
 ## 🚀 Cara Menjalankan
 1. Siapkan environment file atau masukkan `DISCORD_API_KEY` dan `GEMINI_API_KEY` pada kode utama.
