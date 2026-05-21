@@ -762,9 +762,7 @@ async def on_voice_state_update(member, before, after):
         voice_join_times[member.id] = datetime.now()
         # 👑 Booster Voice Intro
         if member.premium_since and not member.bot:
-            # Cari text channel yang relevan untuk mengirim notif
             guild = member.guild
-            # Cari general text channel pertama yang bisa dikirim
             notify_channel = None
             for ch in guild.text_channels:
                 if 'general' in ch.name.lower() or 'chat' in ch.name.lower():
@@ -786,7 +784,45 @@ async def on_voice_state_update(member, before, after):
 
     elif before.channel is not None and after.channel is None:
         if member.id in voice_join_times:
+            join_time = voice_join_times[member.id]
             del voice_join_times[member.id]
+            
+            # VC Farming Leveling System
+            duration = datetime.now() - join_time
+            minutes = int(duration.total_seconds() // 60)
+            
+            if minutes > 0 and not member.bot:
+                uid = str(member.id)
+                users = load_json('users.json')
+                if uid not in users:
+                    users[uid] = {'balance': 0, 'items': {}, 'achievements': [], 'total_vc_minutes': 0}
+                
+                # Tambah XP & Koin
+                xp_gained = minutes * 10
+                coins_gained = minutes * 5
+                users[uid]['balance'] += coins_gained
+                users[uid]['total_vc_minutes'] = users[uid].get('total_vc_minutes', 0) + minutes
+                
+                # Check No-Lifer Achievement
+                if users[uid]['total_vc_minutes'] >= 1440 and 'no_lifer' not in users[uid].get('achievements', []):
+                    if 'achievements' not in users[uid]: users[uid]['achievements'] = []
+                    users[uid]['achievements'].append('no_lifer')
+                    # Send congrats message
+                    guild = member.guild
+                    for ch in guild.text_channels:
+                        if ch.permissions_for(guild.me).send_messages:
+                            asyncio.create_task(ch.send(f"🏆 **ACHIEVEMENT UNLOCKED!** {member.mention} baru saja mendapatkan gelar **🧟‍♂️ No-Lifer** karena telah menghabiskan total 24 jam di Voice Channel!"))
+                            break
+                            
+                save_json('users.json', users)
+                
+                # Update DB XP (using existing get/update_discord_stat)
+                stat = get_discord_stat(uid)
+                new_xp = stat['xp'] + xp_gained
+                update_discord_stat(uid, member.display_name, stat['coins'], new_xp, stat['level'], stat['last_daily'])
+                
+                # Optional: Send DM or channel message for XP gained if you want, but it might be spammy.
+                logging.info(f"{member.display_name} earned {xp_gained} XP and {coins_gained} Coins from {minutes} mins in VC.")
 
 async def send_long_message(channel, message):
     if len(message) <= 2000:
