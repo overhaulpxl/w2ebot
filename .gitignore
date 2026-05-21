@@ -1,7 +1,5 @@
-﻿__pycache__/
+__pycache__/
 *.py[cod]
 *.class
 .venv/
 .env
-w2ebot.db
-*.json
