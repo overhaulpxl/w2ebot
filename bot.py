@@ -1319,6 +1319,9 @@ async def on_message(message):
         await message.channel.send(f"✅ Sukses menjual **{amount} {symbol}**!\nValuasi: {total_revenue} | Pajak (2%): -{tax}\n💰 Diterima Bersih: **{net_revenue} Koin**\n📊 Status Trade: {pnl_str} Koin")
 
     if message.content.startswith('!kas') or message.content.startswith('!treasury'):
+        if not message.author.guild_permissions.administrator:
+            await message.channel.send("❌ Hati-hati! Brankas Kas hanya bisa dibuka oleh Admin/Sultan server ini.")
+            return
         treasury = load_json(TREASURY_FILE)
         balance = treasury.get('balance', 0) if treasury else 0
         await message.channel.send(f"🏦 **Brankas Komunitas (W2E Treasury)**\nUang pajak yang terkumpul: **{balance} Koin RPG**\n*(Uang ini akan digunakan untuk membayar hadiah Boss Raid!)*")
@@ -3439,6 +3442,19 @@ async def slash_slot(interaction: discord.Interaction, bet: int):
     update_discord_stat(uid, interaction.user.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
     
     await interaction.followup.send(msg)
+
+
+
+@tree.command(name="kas", description="Cek brankas pajak komunitas (Khusus Admin)")
+async def slash_kas(interaction: discord.Interaction):
+    await interaction.response.defer()
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.followup.send("❌ Hati-hati! Brankas Kas hanya bisa dibuka oleh Admin/Sultan server ini.")
+        return
+        
+    treasury = load_json(TREASURY_FILE)
+    balance = treasury.get('balance', 0) if treasury else 0
+    await interaction.followup.send(f"🏦 **Brankas Komunitas (W2E Treasury)**\nUang pajak yang terkumpul: **{balance} Koin RPG**\n*(Uang ini akan digunakan untuk membayar hadiah Boss Raid!)*")
 
 
 client.run(DISCORD_API_KEY)
