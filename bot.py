@@ -1059,6 +1059,31 @@ async def on_message(message):
         else:
             await message.channel.send(f"{target.display_name} tidak sedang berada di voice channel mana pun.")
 
+    if message.content.startswith('!checkbots'):
+        active_bots = []
+        idle_bots = []
+        for member in message.guild.members:
+            if member.bot:
+                if member.voice and member.voice.channel:
+                    active_bots.append(f"🤖 **{member.display_name}** sedang di 🔊 **{member.voice.channel.name}**")
+                else:
+                    idle_bots.append(member.display_name)
+                    
+        res = "📡 **RADAR BOT MUSIK & SISTEM** 📡\n\n"
+        if active_bots:
+            res += "**🟢 Sedang Aktif (Di Dalam Voice):**\n" + "\n".join(active_bots) + "\n\n"
+        else:
+            res += "**🟢 Sedang Aktif (Di Dalam Voice):**\n- Tidak ada bot yang aktif di Voice Channel.\n\n"
+            
+        if idle_bots:
+            if len(idle_bots) > 15:
+                idle_str = ", ".join(idle_bots[:15]) + f" ... dan {len(idle_bots)-15} lainnya."
+            else:
+                idle_str = ", ".join(idle_bots)
+            res += f"**💤 Idle (Tidur):**\n{idle_str}"
+            
+        await message.channel.send(res)
+
     if message.content.startswith('!w2edaily'):
         uid = str(message.author.id)
         stat = get_discord_stat(uid)
