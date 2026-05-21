@@ -48,7 +48,10 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.voice_states = True
 intents.members = True
+
 client = discord.Client(intents=intents)
+tree = discord.app_commands.CommandTree(client)
+
 
 CHAT_MEMORY_FILE = 'chat_memory.txt'
 MAX_FILE_SIZE_MB = 50
@@ -670,6 +673,7 @@ async def crypto_mining_loop():
 
 @client.event
 async def on_ready():
+    await tree.sync()
     client.loop.create_task(start_web_server())
     client.loop.create_task(check_birthdays())
     client.loop.create_task(update_market_prices())
@@ -3076,5 +3080,228 @@ async def on_message(message):
         else:
             save_json(BOSS_FILE, boss_data)
             await message.channel.send(f"⚔️ {message.author.mention} menyerang **{boss_data['name']}** sebesar **{damage} DMG**! (Sisa HP Boss: {boss_data['hp']}/{boss_data['max_hp']})")
+
+
+# ============================================================================
+# SLASH COMMANDS (APP COMMANDS)
+# ============================================================================
+
+@tree.command(name="profile", description="Lihat profil RPG kamu")
+async def slash_profile(interaction: discord.Interaction):
+    await interaction.response.defer()
+    uid = str(interaction.user.id)
+    stat = get_discord_stat(uid)
+    users = load_json('users.json')
+    achievements = users.get(uid, {}).get('achievements', [])
+    
+    embed = discord.Embed(title=f"Profile: {interaction.user.display_name}", color=discord.Color.blue())
+    embed.add_field(name="Level", value=str(stat['level']), inline=True)
+    embed.add_field(name="XP", value=str(stat['xp']), inline=True)
+    embed.add_field(name="Koin", value=str(stat['coins']), inline=True)
+    
+    if achievements:
+        ach_emojis = {
+            'gambler_king': '👑 Sang Raja Judi',
+            'no_lifer': '🧟‍♂️ No-Lifer',
+            'hitman': '🔪 Hitman',
+            'boss_slayer': '🛡️ Boss Slayer'
+        }
+        ach_text = "\n".join([f"- {ach_emojis.get(a, a)}" for a in achievements])
+        embed.add_field(name="🏆 Achievements", value=ach_text, inline=False)
+        
+    await interaction.followup.send(embed=embed)
+
+@tree.command(name="market", description="Lihat harga kripto (Market 3.0)")
+async def slash_market(interaction: discord.Interaction):
+    await interaction.response.defer()
+    market = load_json(MARKET_FILE)
+    if not market:
+        await interaction.followup.send("Market belum diinisialisasi.")
+        return
+        
+    embed = discord.Embed(title="📈 W2E Crypto Market", color=discord.Color.gold())
+    for coin, data in market.items():
+        price = data['price']
+        history = data.get('history', [price])
+        
+        blocks = [' ', '▂', '▃', '▄', '▅', '▆', '▇', '█']
+        if len(history) > 1:
+            h_min, h_max = min(history), max(history)
+            if h_max == h_min:
+                sparkline = blocks[0] * len(history)
+            else:
+                sparkline = "".join([blocks[int((v - h_min) / (h_max - h_min) * 7)] for v in history])
+        else:
+            sparkline = blocks[0]
+            
+        trend = "🟩" if history[-1] >= history[max(0, len(history)-2)] else "🟥"
+        embed.add_field(name=f"{data['emoji']} {coin}", value=f"Harga: **{price} Koin** {trend}\nTrend: `{sparkline}`", inline=False)
+        
+    await interaction.followup.send(embed=embed)
+
+@tree.command(name="attack", description="Serang Boss Raid")
+async def slash_attack(interaction: discord.Interaction):
+    await interaction.response.defer()
+    boss_data = load_json(BOSS_FILE)
+    if not boss_data.get('active', False):
+        await interaction.followup.send("❌ Tidak ada Boss yang sedang aktif saat ini.")
+        return
+        
+    uid = str(interaction.user.id)
+    if uid in boss_cooldowns:
+        delta = datetime.now() - boss_cooldowns[uid]
+        if delta.total_seconds() < 30:
+            await interaction.followup.send(f"⏳ Senjatamu masih *cooldown*! Tunggu {int(30 - delta.total_seconds())} detik lagi.")
+            return
+            
+    boss_cooldowns[uid] = datetime.now()
+    damage = random.randint(50, 300)
+    
+    users = load_json('users.json')
+    pet_name = users.get(uid, {}).get('pet')
+    PETS = {
+        'slime': {'price': 5000, 'damage': 500, 'emoji': '💧'},
+        'wolf':  {'price': 15000, 'damage': 1500, 'emoji': '🐺'},
+        'dragon':{'price': 50000, 'damage': 5000, 'emoji': '🐉'}
+    }
+    pet_dmg = PETS.get(pet_name, {}).get('damage', 0) if pet_name else 0
+    damage += pet_dmg
+    pet_msg = f" (+{pet_dmg} dari {pet_name.capitalize()})" if pet_dmg > 0 else ""
+    
+    boss_data['hp'] -= damage
+    
+    if boss_data['hp'] <= 0:
+        boss_data['active'] = False
+        save_json(BOSS_FILE, boss_data)
+        reward = 5000
+        
+        stat = get_discord_stat(uid)
+        stat['coins'] += reward
+        update_discord_stat(uid, interaction.user.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+        
+        await interaction.followup.send(f"💥 **FATAL BLOW!** 💥\n{interaction.user.mention} berhasil memberikan serangan terakhir sebesar **{damage} DMG**{pet_msg} dan membunuh **{boss_data['name']}**!\n🎉 Hadiah: **{reward} Koin!**")
+    else:
+        save_json(BOSS_FILE, boss_data)
+        await interaction.followup.send(f"⚔️ {interaction.user.mention} menyerang **{boss_data['name']}** sebesar **{damage} DMG**!{pet_msg} (Sisa HP: {boss_data['hp']}/{boss_data['max_hp']})")
+
+@tree.command(name="buypet", description="Beli peliharaan untuk nambah Damage Raid")
+async def slash_buypet(interaction: discord.Interaction, pet_name: str = None):
+    await interaction.response.defer()
+    uid = str(interaction.user.id)
+    users = load_json('users.json')
+    if uid not in users: users[uid] = {'balance': 0}
+    
+    PETS = {
+        'slime': {'price': 5000, 'damage': 500, 'emoji': '💧'},
+        'wolf':  {'price': 15000, 'damage': 1500, 'emoji': '🐺'},
+        'dragon':{'price': 50000, 'damage': 5000, 'emoji': '🐉'}
+    }
+    
+    if not pet_name or pet_name.lower() not in PETS:
+        msg = "Tersedia peliharaan:\n"
+        for p, info in PETS.items():
+            msg += f"- **{p.capitalize()}** {info['emoji']} (Harga: {info['price']} Koin, Bonus DMG: +{info['damage']})\n"
+        await interaction.followup.send(msg)
+        return
+        
+    pet_name = pet_name.lower()
+    pet_info = PETS[pet_name]
+    
+    if users[uid].get('balance', 0) < pet_info['price']:
+        await interaction.followup.send("❌ Koin nggak cukup!")
+        return
+        
+    users[uid]['balance'] -= pet_info['price']
+    users[uid]['pet'] = pet_name
+    save_json('users.json', users)
+    await interaction.followup.send(f"🎉 Selamat! Kamu telah mengadopsi {pet_info['emoji']} **{pet_name.capitalize()}**!")
+
+@tree.command(name="blackjack", description="Main judi Blackjack melawan bandar")
+async def slash_blackjack(interaction: discord.Interaction, bet: int):
+    await interaction.response.defer()
+    if bet < 50:
+        await interaction.followup.send("❌ Taruhan minimal 50 Koin.")
+        return
+    uid = str(interaction.user.id)
+    stat = get_discord_stat(uid)
+    if stat['coins'] < bet:
+        await interaction.followup.send("❌ Koin tidak cukup!")
+        return
+        
+    stat['coins'] -= bet
+    
+    player_score = random.randint(15, 25)
+    dealer_score = random.randint(17, 23)
+    
+    if player_score > 21:
+        msg = f"🃏 Nilai kamu {player_score}. **BUSTED!** Uang {bet} hangus."
+    elif dealer_score > 21 or player_score > dealer_score:
+        win = bet * 2
+        stat['coins'] += win
+        msg = f"🃏 Kamu {player_score}, Bandar {dealer_score}. **MENANG!** Dapat {win} Koin!"
+        
+        # Trophy check
+        if win >= 1000000:
+            users = load_json('users.json')
+            if 'gambler_king' not in users.get(uid, {}).get('achievements', []):
+                if uid not in users: users[uid] = {}
+                if 'achievements' not in users[uid]: users[uid]['achievements'] = []
+                users[uid]['achievements'].append('gambler_king')
+                save_json('users.json', users)
+                msg += "\n🏆 **ACHIEVEMENT UNLOCKED: 👑 Sang Raja Judi!**"
+    elif player_score == dealer_score:
+        stat['coins'] += bet
+        msg = f"🃏 Sama-sama {player_score}. **DRAW!** Uang dikembalikan."
+    else:
+        msg = f"🃏 Kamu {player_score}, Bandar {dealer_score}. **BANDAR MENANG!** Uang {bet} hangus."
+        
+    update_discord_stat(uid, interaction.user.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+    await interaction.followup.send(msg)
+
+@tree.command(name="hunt", description="Buru member yang memiliki harga buronan (Bounty)")
+async def slash_hunt(interaction: discord.Interaction, target: discord.Member):
+    await interaction.response.defer()
+    uid = str(interaction.user.id)
+    tid = str(target.id)
+    if uid == tid: 
+        await interaction.followup.send("❌ Jangan bunuh diri.")
+        return
+    
+    bounties = load_json('bounties.json')
+    if tid not in bounties or bounties[tid] <= 0:
+        await interaction.followup.send("❌ Orang ini nggak punya harga buronan.")
+        return
+        
+    reward = bounties[tid]
+    success = random.random() > 0.5
+    
+    if success:
+        stat = get_discord_stat(uid)
+        stat['coins'] += reward
+        bounties[tid] = 0
+        update_discord_stat(uid, interaction.user.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+        save_json('bounties.json', bounties)
+        msg = f"🔪 **HUNT BERHASIL!** Kamu membunuh {target.display_name} dan merampas **{reward} Koin**!"
+        
+        users = load_json('users.json')
+        if uid not in users: users[uid] = {}
+        users[uid]['hunt_success'] = users[uid].get('hunt_success', 0) + 1
+        if users[uid]['hunt_success'] >= 5 and 'hitman' not in users.get(uid, {}).get('achievements', []):
+            if 'achievements' not in users[uid]: users[uid]['achievements'] = []
+            users[uid]['achievements'].append('hitman')
+            msg += "\n🏆 **ACHIEVEMENT UNLOCKED: 🔪 Hitman!**"
+        save_json('users.json', users)
+    else:
+        stat = get_discord_stat(uid)
+        denda = int(reward / 2)
+        if stat['coins'] > denda:
+            stat['coins'] -= denda
+            msg = f"❌ **HUNT GAGAL!** Kamu dikalahkan. Didenda **{denda} Koin**."
+        else:
+            msg = "❌ **HUNT GAGAL!** Kamu dikalahkan hingga sekarat."
+        update_discord_stat(uid, interaction.user.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+        
+    await interaction.followup.send(msg)
+
 
 client.run(DISCORD_API_KEY)
