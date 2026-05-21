@@ -10,10 +10,10 @@ Way 2 Eternal Bot adalah sekumpulan Discord bot berskala *Enterprise/Cloud-Ready
 
 ### 2. 💰 Market 3.0 & Ekonomi Sultan
 Sistem ekonomi super lengkap yang tersimpan aman di database **SQLite (`w2ebot.db`)**:
-- **Sistem Sultan (Mining Rigs)**: Beli mesin tambang seharga jutaan koin (`!buyrig`) untuk mendapatkan pasif *income* otomatis setiap jam.
-- **Pajak & Treasury (`!kas`)**: Setiap penjualan koin kripto di pasar dikenakan pajak 2% yang masuk ke kas server. Hadiah Boss Raid diambil dari uang pajak ini!
-- **Simulasi Kripto (`!market`)**: Pasar saham/kripto yang sangat dinamis lengkap dengan grafik *Sparklines* (Unicode bar) dan event volatilitas acak (Pump & Dump mendadak).
-- **Tebak Harga / Binomo (`!tebak`)**: Fitur judi menebak arah harga pasar (Naik/Turun) dalam 10 menit ke depan untuk menggandakan uang.
+- **Sistem Sultan (Mining Rigs)**: Beli mesin tambang seharga jutaan koin (`/buyrig`) untuk mendapatkan pasif *income* otomatis setiap jam.
+- **Pajak & Treasury (`/kas`)**: Setiap penjualan koin kripto di pasar dikenakan pajak 2% yang masuk ke kas server. Hadiah Boss Raid diambil dari uang pajak ini! (Hanya bisa diakses oleh Admin).
+- **Simulasi Kripto (`/market`)**: Pasar saham/kripto yang sangat dinamis lengkap dengan grafik *Sparklines* (Unicode bar) dan event volatilitas acak (Pump & Dump mendadak).
+- **Tebak Harga / Binomo (`/tebak`)**: Fitur judi menebak arah harga pasar (Naik/Turun) dalam 10 menit ke depan untuk menggandakan uang.
 - **Portfolio & PnL**: Lacak modal awal dan *Profit & Loss* secara real-time.
 
 ### 3. 🃏 RPG The Underworld (Ekspansi Kegelapan)
@@ -24,14 +24,15 @@ Selain fitur *Quest*, *Slot*, dan *Gacha*, kini ada area "Bawah Tanah":
 - **Sistem Gelar (Trophy Room)**: Lakukan pencapaian ekstrem (seperti menang judi jutaan koin atau sukses membunuh buronan 5x) untuk memajang piala 👑 **Sang Raja Judi** atau 🔪 **Hitman** secara permanen di profil (`/profile`).
 
 ### 4. 🎮 Modernisasi & Leveling
-- **Slash Commands (`/`)**: 100% kompatibel dengan *Slash Commands* bawaan UI Discord (`/profile`, `/market`, `/tebak`, `/shop`, `/buy`, dll) untuk navigasi mudah tanpa perlu menghafal command. Command klasik (menggunakan `!`) tetap tersedia!
+- **Slash Commands (`/`)**: 100% kompatibel dengan *Slash Commands* bawaan UI Discord untuk navigasi mudah tanpa perlu menghafal command. Daftar Slash Command yang tersedia:
+  - `/profile`, `/market`, `/tebak`, `/blackjack`, `/shop`, `/buy`, `/inventory`, `/daily`, `/slot`, `/attack`, `/buypet`, `/bounty`, `/hunt`, `/kas`, `/radar`, `/find`.
+  - *Catatan: Command klasik (menggunakan `!`) tetap tersedia sebagai alternatif!*
 - **Voice Channel Farming (VC Leveling)**: Dapatkan pasif XP dan Koin hanya dengan nongkrong di Voice Channel! (Raih piala **🧟‍♂️ No-Lifer** jika nongkrong total 24 jam).
 
-
-### 4. 👑 Eksklusif Server Booster (VIP)
+### 5. 👑 Eksklusif Server Booster (VIP)
 - **Voice Announcer**: Pengumuman Sultan saat bergabung ke VC.
 - **Custom Role Creator**: Pembuatan Role otomatis dari gambar.
-- **Bonus Sultan**: 2x lipat Koin saat klaim `!w2edaily`.
+- **Bonus Sultan**: Diskon 20% di `/shop` dan 2x lipat Koin saat klaim `/daily`.
 
 ### 6. 📡 Radar & Alat Pantau
 - **Voice Radar (`/find @user`)**: Lacak durasi teman nongkrong di VC.
@@ -40,7 +41,7 @@ Selain fitur *Quest*, *Slot*, dan *Gacha*, kini ada area "Bawah Tanah":
 
 ---
 
-### 6. 🎵 Sistem Music Bot (Basic & Premium)
+### 7. 🎵 Sistem Music Bot (Basic & Premium)
 
 #### 🎧 Basic Music Bot (`music_bot.py`)
 - Ekstraksi *playlist* super cepat dari YouTube/Spotify.
