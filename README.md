@@ -18,17 +18,24 @@ Sistem ekonomi super lengkap yang tersimpan aman di database **SQLite (`w2ebot.d
 
 ### 3. 🃏 RPG The Underworld (Ekspansi Kegelapan)
 Selain fitur *Quest*, *Slot*, dan *Gacha*, kini ada area "Bawah Tanah":
-- **Blackjack (`!blackjack <taruhan>`)**: Bermain kartu melawan AI Dealer langsung di chat Discord.
-- **Sistem Pet (`!buypet`)**: Adopsi peliharaan (Slime, Serigala, Naga) yang memberikan bonus *Damage* besar-besaran saat melakukan `!attack` ke Boss Raid.
-- **Bounty Hunter (`!bounty` & `!hunt`)**: Sayembara nyawa! Pasang uang untuk kepala member lain, dan biarkan member lain mencoba memburunya dengan risiko denda/kematian.
+- **Blackjack (`/blackjack <taruhan>`)**: Bermain kartu melawan AI Dealer langsung di chat Discord.
+- **Sistem Pet (`/buypet`)**: Adopsi peliharaan (Slime, Serigala, Naga) yang memberikan bonus *Damage* besar-besaran saat melakukan `/attack` ke Boss Raid.
+- **Bounty Hunter (`/bounty` & `/hunt`)**: Sayembara nyawa! Pasang uang untuk kepala member lain, dan biarkan member lain mencoba memburunya dengan risiko denda/kematian.
+- **Sistem Gelar (Trophy Room)**: Lakukan pencapaian ekstrem (seperti menang judi jutaan koin atau sukses membunuh buronan 5x) untuk memajang piala 👑 **Sang Raja Judi** atau 🔪 **Hitman** secara permanen di profil (`/profile`).
+
+### 4. 🎮 Modernisasi & Leveling
+- **Slash Commands (`/`)**: 100% kompatibel dengan *Slash Commands* bawaan UI Discord (`/profile`, `/market`, `/tebak`, `/shop`, `/buy`, dll) untuk navigasi mudah tanpa perlu menghafal command. Command klasik (menggunakan `!`) tetap tersedia!
+- **Voice Channel Farming (VC Leveling)**: Dapatkan pasif XP dan Koin hanya dengan nongkrong di Voice Channel! (Raih piala **🧟‍♂️ No-Lifer** jika nongkrong total 24 jam).
+
 
 ### 4. 👑 Eksklusif Server Booster (VIP)
 - **Voice Announcer**: Pengumuman Sultan saat bergabung ke VC.
 - **Custom Role Creator**: Pembuatan Role otomatis dari gambar.
 - **Bonus Sultan**: 2x lipat Koin saat klaim `!w2edaily`.
 
-### 5. 📡 Radar & Alat Pantau
-- **Voice Radar (`!find @user`)**: Lacak durasi teman nongkrong di VC.
+### 6. 📡 Radar & Alat Pantau
+- **Voice Radar (`/find @user`)**: Lacak durasi teman nongkrong di VC.
+- **Bot Radar (`/radar`)**: Pantau status dan lokasi seluruh bot di server secara *real-time*.
 - **Web API Bawaan**: Endpoint `/api/radar` (Status VC) dan `/api/broadcast` (Kirim pesan dari luar).
 
 ---
