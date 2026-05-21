@@ -3457,4 +3457,48 @@ async def slash_kas(interaction: discord.Interaction):
     await interaction.followup.send(f"🏦 **Brankas Komunitas (W2E Treasury)**\nUang pajak yang terkumpul: **{balance} Koin RPG**\n*(Uang ini akan digunakan untuk membayar hadiah Boss Raid!)*")
 
 
+
+@tree.command(name="find", description="Cari tahu member sedang berada di Voice Channel mana")
+async def slash_find(interaction: discord.Interaction, target: discord.Member):
+    await interaction.response.defer()
+    if target.voice and target.voice.channel:
+        channel = target.voice.channel
+        link = f"https://discord.com/channels/{interaction.guild.id}/{channel.id}"
+        duration_str = "Tidak diketahui"
+        if target.id in voice_join_times:
+            delta = datetime.now() - voice_join_times[target.id]
+            minutes = int(delta.total_seconds() // 60)
+            duration_str = f"{minutes} menit"
+        await interaction.followup.send(f"{target.display_name} sedang berada di voice channel **{channel.name}** selama {duration_str}.\nJoin link: {link}")
+    else:
+        await interaction.followup.send(f"{target.display_name} tidak sedang berada di voice channel mana pun.")
+
+@tree.command(name="radar", description="Pantau aktivitas semua bot (termasuk bot musik) di server")
+async def slash_radar(interaction: discord.Interaction):
+    await interaction.response.defer()
+    active_bots = []
+    idle_bots = []
+    for member in interaction.guild.members:
+        if member.bot:
+            if member.voice and member.voice.channel:
+                active_bots.append(f"🤖 **{member.display_name}** sedang di 🔊 **{member.voice.channel.name}**")
+            else:
+                idle_bots.append(member.display_name)
+                
+    res = "📡 **RADAR BOT MUSIK & SISTEM** 📡\n\n"
+    if active_bots:
+        res += "**🟢 Sedang Aktif (Di Dalam Voice):**\n" + "\n".join(active_bots) + "\n\n"
+    else:
+        res += "**🟢 Sedang Aktif (Di Dalam Voice):**\n- Tidak ada bot yang aktif di Voice Channel.\n\n"
+        
+    if idle_bots:
+        if len(idle_bots) > 15:
+            idle_str = ", ".join(idle_bots[:15]) + f" ... dan {len(idle_bots)-15} lainnya."
+        else:
+            idle_str = ", ".join(idle_bots)
+        res += f"**💤 Idle (Tidur):**\n{idle_str}"
+        
+    await interaction.followup.send(res)
+
+
 client.run(DISCORD_API_KEY)
