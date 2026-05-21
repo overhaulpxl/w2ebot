@@ -12,6 +12,7 @@ from aiohttp import web
 import aiohttp
 import io
 import json
+import re
 
 try:
     from PIL import Image, ImageDraw, ImageFont
@@ -58,6 +59,7 @@ rob_cooldowns = {}  # (attacker_id, target_id) -> datetime
 rps_pending = {}    # challenger_id -> {target, bet, choice}
 quest_progress = {} # user_id -> {quest_id: progress}
 work_cooldowns = {} # user_id -> datetime
+boss_cooldowns = {} # user_id -> datetime
 
 # ── File paths ────────────────────────────────────────────────────────────────
 FAMILY_FILE    = 'family.json'
@@ -65,21 +67,54 @@ ITEMS_FILE     = 'items.json'
 WEEKLY_FILE    = 'weekly.json'
 QUESTS_FILE    = 'quests.json'
 CUSTOM_ROLES_FILE = 'custom_roles.json'
+MARKET_FILE       = 'market.json'
+PORTFOLIO_FILE    = 'portfolio.json'
+PERSONAS_FILE     = 'personas.json'
+BOSS_FILE         = 'boss.json'
+RIGS_FILE         = 'rigs.json'
+TREASURY_FILE     = 'treasury.json'
+BINOMO_FILE       = 'binomo.json'
+RIGS_FILE         = 'rigs.json'
 
 # ⬇ Set this to the channel ID of your #custom-role channel
 CUSTOM_ROLE_CHANNEL_ID = 0  # TODO: ganti dengan ID channel #custom-role kamu
 
 # ── JSON helpers ─────────────────────────────────────────────────────────────
+import sqlite3
+import os
+
+def _init_db():
+    conn = sqlite3.connect('w2ebot.db')
+    conn.execute("CREATE TABLE IF NOT EXISTS json_store (filename TEXT PRIMARY KEY, content TEXT)")
+    conn.commit()
+    conn.close()
+
+_init_db()
+
 def load_json(filepath):
+    basename = os.path.basename(filepath)
     try:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        conn = sqlite3.connect('w2ebot.db')
+        c = conn.cursor()
+        c.execute("SELECT content FROM json_store WHERE filename=?", (basename,))
+        row = c.fetchone()
+        conn.close()
+        if row:
+            return json.loads(row[0])
     except Exception:
-        return {}
+        pass
+    return {}
 
 def save_json(filepath, data):
-    with open(filepath, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+    basename = os.path.basename(filepath)
+    try:
+        conn = sqlite3.connect('w2ebot.db')
+        c = conn.cursor()
+        c.execute("INSERT OR REPLACE INTO json_store (filename, content) VALUES (?, ?)", (basename, json.dumps(data, ensure_ascii=False)))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"DB Save Error: {e}")
 
 # ── Shop items ────────────────────────────────────────────────────────────────
 SHOP_ITEMS = {
@@ -406,10 +441,241 @@ async def check_birthdays():
                         
         await asyncio.sleep(3600) # Check every hour
 
+def init_market():
+    market = load_json(MARKET_FILE)
+    if not market or 'coins' not in market:
+        market = {
+            'last_updated': datetime.now().isoformat(),
+            'coins': {
+                'ETHR': {'name': 'ETHERnal', 'price': 1000, 'history': [1000]},
+                'ORCL': {'name': 'Cosmic Oracle', 'price': 2000, 'history': [2000]},
+                'MTR': {'name': 'Meteorite', 'price': 500, 'history': [500]},
+                'ECLP': {'name': 'Eclipsoin', 'price': 250, 'history': [250]},
+                'ORBT': {'name': 'Orbitcoin', 'price': 100, 'history': [100]},
+                'TRST': {'name': 'TrustCoin', 'price': 50, 'history': [50]},
+                'LUNA': {'name': 'Lunniera', 'price': 5000, 'history': [5000]}
+            }
+        }
+        save_json(MARKET_FILE, market)
+    return market
+
+async def update_market_prices():
+    await client.wait_until_ready()
+    while not client.is_closed():
+        market = init_market()
+        for symbol, data in market['coins'].items():
+            current_price = data['price']
+            
+            # Volatility setting
+            if symbol == 'ETHR':
+                volatility = 0.05 # 5%
+            elif symbol == 'ORCL':
+                volatility = 0.08 # 8%
+            elif symbol == 'ECLP':
+                volatility = 0.15 # 15%
+            elif symbol == 'ORBT':
+                volatility = 0.20 # 20%
+            elif symbol == 'MTR':
+                volatility = 0.25 # 25%
+            elif symbol == 'LUNA':
+                volatility = 0.40 # 40% high risk
+            elif symbol == 'TRST':
+                volatility = 0.50 # 50% extreme risk
+            else:
+                volatility = 0.10
+                
+            change_pct = random.uniform(-volatility, volatility)
+            new_price = int(current_price * (1 + change_pct))
+            
+            # Prevent going to 0
+            if new_price < 10:
+                new_price = 10
+                
+            # Update history (keep last 10)
+            data['history'].append(new_price)
+            if len(data['history']) > 10:
+                data['history'].pop(0)
+                
+            data['price'] = new_price
+            
+        # Random Market Event (10% chance)
+        event_message = None
+        if random.random() < 0.10:
+            target_coin = random.choice(list(market['coins'].keys()))
+            event_type = random.choice(['pump', 'dump'])
+            
+            if event_type == 'pump':
+                pump_pct = random.uniform(0.5, 1.2) # 50% to 120% pump
+                market['coins'][target_coin]['price'] = int(market['coins'][target_coin]['price'] * (1 + pump_pct))
+                event_message = f"📰 **BREAKING NEWS!** 📰\nAda rumor besar tentang {market['coins'][target_coin]['name']} ({target_coin})! Harga mendadak meroket **+{int(pump_pct*100)}%**! 🚀🌕"
+            else:
+                dump_pct = random.uniform(0.4, 0.8) # 40% to 80% dump
+                market['coins'][target_coin]['price'] = int(market['coins'][target_coin]['price'] * (1 - dump_pct))
+                event_message = f"🚨 **PANIC SELL!** 🚨\nRegulator menemukan celah keamanan di {market['coins'][target_coin]['name']} ({target_coin})! Harga anjlok **-{int(dump_pct*100)}%**! 📉🩸"
+                
+            # Prevent going to 0 again
+            if market['coins'][target_coin]['price'] < 10:
+                market['coins'][target_coin]['price'] = 10
+                
+            # Update latest history point to reflect massive change
+            market['coins'][target_coin]['history'][-1] = market['coins'][target_coin]['price']
+            
+        market['last_updated'] = datetime.now().isoformat()
+        save_json(MARKET_FILE, market)
+        
+        # Broadcast event message
+        if event_message:
+            for guild in client.guilds:
+                for ch in guild.text_channels:
+                    if 'general' in ch.name.lower() or 'chat' in ch.name.lower():
+                        if ch.permissions_for(guild.me).send_messages:
+                            client.loop.create_task(ch.send(event_message))
+                            break
+                            
+        # Resolve Binomo Bets
+        binomo = load_json(BINOMO_FILE)
+        if binomo:
+            results = []
+            for uid, bet_data in list(binomo.items()):
+                symbol = bet_data['symbol']
+                direction = bet_data['direction'] # 'UP' or 'DOWN'
+                bet_amount = bet_data['bet']
+                entry_price = bet_data['entry_price']
+                
+                new_price = market['coins'][symbol]['price']
+                won = False
+                if direction == 'UP' and new_price > entry_price:
+                    won = True
+                elif direction == 'DOWN' and new_price < entry_price:
+                    won = True
+                    
+                if won:
+                    winnings = bet_amount * 2
+                    stat = get_discord_stat(uid)
+                    stat['coins'] += winnings
+                    update_discord_stat(uid, f"User_{uid}", stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+                    results.append(f"<@{uid}> **MENANG {winnings} Koin!** (Tebak {symbol} {direction} | Entry: {entry_price}, Now: {new_price})")
+                else:
+                    results.append(f"<@{uid}> **RUGI {bet_amount} Koin!** (Tebak {symbol} {direction} | Entry: {entry_price}, Now: {new_price})")
+                
+                del binomo[uid]
+            save_json(BINOMO_FILE, binomo)
+            
+            if results:
+                result_str = "🎰 **HASIL JUDI BINOMO 10 MENIT INI:** 🎰\n" + "\n".join(results)
+                for guild in client.guilds:
+                    for ch in guild.text_channels:
+                        if 'general' in ch.name.lower() or 'chat' in ch.name.lower():
+                            if ch.permissions_for(guild.me).send_messages:
+                                client.loop.create_task(ch.send(result_str))
+                                break
+                            
+        await asyncio.sleep(600) # Every 10 minutes
+
+async def voice_salary_loop():
+    await client.wait_until_ready()
+    while not client.is_closed():
+        await asyncio.sleep(600) # Wait 10 minutes
+        for guild in client.guilds:
+            # Cari channel pengumuman (general/chat)
+            announce_channel = None
+            for ch in guild.text_channels:
+                if 'general' in ch.name.lower() or 'chat' in ch.name.lower():
+                    if ch.permissions_for(guild.me).send_messages:
+                        announce_channel = ch
+                        break
+            if not announce_channel:
+                for ch in guild.text_channels:
+                    if ch.permissions_for(guild.me).send_messages:
+                        announce_channel = ch
+                        break
+                        
+            # Loop setiap voice channel
+            for vc in guild.voice_channels:
+                members = [m for m in vc.members if not m.bot]
+                if len(members) >= 2: # Minimal 2 orang (anti solo farming)
+                    for m in members:
+                        if not m.voice.self_deaf and not m.voice.deaf:
+                            uid = str(m.id)
+                            stat = get_discord_stat(uid)
+                            stat['xp'] += 15
+                            stat['coins'] += 50
+                            
+                            next_level_xp = stat['level'] * 100
+                            leveled_up = False
+                            while stat['xp'] >= next_level_xp:
+                                stat['level'] += 1
+                                stat['xp'] -= next_level_xp
+                                next_level_xp = stat['level'] * 100
+                                leveled_up = True
+                                
+                            if leveled_up and announce_channel:
+                                client.loop.create_task(
+                                    announce_channel.send(f"🎙️ 🎉 {m.mention} baru saja naik ke **Level {stat['level']}** karena rajin mabar di Voice Channel!")
+                                )
+                                
+                            update_discord_stat(uid, m.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+
+async def boss_raid_loop():
+    await client.wait_until_ready()
+    while not client.is_closed():
+        await asyncio.sleep(3600) # Every 1 hour
+        if random.random() < 0.20: # 20% chance to spawn boss
+            boss_data = load_json(BOSS_FILE)
+            if not boss_data.get('active', False):
+                boss_data = {
+                    'active': True,
+                    'hp': 10000,
+                    'max_hp': 10000,
+                    'name': '🐉 Naga Emas Koruptor'
+                }
+                save_json(BOSS_FILE, boss_data)
+                
+                # Cari channel pengumuman
+                for guild in client.guilds:
+                    for ch in guild.text_channels:
+                        if 'general' in ch.name.lower() or 'chat' in ch.name.lower():
+                            if ch.permissions_for(guild.me).send_messages:
+                                client.loop.create_task(
+                                    ch.send(f"⚠️ **BOSS RAID EVENT DIMULAI!** ⚠️\n**{boss_data['name']}** telah muncul dengan {boss_data['hp']} HP!\nKetik `!attack` untuk menyerang! Yang berhasil membunuhnya mendapat hadiah 5000 Koin!")
+                                )
+                                break
+                                break
+                                
+async def crypto_mining_loop():
+    await client.wait_until_ready()
+    while not client.is_closed():
+        await asyncio.sleep(3600) # Every 1 hour
+        rigs = load_json(RIGS_FILE)
+        portfolio = load_json(PORTFOLIO_FILE)
+        
+        has_mined = False
+        for uid, count in rigs.items():
+            if count > 0:
+                has_mined = True
+                mined_ethr = random.randint(1, 5) * count
+                if uid not in portfolio:
+                    portfolio[uid] = {}
+                if 'ETHR' not in portfolio[uid]:
+                    # Format is now dict due to PnL changes
+                    portfolio[uid]['ETHR'] = {'amount': 0, 'avg_price': 1000}
+                elif isinstance(portfolio[uid]['ETHR'], int):
+                    # Migration from old format
+                    portfolio[uid]['ETHR'] = {'amount': portfolio[uid]['ETHR'], 'avg_price': 1000}
+                    
+                portfolio[uid]['ETHR']['amount'] += mined_ethr
+                
+        if has_mined:
+            save_json(PORTFOLIO_FILE, portfolio)
+
 @client.event
 async def on_ready():
     client.loop.create_task(start_web_server())
     client.loop.create_task(check_birthdays())
+    client.loop.create_task(update_market_prices())
+    client.loop.create_task(voice_salary_loop())
+    client.loop.create_task(boss_raid_loop())
+    client.loop.create_task(crypto_mining_loop())
     logging.info(f'We have logged in as {client.user}')
 
 @web.middleware
@@ -567,13 +833,18 @@ async def finished_callback(sink, channel: discord.TextChannel, *args):
 
 def get_gemini_response(query, user_id=None):
     try:
+        final_query = query
         if user_id:
+            personas = load_json(PERSONAS_FILE)
+            if str(user_id) in personas:
+                final_query = f"[SYSTEM INSTRUCTION: Mulai sekarang kamu HARUS berbicara dan bertingkah sepenuhnya dengan persona/gaya ini: '{personas[str(user_id)]}'. Jangan pernah keluar dari karakter.]\n\nPesan User: {query}"
+                
             if user_id not in chat_sessions:
                 chat_sessions[user_id] = model.start_chat(history=[])
-            response = chat_sessions[user_id].send_message(query)
+            response = chat_sessions[user_id].send_message(final_query)
         else:
             chat_session = model.start_chat(history=[])
-            response = chat_session.send_message(query)
+            response = chat_session.send_message(final_query)
         return response.text
     except Exception as e:
         logging.error(f"Error getting Gemini response: {str(e)}")
@@ -608,11 +879,55 @@ async def on_message(message):
                 attachment = message.attachments[0]
                 # Boleh PNG atau JPG (maksimal harus kecil biasanya 256kb, tp kita download)
                 if attachment.filename.lower().endswith(('.png', '.jpg', '.jpeg')):
-                    role_name = message.content[:100]  # limit nama role
+                    # Extract Nama Role and Hex Color using Regex
+                    name_match = re.search(r'Nama Role\s*:\s*(.+)', message.content, re.IGNORECASE)
+                    color_match = re.search(r'role color\s*:\s*(?:#)?([0-9a-fA-F]{6})', message.content, re.IGNORECASE)
                     
+                    if name_match:
+                        role_name = name_match.group(1).strip()[:100]
+                    else:
+                        role_name = message.content.split('\n')[0][:100]
+                    
+                    role_kwargs = {
+                        "name": role_name,
+                        "reason": f"Custom role for booster {message.author.display_name}"
+                    }
+                    if color_match:
+                        role_kwargs["color"] = discord.Color(int(color_match.group(1), 16))
+
                     try:
                         # Download icon
-                        icon_bytes = await attachment.read()
+                        raw_icon_bytes = await attachment.read()
+                        
+                        # Process icon to make it a circle with transparent background
+                        if PILLOW_AVAILABLE:
+                            try:
+                                img = Image.open(io.BytesIO(raw_icon_bytes)).convert("RGBA")
+                                # Crop to square
+                                min_dim = min(img.size)
+                                left = (img.width - min_dim) / 2
+                                top = (img.height - min_dim) / 2
+                                right = (img.width + min_dim) / 2
+                                bottom = (img.height + min_dim) / 2
+                                img = img.crop((left, top, right, bottom))
+                                # Resize
+                                img = img.resize((256, 256), Image.Resampling.LANCZOS)
+                                # Create circular mask
+                                mask = Image.new('L', (256, 256), 0)
+                                draw = ImageDraw.Draw(mask)
+                                draw.ellipse((0, 0, 256, 256), fill=255)
+                                # Apply mask
+                                img.putalpha(mask)
+                                out = io.BytesIO()
+                                img.save(out, format="PNG")
+                                processed_icon_bytes = out.getvalue()
+                            except Exception as e:
+                                logging.error(f"Error processing custom role icon: {e}")
+                                processed_icon_bytes = raw_icon_bytes
+                        else:
+                            processed_icon_bytes = raw_icon_bytes
+                            
+                        role_kwargs["display_icon"] = processed_icon_bytes
                         
                         # Cek apakah user udah punya custom role sebelumnya
                         croles_data = load_json(CUSTOM_ROLES_FILE)
@@ -624,11 +939,7 @@ async def on_message(message):
                                 await old_role.delete(reason="Replaced custom role")
                         
                         # Bikin role baru
-                        new_role = await message.guild.create_role(
-                            name=role_name, 
-                            display_icon=icon_bytes,
-                            reason=f"Custom role for booster {message.author.display_name}"
-                        )
+                        new_role = await message.guild.create_role(**role_kwargs)
                         
                         # Assign ke user
                         await message.author.add_roles(new_role)
@@ -786,6 +1097,304 @@ async def on_message(message):
         won_title = random.choice(gacha_titles)
         await message.channel.send(f"🎰 **GACHA RESULT** 🎰\nSelamat {message.author.mention}, kamu mendapatkan gelar: **{won_title}**! (-200 Koin)")
         await check_level_up(message.channel, message.author, 50)
+
+    if message.content.startswith('!market') or message.content.startswith('!crypto'):
+        market = load_json(MARKET_FILE)
+        if not market or 'coins' not in market:
+            await message.channel.send("❌ Pasar belum siap. Coba lagi nanti.")
+            return
+            
+        embed = discord.Embed(title="📈 W2E Crypto Market (Roblox Edition)", description="Harga koin berfluktuasi setiap 10 menit!\n(Ada peluang 10% terjadi Kejadian Luar Biasa)", color=discord.Color.green())
+        
+        for symbol, data in market['coins'].items():
+            price = data['price']
+            history = data['history']
+            old_price = history[-2] if len(history) > 1 else price
+            
+            trend_emoji = "📈" if price > old_price else "📉" if price < old_price else "➖"
+            diff = price - old_price
+            diff_str = f"+{diff}" if diff > 0 else str(diff)
+            
+            # Sparkline generation
+            spark_chars = " ▂▃▄▅▆▇█"
+            if len(history) > 1:
+                min_h = min(history)
+                max_h = max(history)
+                diff_h = max_h - min_h
+                if diff_h == 0: diff_h = 1
+                spark = "".join([spark_chars[int(((h - min_h) / diff_h) * 7)] for h in history])
+            else:
+                spark = "➖"
+            
+            embed.add_field(name=f"{data['name']} ({symbol})", value=f"**{price} Koin** {trend_emoji} ({diff_str})\nTrend: `[{spark}]`", inline=False)
+            
+        last_upd = market.get('last_updated', 'N/A')
+        if last_upd != 'N/A':
+            last_upd = last_upd.replace('T', ' ')[:19]
+        embed.set_footer(text=f"Terakhir update: {last_upd} UTC")
+        await message.channel.send(embed=embed)
+
+    if message.content.startswith('!buy '):
+        parts = message.content.split()
+        if len(parts) < 3:
+            await message.channel.send("Format: `!buy <koin> <jumlah>` — contoh: `!buy RBUX 5`")
+            return
+            
+        symbol = parts[1].upper()
+        try:
+            amount = int(parts[2])
+            if amount <= 0:
+                raise ValueError
+        except ValueError:
+            await message.channel.send("❌ Jumlah harus berupa angka positif.")
+            return
+            
+        market = load_json(MARKET_FILE)
+        if symbol not in market.get('coins', {}):
+            await message.channel.send(f"❌ Koin **{symbol}** tidak ditemukan di pasar! Ketik `!market` untuk daftar koin.")
+            return
+            
+        price = market['coins'][symbol]['price']
+        total_cost = price * amount
+        
+        uid = str(message.author.id)
+        stat = get_discord_stat(uid)
+        
+        if stat['coins'] < total_cost:
+            await message.channel.send(f"❌ Saldo Koin kamu tidak cukup! Butuh **{total_cost} Koin** untuk membeli {amount} {symbol}.")
+            return
+            
+        # Potong koin
+        stat['coins'] -= total_cost
+        update_discord_stat(uid, message.author.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+        
+        # Tambah ke portfolio
+        portfolio = load_json(PORTFOLIO_FILE)
+        if uid not in portfolio:
+            portfolio[uid] = {}
+        if symbol not in portfolio[uid]:
+            portfolio[uid][symbol] = {'amount': 0, 'avg_price': 0.0}
+        elif isinstance(portfolio[uid][symbol], int):
+            # Migrate old format
+            portfolio[uid][symbol] = {'amount': portfolio[uid][symbol], 'avg_price': price}
+            
+        old_amount = portfolio[uid][symbol]['amount']
+        old_avg = portfolio[uid][symbol]['avg_price']
+        
+        new_amount = old_amount + amount
+        new_avg = ((old_amount * old_avg) + (amount * price)) / new_amount if new_amount > 0 else price
+        
+        portfolio[uid][symbol]['amount'] = new_amount
+        portfolio[uid][symbol]['avg_price'] = new_avg
+        save_json(PORTFOLIO_FILE, portfolio)
+        
+        await message.channel.send(f"✅ Sukses membeli **{amount} {symbol}** seharga **{total_cost} Koin**!\nSisa Koin RPG kamu: {stat['coins']}.")
+
+    if message.content.startswith('!sell '):
+        parts = message.content.split()
+        if len(parts) < 3:
+            await message.channel.send("Format: `!sell <koin> <jumlah>` — contoh: `!sell RBUX 5`")
+            return
+            
+        symbol = parts[1].upper()
+        try:
+            amount = int(parts[2])
+            if amount <= 0:
+                raise ValueError
+        except ValueError:
+            await message.channel.send("❌ Jumlah harus berupa angka positif.")
+            return
+            
+        uid = str(message.author.id)
+        portfolio = load_json(PORTFOLIO_FILE)
+        
+        if uid not in portfolio:
+            await message.channel.send(f"❌ Portofoliomu kosong!")
+            return
+            
+        user_asset = portfolio[uid].get(symbol)
+        
+        if user_asset is None:
+            await message.channel.send(f"❌ Kamu tidak memiliki koin {symbol} di portofolio kamu!")
+            return
+            
+        if isinstance(user_asset, int):
+            user_asset = {'amount': user_asset, 'avg_price': 1000}
+            portfolio[uid][symbol] = user_asset
+            
+        if user_asset['amount'] < amount:
+            await message.channel.send(f"❌ Kamu cuma punya **{user_asset['amount']} {symbol}**, tidak cukup untuk menjual {amount}!")
+            return
+            
+        market = load_json(MARKET_FILE)
+        if symbol not in market.get('coins', {}):
+            await message.channel.send(f"❌ Pasar error, koin tidak valid.")
+            return
+            
+        price = market['coins'][symbol]['price']
+        total_revenue = price * amount
+        
+        # TAX 2%
+        tax = int(total_revenue * 0.02)
+        net_revenue = total_revenue - tax
+        
+        # Tambah ke Treasury
+        treasury = load_json(TREASURY_FILE)
+        if not treasury: treasury = {'balance': 0}
+        treasury['balance'] = treasury.get('balance', 0) + tax
+        save_json(TREASURY_FILE, treasury)
+        
+        # Hapus dari portfolio
+        portfolio[uid][symbol]['amount'] -= amount
+        if portfolio[uid][symbol]['amount'] <= 0:
+            del portfolio[uid][symbol]
+        save_json(PORTFOLIO_FILE, portfolio)
+        
+        # Tambah koin
+        stat = get_discord_stat(uid)
+        stat['coins'] += net_revenue
+        update_discord_stat(uid, message.author.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+        
+        # Kalkulasi Profit 
+        avg_price = user_asset['avg_price']
+        cost = avg_price * amount
+        pnl = net_revenue - cost
+        pnl_str = f"🟩 Untung +{int(pnl)}" if pnl >= 0 else f"🟥 Rugi {int(pnl)}"
+        
+        await message.channel.send(f"✅ Sukses menjual **{amount} {symbol}**!\nValuasi: {total_revenue} | Pajak (2%): -{tax}\n💰 Diterima Bersih: **{net_revenue} Koin**\n📊 Status Trade: {pnl_str} Koin")
+
+    if message.content.startswith('!kas') or message.content.startswith('!treasury'):
+        treasury = load_json(TREASURY_FILE)
+        balance = treasury.get('balance', 0) if treasury else 0
+        await message.channel.send(f"🏦 **Brankas Komunitas (W2E Treasury)**\nUang pajak yang terkumpul: **{balance} Koin RPG**\n*(Uang ini akan digunakan untuk membayar hadiah Boss Raid!)*")
+
+    if message.content.startswith('!tebak '):
+        parts = message.content.split()
+        if len(parts) < 4:
+            await message.channel.send("Format: `!tebak <KOIN> <UP/DOWN> <TARUHAN>`\nContoh: `!tebak LUNA UP 500`")
+            return
+            
+        symbol = parts[1].upper()
+        direction = parts[2].upper()
+        if direction not in ['UP', 'DOWN']:
+            await message.channel.send("❌ Arah harus **UP** atau **DOWN**.")
+            return
+            
+        try:
+            bet = int(parts[3])
+            if bet < 100:
+                await message.channel.send("❌ Taruhan minimal 100 Koin.")
+                return
+        except ValueError:
+            await message.channel.send("❌ Taruhan harus angka.")
+            return
+            
+        market = load_json(MARKET_FILE)
+        if symbol not in market.get('coins', {}):
+            await message.channel.send("❌ Koin tidak ditemukan.")
+            return
+            
+        uid = str(message.author.id)
+        binomo = load_json(BINOMO_FILE)
+        if uid in binomo:
+            await message.channel.send("❌ Kamu sudah punya taruhan aktif! Tunggu pasar *update* (maks 10 menit).")
+            return
+            
+        stat = get_discord_stat(uid)
+        if stat['coins'] < bet:
+            await message.channel.send("❌ Koin kamu kurang!")
+            return
+            
+        stat['coins'] -= bet
+        update_discord_stat(uid, message.author.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+        
+        current_price = market['coins'][symbol]['price']
+        if not binomo: binomo = {}
+        binomo[uid] = {
+            'symbol': symbol,
+            'direction': direction,
+            'bet': bet,
+            'entry_price': current_price
+        }
+        save_json(BINOMO_FILE, binomo)
+        
+        await message.channel.send(f"🎰 **TARUHAN DITERIMA!**\n{message.author.mention} bertaruh **{bet} Koin** bahwa {symbol} akan **{direction}** dari harga {current_price}.\n*Tunggu maksimal 10 menit untuk hasilnya!*")
+
+    if message.content.startswith('!portfolio'):
+        uid = str(message.author.id)
+        portfolio = load_json(PORTFOLIO_FILE)
+        market = load_json(MARKET_FILE)
+        
+        if uid not in portfolio or not portfolio[uid]:
+            await message.channel.send("💼 Portofolio kamu masih kosong. Ayo beli koin dengan `!buy`!")
+            return
+            
+        embed = discord.Embed(title=f"💼 Portofolio Koin {message.author.display_name}", color=discord.Color.gold())
+        total_value = 0
+        total_cost = 0
+        
+        for symbol, data in portfolio[uid].items():
+            if isinstance(data, int):
+                data = {'amount': data, 'avg_price': 1000}
+                
+            amount = data['amount']
+            avg_price = data['avg_price']
+            
+            if symbol in market.get('coins', {}):
+                current_price = market['coins'][symbol]['price']
+                value = current_price * amount
+                cost = avg_price * amount
+                total_value += value
+                total_cost += cost
+                
+                pnl = value - cost
+                pnl_pct = (pnl / cost * 100) if cost > 0 else 0
+                
+                pnl_emoji = "🟩" if pnl >= 0 else "🟥"
+                pnl_sign = "+" if pnl >= 0 else ""
+                
+                embed.add_field(
+                    name=f"{symbol} ({amount} koin)", 
+                    value=f"Modal: {int(cost)} | Valuasi: {int(value)}\nPnL: {pnl_emoji} **{pnl_sign}{int(pnl)} Koin** ({pnl_sign}{pnl_pct:.1f}%)", 
+                    inline=False
+                )
+                
+        total_pnl = total_value - total_cost
+        total_pnl_pct = (total_pnl / total_cost * 100) if total_cost > 0 else 0
+        t_pnl_sign = "+" if total_pnl >= 0 else ""
+        
+        embed.description = f"**Total Modal:** {int(total_cost)} Koin\n**Total Valuasi:** {int(total_value)} Koin\n**Net PnL:** {t_pnl_sign}{int(total_pnl)} ({t_pnl_sign}{total_pnl_pct:.1f}%)"
+        await message.channel.send(embed=embed)
+
+    if message.content.startswith('!buyrig'):
+        uid = str(message.author.id)
+        stat = get_discord_stat(uid)
+        cost = 10000000 # 10 Juta
+        
+        if stat['coins'] < cost:
+            await message.channel.send(f"❌ Koin kamu kurang! Butuh **10.000.000 Koin** untuk beli 1 Mesin Tambang Sultan.")
+            return
+            
+        stat['coins'] -= cost
+        update_discord_stat(uid, message.author.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+        
+        rigs = load_json(RIGS_FILE)
+        if uid not in rigs: rigs[uid] = 0
+        rigs[uid] += 1
+        save_json(RIGS_FILE, rigs)
+        
+        await message.channel.send(f"⛏️💎 **PEMBELIAN SUKSES!**\n{message.author.mention} baru saja membeli 1 Mesin Tambang Sultan seharga 10 Juta Koin!\nMesin ini akan menambang ETHR setiap 1 jam otomatis. Cek dengan `!miner`.")
+
+    if message.content.startswith('!miner'):
+        uid = str(message.author.id)
+        rigs = load_json(RIGS_FILE)
+        count = rigs.get(uid, 0)
+        
+        if count == 0:
+            await message.channel.send("❌ Kamu belum punya Mesin Tambang. Beli dengan `!buyrig` (10 Juta Koin).")
+            return
+            
+        await message.channel.send(f"⛏️ {message.author.mention}, kamu memiliki **{count} Mesin Tambang Sultan**.\nMesin-mesin ini sedang bekerja mencetak uang untukmu setiap jam!")
 
     if message.content.startswith('!w2eslot'):
         uid = str(message.author.id)
@@ -2248,5 +2857,173 @@ async def on_message(message):
         save_json(ITEMS_FILE, items_data)
         
         await message.channel.send("✅ Background profil berhasil diupdate! Cek dengan `!profile`")
+
+    if message.content.startswith('!setpersona '):
+        persona = message.content[len('!setpersona '):].strip()
+        uid = str(message.author.id)
+        personas = load_json(PERSONAS_FILE)
+        
+        if persona.lower() == 'reset' or persona.lower() == 'hapus':
+            if uid in personas:
+                del personas[uid]
+                save_json(PERSONAS_FILE, personas)
+            if uid in chat_sessions:
+                del chat_sessions[uid] # Reset memory so persona takes effect immediately
+            await message.channel.send("✅ Persona AI kamu telah direset ke default.")
+            return
+            
+        personas[uid] = persona
+        save_json(PERSONAS_FILE, personas)
+        if uid in chat_sessions:
+            del chat_sessions[uid] # Reset history to force new persona
+        
+        await message.channel.send(f"🎭 Berhasil! Gemini AI sekarang akan membalasmu dengan persona: **{persona}**\nCoba chat pakai `!ai Halo!`")
+
+    if message.content.startswith('!w2ebj '):
+        uid = str(message.author.id)
+        stat = get_discord_stat(uid)
+        
+        try:
+            bet = int(message.content.split()[1])
+            if bet < 50:
+                await message.channel.send("❌ Minimal taruhan Blackjack adalah 50 Koin.")
+                return
+            if stat['coins'] < bet:
+                await message.channel.send("❌ Koin kamu tidak cukup!")
+                return
+        except (IndexError, ValueError):
+            await message.channel.send("Format: `!w2ebj <jumlah_taruhan>`")
+            return
+            
+        stat['coins'] -= bet
+        update_discord_stat(uid, message.author.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+        
+        # Simple Blackjack Logic
+        deck = [2,3,4,5,6,7,8,9,10,10,10,10,11] * 4
+        random.shuffle(deck)
+        
+        player_hand = [deck.pop(), deck.pop()]
+        dealer_hand = [deck.pop(), deck.pop()]
+        
+        def calculate_score(hand):
+            score = sum(hand)
+            aces = hand.count(11)
+            while score > 21 and aces > 0:
+                score -= 10
+                aces -= 1
+            return score
+            
+        player_score = calculate_score(player_hand)
+        dealer_score = calculate_score(dealer_hand)
+        
+        if player_score == 21:
+            win_amount = int(bet * 2.5)
+            stat['coins'] += win_amount
+            update_discord_stat(uid, message.author.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+            await message.channel.send(f"🃏 **BLACKJACK!** 🃏\nKartu kamu: {player_hand} (21)\nKamu langsung menang **{win_amount} Koin**!")
+            return
+            
+        embed = discord.Embed(title="🃏 W2E Blackjack Casino", color=discord.Color.red())
+        embed.add_field(name=f"Pemain ({player_score})", value=str(player_hand), inline=True)
+        embed.add_field(name="Bandar", value=f"[{dealer_hand[0]}, ?]", inline=True)
+        embed.set_footer(text="Ketik 'hit' untuk tambah kartu, atau 'stand' untuk bertahan.")
+        
+        msg = await message.channel.send(embed=embed)
+        
+        def check(m):
+            return m.author.id == message.author.id and m.channel.id == message.channel.id and m.content.lower() in ['hit', 'stand']
+            
+        playing = True
+        while playing:
+            try:
+                reply = await client.wait_for('message', timeout=30.0, check=check)
+                if reply.content.lower() == 'hit':
+                    player_hand.append(deck.pop())
+                    player_score = calculate_score(player_hand)
+                    
+                    if player_score > 21:
+                        embed.set_field_at(0, name=f"Pemain ({player_score})", value=str(player_hand), inline=True)
+                        embed.description = f"💥 **BUST!** Kamu kelebihan 21. Taruhan **{bet} Koin** hangus."
+                        await message.channel.send(embed=embed)
+                        return
+                    else:
+                        embed.set_field_at(0, name=f"Pemain ({player_score})", value=str(player_hand), inline=True)
+                        await message.channel.send(embed=embed)
+                else:
+                    playing = False
+            except asyncio.TimeoutError:
+                await message.channel.send(f"⏳ Waktu habis! Kamu otomatis Stand.")
+                playing = False
+                
+        # Dealer's turn
+        while dealer_score < 17:
+            dealer_hand.append(deck.pop())
+            dealer_score = calculate_score(dealer_hand)
+            
+        embed.set_field_at(0, name=f"Pemain ({player_score})", value=str(player_hand), inline=True)
+        embed.set_field_at(1, name=f"Bandar ({dealer_score})", value=str(dealer_hand), inline=True)
+        
+        if dealer_score > 21:
+            win_amount = bet * 2
+            stat['coins'] += win_amount
+            embed.description = f"🎉 Bandar **Bust!** Kamu menang **{win_amount} Koin**!"
+        elif dealer_score > player_score:
+            embed.description = f"😢 Bandar menang. Taruhan **{bet} Koin** hangus."
+        elif dealer_score < player_score:
+            win_amount = bet * 2
+            stat['coins'] += win_amount
+            embed.description = f"🎉 Kamu menang! Dapet **{win_amount} Koin**!"
+        else:
+            stat['coins'] += bet
+            embed.description = f"🤝 **Seri (Push)!** Taruhan {bet} Koin dikembalikan."
+            
+        update_discord_stat(uid, message.author.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+        await message.channel.send(embed=embed)
+
+    if message.content.startswith('!attack'):
+        boss_data = load_json(BOSS_FILE)
+        if not boss_data.get('active', False):
+            await message.channel.send("❌ Tidak ada Boss yang sedang aktif saat ini.")
+            return
+            
+        uid = str(message.author.id)
+        # Cek cooldown 30 detik
+        if uid in boss_cooldowns:
+            delta = datetime.now() - boss_cooldowns[uid]
+            if delta.total_seconds() < 30:
+                await message.channel.send(f"⏳ Senjatamu masih *cooldown*! Tunggu {int(30 - delta.total_seconds())} detik lagi.")
+                return
+                
+        boss_cooldowns[uid] = datetime.now()
+        
+        damage = random.randint(50, 300)
+        boss_data['hp'] -= damage
+        
+        if boss_data['hp'] <= 0:
+            boss_data['active'] = False
+            save_json(BOSS_FILE, boss_data)
+            # Ambil dari kas server
+            treasury = load_json(TREASURY_FILE)
+            if not treasury: treasury = {'balance': 0}
+            balance = treasury.get('balance', 0)
+            
+            reward = 5000
+            if balance < reward:
+                reward = max(1000, balance) # Kasih seadanya, minimal 1000
+                
+            if balance >= reward:
+                treasury['balance'] -= reward
+            else:
+                treasury['balance'] = 0
+            save_json(TREASURY_FILE, treasury)
+            
+            stat = get_discord_stat(uid)
+            stat['coins'] += reward
+            update_discord_stat(uid, message.author.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+            
+            await message.channel.send(f"💥 **FATAL BLOW!** 💥\n{message.author.mention} berhasil memberikan serangan terakhir sebesar **{damage} DMG** dan membunuh **{boss_data['name']}**!\n🎉 Hadiah pembunuh: **{reward} Koin RPG!** (Diambil dari Kas Server)")
+        else:
+            save_json(BOSS_FILE, boss_data)
+            await message.channel.send(f"⚔️ {message.author.mention} menyerang **{boss_data['name']}** sebesar **{damage} DMG**! (Sisa HP Boss: {boss_data['hp']}/{boss_data['max_hp']})")
 
 client.run(DISCORD_API_KEY)

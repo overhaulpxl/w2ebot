@@ -13,6 +13,8 @@ from spotipy.oauth2 import SpotifyClientCredentials
 import json
 from datetime import datetime
 import random
+import io
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
@@ -45,18 +47,46 @@ loop_modes = {} # guild_id -> OFF, TRACK, QUEUE
 autoplay_modes = {} # guild_id -> bool
 play_history = {} # guild_id -> list of urls to avoid in autoplay
 volumes = {}
+active_filters = {} # guild_id -> str
+playlists = {} # user_id -> dict of playlist_name -> list of urls
+seek_times = {} # guild_id -> seconds
+
+import sqlite3
+
+def _init_db():
+    conn = sqlite3.connect('w2ebot.db')
+    conn.execute("CREATE TABLE IF NOT EXISTS json_store (filename TEXT PRIMARY KEY, content TEXT)")
+    conn.commit()
+    conn.close()
+
+_init_db()
 
 def load_json(filepath, default_val=None):
     if default_val is None: default_val = {}
-    if os.path.exists(filepath):
-        with open(filepath, 'r', encoding='utf-8') as f:
-            try: return json.load(f)
-            except: return default_val
+    basename = os.path.basename(filepath)
+    try:
+        conn = sqlite3.connect('w2ebot.db')
+        c = conn.cursor()
+        c.execute("SELECT content FROM json_store WHERE filename=?", (basename,))
+        row = c.fetchone()
+        conn.close()
+        if row:
+            try: return json.loads(row[0])
+            except: pass
+    except Exception:
+        pass
     return default_val
 
 def save_json(filepath, data):
-    with open(filepath, 'w', encoding='utf-8') as f:
-        json.dump(data, f)
+    basename = os.path.basename(filepath)
+    try:
+        conn = sqlite3.connect('w2ebot.db')
+        c = conn.cursor()
+        c.execute("INSERT OR REPLACE INTO json_store (filename, content) VALUES (?, ?)", (basename, json.dumps(data, ensure_ascii=False)))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logging.error(f"DB Save Error: {e}")
 
 def is_whitelisted(user_id):
     users = load_json(WHITELIST_FILE, [])
@@ -152,9 +182,39 @@ async def play_next(ctx):
         if autoplay_modes.get(gid, False) and gid in play_history and play_history[gid]:
             await ctx.send("🔍 Autoplay: Memilih lagu rekomendasi selanjutnya...")
             last_url = play_history[gid][-1]
-            # Advanced Autoplay would fetch related tracks here via yt-dlp 
-            # For simplicity, we fallback to a smart algorithm if implemented, otherwise stop
-        
+            try:
+                ydl_opts = {'format': 'bestaudio/best', 'quiet': True, 'extract_flat': True}
+                # yt_dlp related search syntax
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = await asyncio.to_thread(ydl.extract_info, last_url, download=False)
+                    related = info.get('entries', [])
+                    if not related:
+                        # try to get related by URL trick if direct extraction fails
+                        pass
+                
+                # Sederhananya, jika autoplay aktif dan antrean habis, kita ulangi secara random dari history
+                # Idealnya: kita fetch YouTube Mix. Tapi karena batas API, kita pakai algoritma Mix internal
+                if len(play_history[gid]) > 0:
+                    random_past = random.choice(play_history[gid])
+                    query = f"mix {random_past}"
+                    next_info = await search_yt(query)
+                    if next_info:
+                        if gid not in queues: queues[gid] = []
+                        queues[gid].append({
+                            'title': next_info.get('title', 'Unknown'),
+                            'artist': next_info.get('uploader', 'Autoplay'),
+                            'url': next_info.get('webpage_url', next_info.get('url')),
+                            'thumbnail': next_info.get('thumbnail', None),
+                            'duration': next_info.get('duration', 0),
+                            'source': 'youtube',
+                            'requester': ctx.author if ctx else None,
+                            'voice_channel': ctx.guild.voice_client.channel if ctx and ctx.guild.voice_client else None
+                        })
+                        await play_next(ctx)
+                        return
+            except Exception as e:
+                logging.error(f"Autoplay error: {e}")
+                
         vc = ctx.guild.voice_client
         if vc: await vc.disconnect()
         return
@@ -190,12 +250,36 @@ async def play_next(ctx):
         'options': '-vn -c:v mp4v'
     }
     
+    start_time_offset = seek_times.pop(gid, 0)
+    if start_time_offset > 0:
+        ffmpeg_options['before_options'] += f' -ss {start_time_offset}'
+        
+    audio_filters = []
+    
+    f_mode = active_filters.get(gid, 'clear')
+    if f_mode == 'bassboost': audio_filters.append('bass=g=15')
+    elif f_mode == 'nightcore': audio_filters.append('atempo=1.25,asetrate=44100*1.25')
+    elif f_mode == 'vaporwave': audio_filters.append('atempo=0.8,asetrate=44100*0.8,aecho=0.8:0.9:1000:0.3')
+    elif f_mode == '8d': audio_filters.append('apulsator=hz=0.125')
+    
+    dur = int(item.get('duration', 0))
+    if dur > 10:
+        audio_filters.append('afade=t=in:st=0:d=3')
+        if start_time_offset == 0:
+            audio_filters.append(f'afade=t=out:st={dur-3}:d=3')
+            
+    if audio_filters:
+        ffmpeg_options['options'] += f' -af "{",".join(audio_filters)}"'
+    
     vc = ctx.guild.voice_client
     if not vc:
         vc = await item['voice_channel'].connect(self_deaf=True)
         
     current_song_info[gid] = item
-    current_song_info[gid]['start_time'] = datetime.now().timestamp()
+    if start_time_offset > 0:
+        current_song_info[gid]['start_time'] = datetime.now().timestamp() - start_time_offset
+    else:
+        current_song_info[gid]['start_time'] = datetime.now().timestamp()
     
     if gid not in play_history: play_history[gid] = []
     play_history[gid].append(url)
@@ -432,24 +516,51 @@ async def nowplaying(ctx):
     gid = ctx.guild.id
     if gid in current_song_info and ctx.guild.voice_client and (ctx.guild.voice_client.is_playing() or ctx.guild.voice_client.is_paused()):
         item = current_song_info[gid]
-        elapsed = int(datetime.now().timestamp() - item['start_time'])
-        dur = item['duration']
         
-        progress = min(1.0, max(0.0, elapsed / dur)) if dur > 0 else 0
-        bar_len = 20
-        filled = int(bar_len * progress)
-        bar = '▬' * filled + '🔘' + '▬' * (bar_len - filled - 1)
-        
-        def format_time(s):
-            m, s = divmod(int(s), 60)
-            h, m = divmod(m, 60)
-            return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+        # Build initial embed
+        def get_embed(visualizer_frame):
+            elapsed = int(datetime.now().timestamp() - item['start_time'])
+            dur = item['duration']
+            progress = min(1.0, max(0.0, elapsed / dur)) if dur > 0 else 0
             
-        time_str = f"[{format_time(elapsed)} / {format_time(dur)}]"
+            bar_len = 20
+            filled = int(bar_len * progress)
+            bar = '▬' * filled + '🔘' + '▬' * (bar_len - filled - 1)
+            
+            def format_time(s):
+                m, s = divmod(int(s), 60)
+                h, m = divmod(m, 60)
+                return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+                
+            time_str = f"[{format_time(elapsed)} / {format_time(dur)}]"
+            
+            embed = discord.Embed(title="Now Playing", description=f"**[{item['title']}]({item['url']})**
+`{bar}` {time_str}
+
+**Visualizer:**
+`{visualizer_frame}`", color=discord.Color.green())
+            if item['thumbnail']: embed.set_thumbnail(url=item['thumbnail'])
+            return embed
+            
+        visualizers = [
+            "ılılıll|̲̅̅●̲̅̅|̲̅̅=̲̅̅|̲̅̅●̲̅̅|llılılı",
+            "ıllılıl|̲̅̅●̲̅̅|̲̅̅=̲̅̅|̲̅̅●̲̅̅|lılıllı",
+            "lıllılı|̲̅̅●̲̅̅|̲̅̅=̲̅̅|̲̅̅●̲̅̅|ılıllıl",
+            "ıllllıl|̲̅̅●̲̅̅|̲̅̅=̲̅̅|̲̅̅●̲̅̅|lıllllı"
+        ]
         
-        embed = discord.Embed(title="Now Playing", description=f"**[{item['title']}]({item['url']})**\n`{bar}` {time_str}", color=discord.Color.green())
-        if item['thumbnail']: embed.set_thumbnail(url=item['thumbnail'])
-        await ctx.send(embed=embed)
+        msg = await ctx.send(embed=get_embed(visualizers[0]))
+        
+        # Animate for a short duration (e.g. 15 seconds) to avoid rate limits
+        for i in range(1, 6):
+            await asyncio.sleep(3)
+            # check if still playing the same song
+            if gid not in current_song_info or current_song_info[gid] != item: break
+            try:
+                await msg.edit(embed=get_embed(visualizers[i % len(visualizers)]))
+            except:
+                break
+            
     else:
         await ctx.send("Nothing is currently playing.")
 
@@ -528,6 +639,207 @@ async def lyrics(ctx, *, query: str = None):
             await ctx.send("❌ Lyrics not found or track is Instrumental.")
     except Exception as e:
         await ctx.send("❌ Error fetching lyrics. It might not exist.")
+
+@bot.command()
+@commands.check(check_whitelist)
+async def filter(ctx, f_type: str = 'clear'):
+    f_type = f_type.lower()
+    valid_filters = ['bassboost', 'nightcore', 'vaporwave', '8d', 'clear']
+    if f_type not in valid_filters:
+        await ctx.send(f"❌ Filter tidak valid! Pilihan: {', '.join(valid_filters)}")
+        return
+        
+    active_filters[ctx.guild.id] = f_type
+    await ctx.send(f"🎛️ Audio Filter disetel ke: **{f_type.upper()}**\n*(Efek akan terasa di lagu berikutnya atau gunakan `!seek 0` untuk restart lagu saat ini)*")
+
+@bot.command(aliases=['vol'])
+@commands.check(check_whitelist)
+async def volume(ctx, vol: int):
+    if vol < 0 or vol > 100:
+        await ctx.send("❌ Volume harus antara 0 - 100.")
+        return
+    volumes[ctx.guild.id] = vol / 100.0
+    vc = ctx.guild.voice_client
+    if vc and vc.source:
+        vc.source.volume = volumes[ctx.guild.id]
+    await ctx.send(f"🔊 Volume diatur ke **{vol}%**")
+
+@bot.command()
+@commands.check(check_whitelist)
+async def loop(ctx, mode: str = None):
+    gid = ctx.guild.id
+    current_mode = loop_modes.get(gid, 'OFF')
+    
+    if mode is None:
+        if current_mode == 'OFF': new_mode = 'TRACK'
+        elif current_mode == 'TRACK': new_mode = 'QUEUE'
+        else: new_mode = 'OFF'
+    else:
+        mode = mode.upper()
+        if mode not in ['OFF', 'TRACK', 'QUEUE']:
+            await ctx.send("❌ Pilihan loop: OFF, TRACK, QUEUE")
+            return
+        new_mode = mode
+        
+    loop_modes[gid] = new_mode
+    await ctx.send(f"🔁 Loop mode: **{new_mode}**")
+
+@bot.command()
+@commands.check(check_whitelist)
+async def seek(ctx, time_str: str):
+    try:
+        parts = time_str.split(':')
+        if len(parts) == 2:
+            total_seconds = int(parts[0]) * 60 + int(parts[1])
+        else:
+            total_seconds = int(time_str)
+            
+        gid = ctx.guild.id
+        if gid not in current_song_info or not ctx.guild.voice_client:
+            await ctx.send("❌ Tidak ada lagu yang diputar.")
+            return
+            
+        dur = current_song_info[gid].get('duration', 0)
+        if total_seconds > dur:
+            await ctx.send("❌ Waktu melebihi durasi lagu.")
+            return
+            
+        seek_times[gid] = total_seconds
+        
+        # Re-queue current song
+        if gid not in queues: queues[gid] = []
+        queues[gid].insert(0, current_song_info[gid])
+        
+        ctx.guild.voice_client.stop()
+        await ctx.send(f"⏩ Melompat ke **{time_str}**...")
+        
+    except ValueError:
+        await ctx.send("❌ Format waktu salah! Contoh: `!seek 1:30` atau `!seek 90`")
+
+@bot.command()
+@commands.check(check_whitelist)
+async def autoplay(ctx):
+    gid = ctx.guild.id
+    current = autoplay_modes.get(gid, False)
+    autoplay_modes[gid] = not current
+    status = "ON 🟢" if not current else "OFF 🔴"
+    await ctx.send(f"📻 Autoplay Mode is now **{status}**")
+
+@bot.group(invoke_without_command=True)
+@commands.check(check_whitelist)
+async def playlist(ctx):
+    await ctx.send("Gunakan: `!playlist save <nama>`, `!playlist list`, `!playlist play <nama>`")
+
+@playlist.command(name="save")
+@commands.check(check_whitelist)
+async def playlist_save(ctx, name: str):
+    gid = ctx.guild.id
+    uid = str(ctx.author.id)
+    if gid not in queues or not queues[gid]:
+        await ctx.send("❌ Antrean kosong!")
+        return
+        
+    pl = load_json('playlists.json', {})
+    if uid not in pl: pl[uid] = {}
+    
+    pl[uid][name] = queues[gid].copy()
+    save_json('playlists.json', pl)
+    await ctx.send(f"💾 Berhasil menyimpan {len(queues[gid])} lagu ke playlist **{name}**!")
+
+@playlist.command(name="list")
+@commands.check(check_whitelist)
+async def playlist_list(ctx):
+    uid = str(ctx.author.id)
+    pl = load_json('playlists.json', {})
+    user_pl = pl.get(uid, {})
+    
+    if not user_pl:
+        await ctx.send("Kamu belum punya playlist pribadi.")
+        return
+        
+    msg = "**Daftar Playlist Kamu:**\n"
+    for name, tracks in user_pl.items():
+        msg += f"- **{name}** ({len(tracks)} lagu)\n"
+    await ctx.send(msg)
+
+@playlist.command(name="play")
+@commands.check(check_whitelist)
+async def playlist_play(ctx, name: str):
+    uid = str(ctx.author.id)
+    pl = load_json('playlists.json', {})
+    user_pl = pl.get(uid, {})
+    
+    if name not in user_pl:
+        await ctx.send(f"❌ Playlist '{name}' tidak ditemukan.")
+        return
+        
+    if not ctx.author.voice:
+        await ctx.send("Masuk voice channel dulu!")
+        return
+        
+    gid = ctx.guild.id
+    if gid not in queues: queues[gid] = []
+    
+    queues[gid].extend(user_pl[name])
+    await ctx.send(f"✅ Berhasil memuat {len(user_pl[name])} lagu dari playlist **{name}**!")
+    
+    vc = ctx.guild.voice_client
+    if not vc or not vc.is_playing():
+        await play_next(ctx)
+
+@bot.command()
+@commands.check(check_whitelist)
+async def quote(ctx, *, text: str):
+    gid = ctx.guild.id
+    if gid not in current_song_info:
+        await ctx.send("❌ Tidak ada lagu yang diputar.")
+        return
+        
+    item = current_song_info[gid]
+    thumbnail_url = item.get('thumbnail')
+    title = item.get('title', 'Unknown')
+    artist = item.get('artist', 'Unknown')
+    
+    await ctx.send("🎨 Membuat Lyric Card...")
+    
+    try:
+        # Download thumbnail
+        async with aiohttp.ClientSession() as session:
+            async with session.get(thumbnail_url) as resp:
+                if resp.status == 200:
+                    img_data = await resp.read()
+                    
+        # Generate image using Pillow
+        base_img = Image.open(io.BytesIO(img_data)).convert("RGBA")
+        base_img = base_img.resize((800, 800))
+        base_img = base_img.filter(ImageFilter.GaussianBlur(15))
+        
+        # Darken background
+        overlay = Image.new("RGBA", base_img.size, (0, 0, 0, 150))
+        base_img = Image.alpha_composite(base_img, overlay)
+        
+        draw = ImageDraw.Draw(base_img)
+        # Try to load a font, otherwise use default
+        try:
+            font_large = ImageFont.truetype("arial.ttf", 50)
+            font_small = ImageFont.truetype("arial.ttf", 30)
+        except:
+            font_large = ImageFont.load_default()
+            font_small = ImageFont.load_default()
+            
+        # Draw quote
+        draw.text((100, 300), f'"{text}"', font=font_large, fill="white")
+        draw.text((100, 400), f"— {title}", font=font_small, fill="lightgray")
+        draw.text((100, 450), f"by {artist}", font=font_small, fill="gray")
+        
+        # Save to buffer
+        buf = io.BytesIO()
+        base_img.save(buf, format="PNG")
+        buf.seek(0)
+        
+        await ctx.send(file=discord.File(buf, filename="quote.png"))
+    except Exception as e:
+        await ctx.send(f"❌ Gagal membuat gambar: {e}")
 
 @bot.command()
 @commands.check(check_whitelist)
