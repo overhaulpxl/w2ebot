@@ -534,11 +534,11 @@ async def nowplaying(ctx):
                 
             time_str = f"[{format_time(elapsed)} / {format_time(dur)}]"
             
-            embed = discord.Embed(title="Now Playing", description=f"**[{item['title']}]({item['url']})**
+            embed = discord.Embed(title="Now Playing", description=f"""**[{item['title']}]({item['url']})**
 `{bar}` {time_str}
 
 **Visualizer:**
-`{visualizer_frame}`", color=discord.Color.green())
+`{visualizer_frame}`""", color=discord.Color.green())
             if item['thumbnail']: embed.set_thumbnail(url=item['thumbnail'])
             return embed
             
