@@ -3473,7 +3473,7 @@ async def slash_find(interaction: discord.Interaction, target: discord.Member):
     else:
         await interaction.followup.send(f"{target.display_name} tidak sedang berada di voice channel mana pun.")
 
-@tree.command(name="radar", description="Pantau aktivitas semua bot (termasuk bot musik) di server")
+@tree.command(name="checkbots", description="Pantau aktivitas semua bot (termasuk bot musik) di server")
 async def slash_radar(interaction: discord.Interaction):
     await interaction.response.defer()
     active_bots = []

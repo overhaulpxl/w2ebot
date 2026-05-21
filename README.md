@@ -35,7 +35,7 @@ Selain fitur *Quest*, *Slot*, dan *Gacha*, kini ada area "Bawah Tanah":
 
 ### 6. 📡 Radar & Alat Pantau
 - **Voice Radar (`/find @user`)**: Lacak durasi teman nongkrong di VC.
-- **Bot Radar (`/radar`)**: Pantau status dan lokasi seluruh bot di server secara *real-time*.
+- **Bot Radar (`/checkbots`)**: Pantau status dan lokasi seluruh bot di server secara *real-time*.
 - **Web API Bawaan**: Endpoint `/api/radar` (Status VC) dan `/api/broadcast` (Kirim pesan dari luar).
 
 ---
