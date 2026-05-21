@@ -3304,4 +3304,141 @@ async def slash_hunt(interaction: discord.Interaction, target: discord.Member):
     await interaction.followup.send(msg)
 
 
+
+@tree.command(name="shop", description="Lihat toko W2E Sultan Shop")
+async def slash_shop(interaction: discord.Interaction):
+    await interaction.response.defer()
+    booster_msg = " (👑 Diskon 20% khusus Server Booster!)" if interaction.user.premium_since else ""
+    res = f"🛒 **W2E SULTAN SHOP** 🛒{booster_msg}\n*Gunakan `/buy <item_id>` untuk membeli*\n\n"
+    for i_id, i_data in SHOP_ITEMS.items():
+        price = i_data['price']
+        if interaction.user.premium_since:
+            price = int(price * 0.8)
+        res += f"**[{i_id}]** {i_data['name']} - 💰 {price} Koin\n"
+        res += f"↳ *{i_data['desc']}*\n\n"
+    await interaction.followup.send(res)
+
+@tree.command(name="buy", description="Beli item dari Shop")
+async def slash_buy(interaction: discord.Interaction, item_id: str):
+    await interaction.response.defer()
+    uid = str(interaction.user.id)
+    if item_id not in SHOP_ITEMS:
+        await interaction.followup.send("❌ Item tidak ditemukan. Cek `/shop`.")
+        return
+        
+    stat = get_discord_stat(uid)
+    item = SHOP_ITEMS[item_id]
+    price = item['price']
+    
+    if interaction.user.premium_since:
+        price = int(price * 0.8)
+        
+    if stat['coins'] < price:
+        await interaction.followup.send(f"❌ Koin kamu tidak cukup! Harga {item['name']} adalah {price} Koin.")
+        return
+        
+    stat['coins'] -= price
+    users = load_json('users.json')
+    if uid not in users: users[uid] = {'balance': 0, 'items': {}}
+    if 'items' not in users[uid]: users[uid]['items'] = {}
+    
+    users[uid]['items'][item_id] = users[uid]['items'].get(item_id, 0) + 1
+    save_json('users.json', users)
+    update_discord_stat(uid, interaction.user.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+    
+    await interaction.followup.send(f"🛍️ Berhasil membeli **{item['name']}** seharga {price} Koin! (Cek `/inventory`)")
+
+@tree.command(name="inventory", description="Lihat isi tas kamu")
+async def slash_inventory(interaction: discord.Interaction):
+    await interaction.response.defer()
+    uid = str(interaction.user.id)
+    users = load_json('users.json')
+    items = users.get(uid, {}).get('items', {})
+    
+    if not items:
+        await interaction.followup.send("🎒 Tas kamu kosong melompong.")
+        return
+        
+    res = f"🎒 **Inventory {interaction.user.display_name}** 🎒\n\n"
+    for i_id, count in items.items():
+        name = SHOP_ITEMS.get(i_id, {}).get('name', i_id)
+        res += f"- **{name}** (x{count})\n"
+        
+    await interaction.followup.send(res)
+
+@tree.command(name="daily", description="Ambil jatah koin dan XP harian")
+async def slash_daily(interaction: discord.Interaction):
+    await interaction.response.defer()
+    uid = str(interaction.user.id)
+    stat = get_discord_stat(uid)
+    now = datetime.now()
+    
+    if stat['lastDaily']:
+        last_daily = datetime.fromisoformat(stat['lastDaily'])
+        if (now - last_daily).total_seconds() < 86400:
+            sisa = 86400 - (now - last_daily).total_seconds()
+            hours, remainder = divmod(int(sisa), 3600)
+            minutes, seconds = divmod(remainder, 60)
+            await interaction.followup.send(f"⏳ Kamu sudah mengambil daily. Tunggu {hours}j {minutes}m {seconds}s lagi.")
+            return
+            
+    reward_coins = random.randint(500, 1500)
+    reward_xp = random.randint(100, 300)
+    
+    # Booster bonus
+    if interaction.user.premium_since:
+        reward_coins *= 2
+        reward_xp *= 2
+        
+    stat['coins'] += reward_coins
+    stat['xp'] += reward_xp
+    stat['lastDaily'] = now.isoformat()
+    
+    update_discord_stat(uid, interaction.user.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+    
+    booster_msg = "\n👑 *Server Booster Bonus 2x Lipat diterapkan!*" if interaction.user.premium_since else ""
+    await interaction.followup.send(f"🎁 **DAILY CLAIMED!**\nKamu mendapatkan **{reward_coins} Koin** dan **{reward_xp} XP**!{booster_msg}")
+
+@tree.command(name="slot", description="Main judi mesin slot")
+async def slash_slot(interaction: discord.Interaction, bet: int):
+    await interaction.response.defer()
+    if bet < 50:
+        await interaction.followup.send("❌ Minimal taruhan 50 Koin.")
+        return
+        
+    uid = str(interaction.user.id)
+    stat = get_discord_stat(uid)
+    
+    if stat['coins'] < bet:
+        await interaction.followup.send("❌ Koin tidak cukup!")
+        return
+        
+    stat['coins'] -= bet
+    
+    emojis = ["🍒", "🍋", "🔔", "⭐", "💎", "7️⃣"]
+    slots = [random.choice(emojis) for _ in range(3)]
+    result = " | ".join(slots)
+    
+    win = 0
+    msg = f"🎰 **W2E SLOT MACHINE** 🎰\n\n[ {result} ]\n\n"
+    
+    if slots[0] == slots[1] == slots[2]:
+        if slots[0] == "7️⃣":
+            win = bet * 10
+            msg += f"🔥 **JACKPOT!** 🔥 Kamu menang **{win} Koin** (10x lipat)!"
+        else:
+            win = bet * 5
+            msg += f"🎉 **SUPER WIN!** Kamu menang **{win} Koin** (5x lipat)!"
+    elif slots[0] == slots[1] or slots[1] == slots[2] or slots[0] == slots[2]:
+        win = int(bet * 1.5)
+        msg += f"👍 **MINI WIN!** Kamu menang **{win} Koin** (1.5x lipat)!"
+    else:
+        msg += f"😢 Zonk! Uang taruhan **{bet} Koin** hangus dimakan mesin."
+        
+    stat['coins'] += win
+    update_discord_stat(uid, interaction.user.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+    
+    await interaction.followup.send(msg)
+
+
 client.run(DISCORD_API_KEY)
