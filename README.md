@@ -6,7 +6,6 @@ Way 2 Eternal Bot adalah sekumpulan Discord bot berskala *Enterprise/Cloud-Ready
 
 ### 1. 🤖 Kecerdasan Buatan (Gemini AI 1.5 Pro)
 - **Chat Pintar**: Ngobrol langsung dengan AI menggunakan command `!ai <pesan>` atau `w2e <pesan>`.
-- **Auto-Moderator AI**: Memonitor ujaran kebencian/NSFW secara otomatis dan menghapus pesan pelanggar.
 - **Voice Listener (`!w2elisten`)**: Bergabung ke VC, merekam obrolan, mengubahnya menjadi teks, dan membalas dengan respon AI yang santai!
 
 ### 2. 💰 Market 3.0 & Ekonomi Sultan

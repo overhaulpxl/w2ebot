@@ -891,17 +891,7 @@ async def on_message(message):
     if message.author == client.user:
         return
 
-    # AI Auto Moderator (Server only)
-    if not isinstance(message.channel, discord.DMChannel) and not message.content.startswith('!') and not message.content.startswith('w2e'):
-        if len(message.content) > 10:
-            is_toxic = await check_toxicity(message.content)
-            if is_toxic:
-                try:
-                    await message.delete()
-                    await message.channel.send(f"⚠️ Peringatan: Pesan dari {message.author.mention} dihapus oleh Auto-Mod AI karena terdeteksi toxic/NSFW.")
-                except Exception as e:
-                    logging.error(f"Failed to delete toxic message: {e}")
-                return
+
 
     # ── Update Quest Progress ────────────────────────────────────────────────
     update_quest_progress(str(message.author.id), 'send_msg', 1)
