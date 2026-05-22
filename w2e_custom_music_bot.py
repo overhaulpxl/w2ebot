@@ -422,6 +422,48 @@ async def start_web_server():
     logging.info("Premium Web API started on port 8082")
 # --- End Web Server API ---
 
+@bot.group(invoke_without_command=True)
+@commands.has_permissions(administrator=True)
+async def whitelist(ctx):
+    await ctx.send("Gunakan `!whitelist add @user`, `!whitelist remove @user`, atau `!whitelist list`")
+
+@whitelist.command(name="add")
+@commands.has_permissions(administrator=True)
+async def whitelist_add_cmd(ctx, member: discord.Member):
+    uid = str(member.id)
+    users = load_json(WHITELIST_FILE, [])
+    if uid not in users:
+        users.append(uid)
+        save_json(WHITELIST_FILE, users)
+        await ctx.send(f"✅ {member.mention} telah ditambahkan ke whitelist Premium Music!")
+    else:
+        await ctx.send(f"⚠️ {member.display_name} sudah ada di whitelist.")
+
+@whitelist.command(name="remove")
+@commands.has_permissions(administrator=True)
+async def whitelist_remove_cmd(ctx, member: discord.Member):
+    uid = str(member.id)
+    users = load_json(WHITELIST_FILE, [])
+    if uid in users:
+        users.remove(uid)
+        save_json(WHITELIST_FILE, users)
+        await ctx.send(f"❌ {member.mention} telah dihapus dari whitelist.")
+    else:
+        await ctx.send(f"⚠️ {member.display_name} tidak ada di whitelist.")
+
+@whitelist.command(name="list")
+@commands.has_permissions(administrator=True)
+async def whitelist_list_cmd(ctx):
+    users = load_json(WHITELIST_FILE, [])
+    if not users:
+        await ctx.send("Daftar whitelist masih kosong.")
+        return
+    
+    msg = "**Daftar Member Premium:**\n"
+    for uid in users:
+        msg += f"- <@{uid}>\n"
+    await ctx.send(msg)
+
 @bot.command(aliases=['p'])
 @commands.check(check_whitelist)
 async def play(ctx, *, query: str):
