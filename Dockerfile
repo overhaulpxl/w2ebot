@@ -1,7 +1,7 @@
 FROM python:3.10-slim
 
-# Install system dependencies (FFmpeg is required for music bots)
-RUN apt-get update && apt-get install -y ffmpeg libffi-dev libnacl-dev python3-dev dos2unix && rm -rf /var/lib/apt/lists/*
+# Install system dependencies (FFmpeg is required for music bots, nodejs for yt-dlp)
+RUN apt-get update && apt-get install -y ffmpeg libffi-dev libnacl-dev python3-dev dos2unix nodejs && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 

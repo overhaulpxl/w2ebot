@@ -8,3 +8,4 @@ Pillow
 spotipy
 PyNaCl
 python-dotenv
+davey
