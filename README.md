@@ -69,11 +69,51 @@ pip install -r requirements.txt
 *Catatan: FFmpeg wajib ter-install di sistem OS (Linux/Windows) untuk memutar musik.*
 
 ## 🚀 Infrastruktur Cloud-Ready (Deployment)
-Bot ini siap di-host 24/7 di layanan Cloud (VPS, Railway, Render, AWS) menggunakan arsitektur modern:
-- **Dockerfile**: Tersedia file Docker yang otomatis mengonfigurasi Python 3.10 dan FFmpeg.
-- **Docker Compose**: Menjalankan *cluster* bot dalam satu perintah `docker-compose up -d`.
-- **Startup Script (`start.sh`)**: Menjalankan Bot RPG dan Bot Musik paralel di *background*.
-- **CI/CD Pipeline**: Dilengkapi GitHub Actions (`deploy.yml`) untuk mem-*build* dan *Push Image* secara otomatis setiap ada pembaruan kode.
+Bot ini siap di-host 24/7 di layanan Cloud (VPS, Railway, Render, AWS) menggunakan arsitektur modern dengan Docker.
+
+### 🐳 Tutorial Deploy Otomatis di VPS (Ubuntu)
+
+Langkah-langkah berikut akan membimbingmu menjalankan bot ini 24/7 di VPS Ubuntu secara otomatis.
+
+**1. Install Docker & Docker Compose di Ubuntu**
+Buka terminal VPS kamu dan jalankan perintah ini:
+```bash
+sudo apt update && sudo apt upgrade -y
+sudo apt install docker.io docker-compose -y
+sudo systemctl enable docker
+sudo systemctl start docker
+```
+
+**2. Clone Repository Bot & Masuk ke Folder**
+```bash
+git clone <URL_GITHUB_KAMU> w2ebot
+cd w2ebot
+```
+
+**3. Konfigurasi Bot**
+Buat file `.env` untuk menyimpan token rahasia:
+```bash
+nano .env
+```
+*(Isi dengan `DISCORD_TOKEN`, `GEMINI_API_KEY`, dsb. Simpan dengan `Ctrl+X`, tekan `Y`, lalu `Enter`)*
+
+Pancing file database SQLite agar tidak menjadi error folder saat di-*mount* oleh Docker:
+```bash
+touch w2ebot.db
+```
+
+**4. Jalankan Bot (Auto-Restart 24/7)**
+Jalankan bot di *background*. Konfigurasi di dalam `docker-compose.yml` akan otomatis mengatur bot agar selalu *restart* (unless-stopped) jika VPS mati atau bot *crash*.
+```bash
+sudo docker-compose up -d --build
+```
+
+**✅ Command Docker Berguna Lainnya:**
+- **Melihat aktivitas/log live:** `sudo docker logs -f w2ebot-cluster`
+- **Mematikan bot:** `sudo docker-compose down`
+- **Restart bot manual:** `sudo docker-compose restart`
+
+---
 
 **Database Migration Note:** 
-Untuk migrasi dari *legacy json* (lama) ke SQLite baru, jalankan `python migrate_db.py` sekali saja.
+Untuk migrasi dari *legacy json* (lama) ke SQLite baru, jalankan `python migrate_db.py` sekali saja sebelum menggunakan Docker, atau jalankan di dalam container.

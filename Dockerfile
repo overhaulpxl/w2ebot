@@ -1,7 +1,7 @@
 FROM python:3.10-slim
 
 # Install system dependencies (FFmpeg is required for music bots)
-RUN apt-get update && apt-get install -y ffmpeg libffi-dev libnacl-dev python3-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y ffmpeg libffi-dev libnacl-dev python3-dev dos2unix && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -14,7 +14,7 @@ RUN pip install sqlitedict yt-dlp aiohttp spotipy bs4 Pillow
 COPY . .
 
 # Set up runner script
-RUN chmod +x start.sh
+RUN dos2unix start.sh && chmod +x start.sh
 
 # Expose Web API ports
 EXPOSE 8080
