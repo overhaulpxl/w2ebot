@@ -902,19 +902,6 @@ async def stop(ctx):
         await vc.disconnect()
         await ctx.send("⏹️ Stopped playback and disconnected.")
 
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def whitelist(ctx, member: discord.Member):
-    users = load_json(WHITELIST_FILE, [])
-    uid = str(member.id)
-    if uid not in users:
-        users.append(uid)
-        save_json(WHITELIST_FILE, users)
-        await ctx.send(f"✅ {member.display_name} added to Premium Whitelist.")
-    else:
-        users.remove(uid)
-        save_json(WHITELIST_FILE, users)
-        await ctx.send(f"❌ {member.display_name} removed from Premium Whitelist.")
 
 @bot.event
 async def on_ready():
