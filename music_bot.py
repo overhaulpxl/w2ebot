@@ -19,7 +19,12 @@ import sqlite3
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
 # NOTE: Use a different API key if you want to run this alongside your main bot
-DISCORD_API_KEY = 'YOUR_MUSIC_BOT_TOKEN_HERE' 
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+DISCORD_API_KEY = os.getenv('MUSIC_BOT_TOKEN', 'YOUR_MUSIC_BOT_TOKEN_HERE') 
 SPOTIPY_CLIENT_ID = 'your_spotify_client_id'  # Replace with your actual Client ID
 SPOTIPY_CLIENT_SECRET = 'your_spotify_client_secret'  # Replace with your actual Client Secret
 

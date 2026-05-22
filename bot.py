@@ -26,8 +26,13 @@ DB_PATH = r"C:\Users\blur\Downloads\ABDM\Compressed\w2e-next\my-app\prisma\dev.d
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
-DISCORD_API_KEY = 'MMM'
-GEMINI_API_KEY = 'MMM'
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+DISCORD_API_KEY = os.getenv('DISCORD_TOKEN', 'MMM')
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', 'MMM')
 
 genai.configure(api_key=GEMINI_API_KEY)
 

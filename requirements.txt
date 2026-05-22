@@ -7,3 +7,4 @@ gTTS
 Pillow
 spotipy
 PyNaCl
+python-dotenv
