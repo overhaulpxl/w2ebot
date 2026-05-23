@@ -1019,7 +1019,7 @@ async def on_message(message):
         write_to_memory(f'User: {message.content}\nBot: {response}')
         return
 
-    if message.content.startswith('w2e ') or message.content.startswith('!ai '):
+    if message.content.startswith('w2e ') or message.content.startswith('w2e ai '):
         prefix = 'w2e ' if message.content.startswith('w2e ') else '!ai '
         query = message.content[len(prefix):].strip()
         if not query:
@@ -1084,11 +1084,11 @@ async def on_message(message):
             "14. `!w2eping`: Check bot latency.\n"
         )
 
-    if message.content.startswith('!w2eping'):
+    if message.content.startswith('w2e ping'):
         latency = round(client.latency * 1000)
         await message.channel.send(f"🏓 Pong! Latency: **{latency}ms**")
 
-    if message.content.startswith('!find '):
+    if message.content.startswith('w2e find '):
         if not message.mentions:
             await message.channel.send("Silakan mention user yang ingin dicari: `!find @user`")
             return
@@ -1105,7 +1105,7 @@ async def on_message(message):
         else:
             await message.channel.send(f"{target.display_name} tidak sedang berada di voice channel mana pun.")
 
-    if message.content.startswith('!checkbots'):
+    if message.content.startswith('w2e checkbots'):
         active_bots = []
         idle_bots = []
         for member in message.guild.members:
@@ -1130,7 +1130,7 @@ async def on_message(message):
             
         await message.channel.send(res)
 
-    if message.content.startswith('!w2edaily'):
+    if message.content.startswith('w2e daily'):
         uid = str(message.author.id)
         stat = get_discord_stat(uid)
         today = datetime.now().strftime('%Y-%m-%d')
@@ -1151,7 +1151,7 @@ async def on_message(message):
         update_discord_stat(uid, message.author.display_name, stat['coins'], stat['xp'], stat['level'], today)
         await message.channel.send(f"🎉 **{message.author.display_name}** mendapatkan **{reward} Koin** dari Daily!{multiplier_str} (Total koin: {stat['coins']})")
 
-    if message.content.startswith('!w2egacha'):
+    if message.content.startswith('w2e gacha'):
         uid = str(message.author.id)
         stat = get_discord_stat(uid)
         if stat['coins'] < 200:
@@ -1169,7 +1169,7 @@ async def on_message(message):
         await message.channel.send(f"🎰 **GACHA RESULT** 🎰\nSelamat {message.author.mention}, kamu mendapatkan gelar: **{won_title}**! (-200 Koin)")
         await check_level_up(message.channel, message.author, 50)
 
-    if message.content.startswith('!market') or message.content.startswith('!crypto'):
+    if message.content.startswith('w2e market') or message.content.startswith('w2e crypto'):
         market = load_json(MARKET_FILE)
         if not market or 'coins' not in market:
             await message.channel.send("❌ Pasar belum siap. Coba lagi nanti.")
@@ -1205,7 +1205,7 @@ async def on_message(message):
         embed.set_footer(text=f"Terakhir update: {last_upd} UTC")
         await message.channel.send(embed=embed)
 
-    if message.content.startswith('!buy '):
+    if message.content.startswith('w2e buy '):
         parts = message.content.split()
         if len(parts) < 3:
             await message.channel.send("Format: `!buy <koin> <jumlah>` — contoh: `!buy RBUX 5`")
@@ -1261,7 +1261,7 @@ async def on_message(message):
         
         await message.channel.send(f"✅ Sukses membeli **{amount} {symbol}** seharga **{total_cost} Koin**!\nSisa Koin RPG kamu: {stat['coins']}.")
 
-    if message.content.startswith('!sell '):
+    if message.content.startswith('w2e sell '):
         parts = message.content.split()
         if len(parts) < 3:
             await message.channel.send("Format: `!sell <koin> <jumlah>` — contoh: `!sell RBUX 5`")
@@ -1334,7 +1334,7 @@ async def on_message(message):
         
         await message.channel.send(f"✅ Sukses menjual **{amount} {symbol}**!\nValuasi: {total_revenue} | Pajak (2%): -{tax}\n💰 Diterima Bersih: **{net_revenue} Koin**\n📊 Status Trade: {pnl_str} Koin")
 
-    if message.content.startswith('!kas') or message.content.startswith('!treasury'):
+    if message.content.startswith('w2e kas') or message.content.startswith('w2e treasury'):
         if not message.author.guild_permissions.administrator:
             await message.channel.send("❌ Hati-hati! Brankas Kas hanya bisa dibuka oleh Admin/Sultan server ini.")
             return
@@ -1342,7 +1342,7 @@ async def on_message(message):
         balance = treasury.get('balance', 0) if treasury else 0
         await message.channel.send(f"🏦 **Brankas Komunitas (W2E Treasury)**\nUang pajak yang terkumpul: **{balance} Koin RPG**\n*(Uang ini akan digunakan untuk membayar hadiah Boss Raid!)*")
 
-    if message.content.startswith('!tebak '):
+    if message.content.startswith('w2e tebak '):
         parts = message.content.split()
         if len(parts) < 4:
             await message.channel.send("Format: `!tebak <KOIN> <UP/DOWN> <TARUHAN>`\nContoh: `!tebak LUNA UP 500`")
@@ -1394,7 +1394,7 @@ async def on_message(message):
         
         await message.channel.send(f"🎰 **TARUHAN DITERIMA!**\n{message.author.mention} bertaruh **{bet} Koin** bahwa {symbol} akan **{direction}** dari harga {current_price}.\n*Tunggu maksimal 10 menit untuk hasilnya!*")
 
-    if message.content.startswith('!portfolio'):
+    if message.content.startswith('w2e portfolio'):
         uid = str(message.author.id)
         portfolio = load_json(PORTFOLIO_FILE)
         market = load_json(MARKET_FILE)
@@ -1440,7 +1440,7 @@ async def on_message(message):
         embed.description = f"**Total Modal:** {int(total_cost)} Koin\n**Total Valuasi:** {int(total_value)} Koin\n**Net PnL:** {t_pnl_sign}{int(total_pnl)} ({t_pnl_sign}{total_pnl_pct:.1f}%)"
         await message.channel.send(embed=embed)
 
-    if message.content.startswith('!buyrig'):
+    if message.content.startswith('w2e buyrig'):
         uid = str(message.author.id)
         stat = get_discord_stat(uid)
         cost = 10000000 # 10 Juta
@@ -1459,7 +1459,7 @@ async def on_message(message):
         
         await message.channel.send(f"⛏️💎 **PEMBELIAN SUKSES!**\n{message.author.mention} baru saja membeli 1 Mesin Tambang Sultan seharga 10 Juta Koin!\nMesin ini akan menambang ETHR setiap 1 jam otomatis. Cek dengan `!miner`.")
 
-    if message.content.startswith('!miner'):
+    if message.content.startswith('w2e miner'):
         uid = str(message.author.id)
         rigs = load_json(RIGS_FILE)
         count = rigs.get(uid, 0)
@@ -1470,7 +1470,7 @@ async def on_message(message):
             
         await message.channel.send(f"⛏️ {message.author.mention}, kamu memiliki **{count} Mesin Tambang Sultan**.\nMesin-mesin ini sedang bekerja mencetak uang untukmu setiap jam!")
 
-    if message.content.startswith('!w2eslot'):
+    if message.content.startswith('w2e slot'):
         uid = str(message.author.id)
         stat = get_discord_stat(uid)
         
@@ -1572,7 +1572,7 @@ async def on_message(message):
         ))
 
     # ── Coinflip: !w2ecf heads/tails [bet] ───────────────────────────────────
-    if message.content.startswith('!w2ecf'):
+    if message.content.startswith('w2e cf'):
         uid = str(message.author.id)
         stat = get_discord_stat(uid)
         parts = message.content.split()
@@ -1629,7 +1629,7 @@ async def on_message(message):
         ))
 
     # ── Lootbox: !w2ebox [common/rare/epic] ──────────────────────────────────
-    if message.content.startswith('!w2ebox'):
+    if message.content.startswith('w2e box'):
         uid = str(message.author.id)
         stat = get_discord_stat(uid)
         parts = message.content.split()
@@ -1677,7 +1677,7 @@ async def on_message(message):
         ))
 
     # ── Pray: !w2epray @user ─────────────────────────────────────────────────
-    if message.content.startswith('!w2epray'):
+    if message.content.startswith('w2e pray'):
         if not message.mentions:
             await message.channel.send("Mention seseorang dulu! `!w2epray @user`")
             return
@@ -1705,7 +1705,7 @@ async def on_message(message):
         await message.channel.send(random.choice(pray_msgs))
 
     # ── Curse: !w2ecurse @user ───────────────────────────────────────────────
-    if message.content.startswith('!w2ecurse'):
+    if message.content.startswith('w2e curse'):
         if not message.mentions:
             await message.channel.send("Mention seseorang dulu! `!w2ecurse @user`")
             return
@@ -1743,7 +1743,7 @@ async def on_message(message):
             await message.channel.send(random.choice(curse_msgs))
 
     # ── Admin Add Coin: !w2eaddcoin @user <amount> ───────────────────────────
-    if message.content.startswith('!w2eaddcoin'):
+    if message.content.startswith('w2e addcoin'):
         if not message.author.guild_permissions.administrator:
             await message.channel.send("❌ Kamu bukan admin, jangan ngide!")
             return
@@ -1768,7 +1768,7 @@ async def on_message(message):
         await message.channel.send(f"👑 **ADMIN MAGIC!** {message.author.mention} baru saja menambahkan **{amount} Koin** kepada {target.mention}! Cuan gratis dari pusat!")
 
     # ── Give: !w2egive @user <amount> ────────────────────────────────────────
-    if message.content.startswith('!w2egive'):
+    if message.content.startswith('w2e give'):
         if not message.mentions:
             await message.channel.send("Format: `!w2egive @user <jumlah>` — contoh: `!w2egive @teman 100`")
             return
@@ -1811,7 +1811,7 @@ async def on_message(message):
         )
 
     # ── Top Leaderboard: !w2etop ─────────────────────────────────────────────
-    if message.content.startswith('!w2etop'):
+    if message.content.startswith('w2e top'):
         # Sort users by coins using sqlite directly or just fetch all and sort
         try:
             conn = sqlite3.connect(DB_PATH)
@@ -1831,7 +1831,7 @@ async def on_message(message):
             await message.channel.send("Gagal mengambil data leaderboard.")
 
     # ── Weekly Bonus: !w2eweekly ─────────────────────────────────────────────
-    if message.content.startswith('!w2eweekly'):
+    if message.content.startswith('w2e weekly'):
         uid = str(message.author.id)
         stat = get_discord_stat(uid)
         weekly_data = load_json(WEEKLY_FILE)
@@ -1865,7 +1865,7 @@ async def on_message(message):
         await check_level_up(message.channel, message.author, 100)
 
     # ── Rob: !w2erob @user ───────────────────────────────────────────────────
-    if message.content.startswith('!w2erob'):
+    if message.content.startswith('w2e rob'):
         if not message.mentions:
             await message.channel.send("Format: `!w2erob @user`")
             return
@@ -1938,7 +1938,7 @@ async def on_message(message):
         update_discord_stat(uid_target, target.display_name, stat_target['coins'], stat_target['xp'], stat_target['level'], stat_target['lastDaily'])
 
     # ── Shop: !w2eshop / !w2ebuy ─────────────────────────────────────────────
-    if message.content.startswith('!w2eshop'):
+    if message.content.startswith('w2e shop'):
         is_booster = message.author.premium_since is not None
         booster_msg = "\n👑 **(Diskon Booster 50% Aktif!)**" if is_booster else ""
         res = f"🛒 **W2E SULTAN SHOP** 🛒{booster_msg}\n*Gunakan `!w2ebuy <item_id>` untuk membeli*\n\n"
@@ -1947,7 +1947,7 @@ async def on_message(message):
             res += f"**{i_data['name']}** (`{i_id}`) — 💰 {price}\n└ {i_data['desc']}\n\n"
         await message.channel.send(res)
 
-    if message.content.startswith('!w2ebuy'):
+    if message.content.startswith('w2e buy'):
         parts = message.content.split()
         if len(parts) < 2:
             await message.channel.send("Mau beli apa? Contoh: `!w2ebuy shield`")
@@ -1984,7 +1984,7 @@ async def on_message(message):
         await message.channel.send(f"🛍️ Berhasil membeli **{item['name']}**! Sisa Koin: {stat['coins']}")
 
     # ── Inventory & Transfer ───────────────────────────────────────────────
-    if message.content.startswith('!w2einventory'):
+    if message.content.startswith('w2e inventory'):
         uid = str(message.author.id)
         items_data = load_json(ITEMS_FILE).get(uid, {})
         
@@ -2001,7 +2001,7 @@ async def on_message(message):
                 res += f"🔸 **Custom Background**: Aktif\n"
         await message.channel.send(res)
 
-    if message.content.startswith('!w2etransfer'):
+    if message.content.startswith('w2e transfer'):
         parts = message.content.split()
         if len(parts) < 3 or not message.mentions:
             await message.channel.send("Format: `!w2etransfer @user <jumlah>`")
@@ -2035,7 +2035,7 @@ async def on_message(message):
         
         await message.channel.send(f"💸 **Transfer Sukses!**\n{message.author.display_name} mengirimkan **{amount} Koin** ke {target.display_name}.")
 
-    if message.content.startswith('!w2ework'):
+    if message.content.startswith('w2e work'):
         uid = str(message.author.id)
         if uid in work_cooldowns:
             delta = datetime.now() - work_cooldowns[uid]
@@ -2067,7 +2067,7 @@ async def on_message(message):
         booster_txt = " (Boost x1.5)" if message.author.premium_since else ""
         await message.channel.send(f"💼 {message.author.display_name} baru saja {job_name} dan mendapatkan **{reward} Koin**!{booster_txt}")
 
-    if message.content.startswith('!w2ecurse'):
+    if message.content.startswith('w2e curse'):
         parts = message.content.split()
         if len(parts) < 2 or not message.mentions:
             await message.channel.send("Format: `!w2ecurse @user`\nBiaya: 100 Koin. Jika target punya Shield, kutukan gagal.")
@@ -2117,7 +2117,7 @@ async def on_message(message):
         await message.channel.send(f"☠️ **KUTUKAN BERHASIL!**\n{target.mention} kena santet dari {message.author.display_name} dan {eff_msg} 👻")
 
     # ── W2E Casino ───────────────────────────────────────────────────────────
-    if message.content.startswith('!w2eslot'):
+    if message.content.startswith('w2e slot'):
         parts = message.content.split()
         if len(parts) < 2:
             await message.channel.send("Format: `!w2eslot <taruhan>`")
@@ -2160,7 +2160,7 @@ async def on_message(message):
         update_discord_stat(uid, message.author.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
         await message.channel.send(res_msg)
 
-    if message.content.startswith('!w2eflip'):
+    if message.content.startswith('w2e flip'):
         parts = message.content.split()
         if len(parts) < 3:
             await message.channel.send("Format: `!w2eflip <heads/tails> <taruhan>`")
@@ -2197,7 +2197,7 @@ async def on_message(message):
             
         update_discord_stat(uid, message.author.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
 
-    if message.content.startswith('!w2ecrash'):
+    if message.content.startswith('w2e crash'):
         parts = message.content.split()
         if len(parts) < 2:
             await message.channel.send("Format: `!w2ecrash <taruhan>`")
@@ -2269,7 +2269,7 @@ async def on_message(message):
             await msg.edit(embed=embed)
 
     # ── RPS PvP: !w2erps @user [bet] ─────────────────────────────────────────
-    if message.content.startswith('!w2erps'):
+    if message.content.startswith('w2e rps'):
         parts = message.content.split()
         if not message.mentions or len(parts) < 3:
             await message.channel.send("Format: `!w2erps @user <bet>`")
@@ -2371,7 +2371,7 @@ async def on_message(message):
         )
 
     # ── Daily Quests: !w2equest ──────────────────────────────────────────────
-    if message.content.startswith('!w2equest'):
+    if message.content.startswith('w2e quest'):
         uid = str(message.author.id)
         qdata = get_user_quests(uid)
         
@@ -2406,7 +2406,7 @@ async def on_message(message):
         await message.channel.send(res)
 
     # ── Family System ────────────────────────────────────────────────────────
-    if message.content.startswith('!w2emarry'):
+    if message.content.startswith('w2e marry'):
         if not message.mentions:
             await message.channel.send("Mau nikah sama siapa? Mention orangnya! `!w2emarry @user`")
             return
@@ -2459,7 +2459,7 @@ async def on_message(message):
         except asyncio.TimeoutError:
             await message.channel.send(f"⏱️ {target.display_name} kelamaan mikir. Lamaran dibatalkan.")
 
-    if message.content.startswith('!w2edivorce'):
+    if message.content.startswith('w2e divorce'):
         uid = str(message.author.id)
         fam_data = load_json(FAMILY_FILE)
         
@@ -2477,7 +2477,7 @@ async def on_message(message):
         pname = partner_user.display_name if partner_user else f"User {partner_id}"
         await message.channel.send(f"💔 **CERAI!** {message.author.display_name} resmi bercerai dengan {pname}.")
 
-    if message.content.startswith('!w2eadopt'):
+    if message.content.startswith('w2e adopt'):
         if not message.mentions:
             await message.channel.send("Format: `!w2eadopt @user`")
             return
@@ -2530,7 +2530,7 @@ async def on_message(message):
         except asyncio.TimeoutError:
             await message.channel.send("⏱️ Waktu habis. Adopsi batal.")
 
-    if message.content.startswith('!w2eleave'):
+    if message.content.startswith('w2e leave'):
         uid = str(message.author.id)
         fam_data = load_json(FAMILY_FILE)
         parent_id = fam_data.get(uid, {}).get('parent')
@@ -2548,7 +2548,7 @@ async def on_message(message):
         save_json(FAMILY_FILE, fam_data)
         await message.channel.send(f"🚪 **MABUR!** {message.author.mention} kabur dari rumah dan bukan anak siapa-siapa lagi.")
 
-    if message.content.startswith('!w2efamily'):
+    if message.content.startswith('w2e family'):
         target = message.mentions[0] if message.mentions else message.author
         if not PILLOW_AVAILABLE:
             await message.channel.send("🖼️ Modul pembuat gambar tidak tersedia. Info keluarga hanya via database (hubungi dev).")
@@ -2562,7 +2562,7 @@ async def on_message(message):
         else:
             await message.channel.send("❌ Terjadi kesalahan saat membuat foto keluarga.")
 
-    if message.content.startswith('!w2eimage'):
+    if message.content.startswith('w2e image'):
         if not message.author.premium_since:
             await message.channel.send("❌ Maaf, fitur AI Image Generation HANYA tersedia untuk **Server Booster**! 👑")
             return
@@ -2584,7 +2584,7 @@ async def on_message(message):
         await message.channel.send(embed=embed)
 
     # ── Community & Engagement ───────────────────────────────────────────────
-    if message.content.startswith('!w2epoll'):
+    if message.content.startswith('w2e poll'):
         parts = message.content[len('!w2epoll '):].strip().split('|')
         if len(parts) < 2:
             await message.channel.send("Format: `!w2epoll Pertanyaan | Opsi 1 | Opsi 2 | ...`")
@@ -2610,7 +2610,7 @@ async def on_message(message):
         for i in range(len(options)):
             await poll_msg.add_reaction(emojis[i])
 
-    if message.content.startswith('!w2egiveaway'):
+    if message.content.startswith('w2e giveaway'):
         parts = message.content.split()
         if len(parts) < 3:
             await message.channel.send("Format: `!w2egiveaway <waktu_menit> <hadiah>`")
@@ -2643,7 +2643,7 @@ async def on_message(message):
         winner = random.choice(users)
         await message.channel.send(f"🎊 Selamat {winner.mention}! Kamu memenangkan **{prize}** dari {message.author.mention}! 🎊")
 
-    if message.content.startswith('!w2equiz'):
+    if message.content.startswith('w2e quiz'):
         uid = str(message.author.id)
         stat = get_discord_stat(uid)
         
@@ -2692,7 +2692,7 @@ async def on_message(message):
         await message.channel.send(f"⏱️ Waktu habis! Jawaban yang benar adalah: **{a.upper()}**")
 
     # ── Fun & Hiburan ────────────────────────────────────────────────────────
-    if message.content.startswith('!w2eshipper'):
+    if message.content.startswith('w2e shipper'):
         if len(message.mentions) < 1:
             await message.channel.send("Format: `!w2eshipper @user1 [@user2]`")
             return
@@ -2725,7 +2725,7 @@ async def on_message(message):
         except Exception:
             await message.channel.send(f"**Kecocokan: {match_pct}%**\n(API Error: Gagal generate ramalan).")
 
-    if message.content.startswith('!w2eroast'):
+    if message.content.startswith('w2e roast'):
         if not message.mentions:
             await message.channel.send("Mau roast siapa? `!w2eroast @user`")
             return
@@ -2739,7 +2739,7 @@ async def on_message(message):
         except Exception:
             await message.channel.send("Tungku roasting sedang rusak (API Error).")
 
-    if message.content.startswith('!w2echat '):
+    if message.content.startswith('w2e chat '):
         chat_msg = message.content[len('!w2echat '):].strip()
         if not chat_msg:
             await message.channel.send("Mau ngomong apa? `!w2echat halo bot`")
@@ -2753,7 +2753,7 @@ async def on_message(message):
         except Exception:
             await message.channel.send("Lagi males mikir nih (API Error).")
 
-    if message.content.startswith('!w2erate'):
+    if message.content.startswith('w2e rate'):
         target = message.mentions[0] if message.mentions else message.author
         
         uid = str(target.id)
@@ -2778,7 +2778,7 @@ async def on_message(message):
         except Exception:
             await message.channel.send("Gagal merating profil (API Error).")
 
-    if message.content.startswith('!w2ebirthday set'):
+    if message.content.startswith('w2e birthday set'):
         parts = message.content.split()
         if len(parts) < 3:
             await message.channel.send("Format: `!w2ebirthday set DD-MM` (Contoh: `!w2ebirthday set 25-12`)")
@@ -2796,7 +2796,7 @@ async def on_message(message):
         except ValueError:
             await message.channel.send("❌ Format salah! Gunakan DD-MM (Tanggal-Bulan).")
 
-    if message.content.startswith('!w2evalo '):
+    if message.content.startswith('w2e valo '):
         target = message.content[len('!w2evalo '):].strip()
         if target:
             await message.channel.send(f"🔍 Sedang menerawang stats Valorant untuk **{target}**...")
@@ -2808,7 +2808,7 @@ async def on_message(message):
                 await message.channel.send("API error saat mencari stat Valorant.")
         return
 
-    if message.content.startswith('!w2elisten'):
+    if message.content.startswith('w2e listen'):
         if message.author.voice and message.author.voice.channel:
             vc = message.guild.voice_client
             if not vc:
@@ -2830,7 +2830,7 @@ async def on_message(message):
             await message.channel.send("Kamu harus berada di voice channel terlebih dahulu.")
         return
 
-    if message.content.startswith('!w2eremindme '):
+    if message.content.startswith('w2e remindme '):
         parts = message.content[len('!w2eremindme '):].strip().split(' ', 1)
         if len(parts) < 2:
             await message.channel.send("Format: `!w2eremindme <menit> <pesan>`")
@@ -2865,7 +2865,7 @@ async def on_message(message):
             await message.channel.send("Format menit harus berupa angka.")
         return
 
-    if message.content.startswith('!w2echeckmusic') or message.content.startswith('!w2echeckbots'):
+    if message.content.startswith('w2e checkmusic') or message.content.startswith('w2e checkbots'):
         if not message.guild:
             await message.channel.send("❌ Perintah ini hanya bisa digunakan di dalam server.")
             return
@@ -2888,7 +2888,7 @@ async def on_message(message):
             await message.channel.send("ℹ️ Tidak ada bot musik yang sedang aktif di Voice Channel saat ini.")
         return
 
-    if message.content.startswith('!profile'):
+    if message.content.startswith('w2e profile'):
         uid = str(message.author.id)
         stat = get_discord_stat(uid)
         
@@ -2909,7 +2909,7 @@ async def on_message(message):
         res += f"💰 **Koin:** {stat['coins']}\n\n"
         await message.channel.send(res)
 
-    if message.content.startswith('!w2ebg'):
+    if message.content.startswith('w2e bg'):
         if not message.author.premium_since:
             await message.channel.send("❌ Custom Background Profil cuma buat **Server Booster**! 👑")
             return
@@ -2932,7 +2932,7 @@ async def on_message(message):
         
         await message.channel.send("✅ Background profil berhasil diupdate! Cek dengan `!profile`")
 
-    if message.content.startswith('!setpersona '):
+    if message.content.startswith('w2e setpersona '):
         persona = message.content[len('!setpersona '):].strip()
         uid = str(message.author.id)
         personas = load_json(PERSONAS_FILE)
@@ -2953,7 +2953,7 @@ async def on_message(message):
         
         await message.channel.send(f"🎭 Berhasil! Gemini AI sekarang akan membalasmu dengan persona: **{persona}**\nCoba chat pakai `!ai Halo!`")
 
-    if message.content.startswith('!w2ebj '):
+    if message.content.startswith('w2e bj '):
         uid = str(message.author.id)
         stat = get_discord_stat(uid)
         
@@ -3054,7 +3054,7 @@ async def on_message(message):
         update_discord_stat(uid, message.author.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
         await message.channel.send(embed=embed)
 
-    if message.content.startswith('!attack'):
+    if message.content.startswith('w2e attack'):
         boss_data = load_json(BOSS_FILE)
         if not boss_data.get('active', False):
             await message.channel.send("❌ Tidak ada Boss yang sedang aktif saat ini.")
