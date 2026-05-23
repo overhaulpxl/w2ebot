@@ -10,5 +10,6 @@ services:
       - "8082:8082"
     volumes:
       - ./w2ebot.db:/app/w2ebot.db
+      - ./premium_users.json:/app/premium_users.json
     env_file:
       - .env

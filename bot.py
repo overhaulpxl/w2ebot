@@ -21,7 +21,7 @@ except ImportError:
     PILLOW_AVAILABLE = False
     logging.warning("Pillow not installed. Family tree images will use text fallback.")
 
-DB_PATH = r"C:\Users\blur\Downloads\ABDM\Compressed\w2e-next\my-app\prisma\dev.db"
+DB_PATH = "w2ebot.db"
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -94,6 +94,17 @@ import os
 def _init_db():
     conn = sqlite3.connect('w2ebot.db')
     conn.execute("CREATE TABLE IF NOT EXISTS json_store (filename TEXT PRIMARY KEY, content TEXT)")
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS DiscordStat (
+            id TEXT PRIMARY KEY,
+            displayName TEXT,
+            coins INTEGER DEFAULT 0,
+            xp INTEGER DEFAULT 0,
+            level INTEGER DEFAULT 1,
+            lastDaily TEXT,
+            updatedAt TEXT
+        )
+    ''')
     conn.commit()
     conn.close()
 
@@ -828,7 +839,7 @@ async def on_voice_state_update(member, before, after):
                 # Update DB XP (using existing get/update_discord_stat)
                 stat = get_discord_stat(uid)
                 new_xp = stat['xp'] + xp_gained
-                update_discord_stat(uid, member.display_name, stat['coins'], new_xp, stat['level'], stat['last_daily'])
+                update_discord_stat(uid, member.display_name, stat['coins'], new_xp, stat['level'], stat['lastDaily'])
                 
                 # Optional: Send DM or channel message for XP gained if you want, but it might be spammy.
                 logging.info(f"{member.display_name} earned {xp_gained} XP and {coins_gained} Coins from {minutes} mins in VC.")
