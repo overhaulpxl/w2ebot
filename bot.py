@@ -1019,8 +1019,8 @@ async def on_message(message):
         write_to_memory(f'User: {message.content}\nBot: {response}')
         return
 
-    if message.content.startswith('w2e ') or message.content.startswith('w2e ai '):
-        prefix = 'w2e ' if message.content.startswith('w2e ') else '!ai '
+    if message.content.startswith('w2e ai '):
+        prefix = 'w2e ai '
         query = message.content[len(prefix):].strip()
         if not query:
             await message.channel.send('Please provide a query.')
