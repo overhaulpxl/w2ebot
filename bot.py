@@ -3113,6 +3113,17 @@ async def slash_profile(interaction: discord.Interaction):
     users = load_json('users.json')
     achievements = users.get(uid, {}).get('achievements', [])
     
+    items_data = load_json(ITEMS_FILE).get(uid, {})
+    bg_url = items_data.get('bg_url')
+    
+    if PILLOW_AVAILABLE:
+        img_buf = await generate_profile_image(interaction.user, stat, bg_url)
+        if img_buf:
+            file = discord.File(fp=img_buf, filename="profile.png")
+            await interaction.followup.send(file=file)
+            return
+
+    # Fallback if Pillow fails or isn't available
     embed = discord.Embed(title=f"Profile: {interaction.user.display_name}", color=discord.Color.blue())
     embed.add_field(name="Level", value=str(stat['level']), inline=True)
     embed.add_field(name="XP", value=str(stat['xp']), inline=True)
