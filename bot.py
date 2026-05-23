@@ -189,7 +189,7 @@ async def check_level_up(channel, user, xp_gained):
 async def check_toxicity(text):
     prompt = f"Evaluasi pesan berikut. Jika mengandung ujaran kebencian parah, rasisme, atau NSFW ekstrim, balas HANYA dengan kata 'TOXIC'. Jika aman, balas 'SAFE'.\nPesan: {text}"
     try:
-        response = await asyncio.to_thread(model.generate_content, prompt)
+        response = await asyncio.to_thread(client.models.generate_content, model='gemini-2.5-flash', contents=prompt)
         return "TOXIC" in response.text.upper()
     except Exception:
         return False
@@ -907,7 +907,7 @@ async def finished_callback(sink, channel: discord.TextChannel, *args):
         try:
             uploaded_file = client.files.upload(file=file_path)
             prompt = "Ini adalah rekaman suara dari percakapan discord. Tuliskan transkripnya, lalu berikan balasan yang santai dan lucu berdasarkan ucapan tersebut."
-            response = await asyncio.to_thread(model.generate_content, [uploaded_file, prompt])
+            response = await asyncio.to_thread(client.models.generate_content, model='gemini-2.5-flash', contents=[uploaded_file, prompt])
             await channel.send(f"🎙️ **AI Merespons Suara <@{user_id}>:**\n{response.text}")
             uploaded_file.delete()
         except Exception as e:
@@ -2198,7 +2198,7 @@ async def on_message(message):
         await message.channel.send("🤔 **Mencari soal yang sulit...**")
         prompt = "Berikan SATU pertanyaan pengetahuan umum singkat dan jawabannya dalam satu kata. Format: Pertanyaan | Jawaban. Jangan ada teks tambahan."
         try:
-            response = await asyncio.to_thread(model.generate_content, prompt)
+            response = await asyncio.to_thread(client.models.generate_content, model='gemini-2.5-flash', contents=prompt)
             res_text = response.text.strip()
             if '|' not in res_text: raise ValueError
             q, a = res_text.split('|')
@@ -2258,7 +2258,7 @@ async def on_message(message):
         
         prompt = f"Buatkan ramalan cinta super singkat dan lucu (bisa sarkas atau romantis) untuk dua orang dengan tingkat kecocokan {match_pct}%. Gunakan bahasa gaul indo."
         try:
-            response = await asyncio.to_thread(model.generate_content, prompt)
+            response = await asyncio.to_thread(client.models.generate_content, model='gemini-2.5-flash', contents=prompt)
             desc = response.text.strip()
             
             embed = discord.Embed(title="💖 W2E Shipper 💖", description=f"**{user1.display_name}** x **{user2.display_name}**\n\n**Kecocokan: {match_pct}%**\n\n{desc}", color=discord.Color.brand_red())
@@ -2275,7 +2275,7 @@ async def on_message(message):
         await message.channel.send(f"🔥 Sedang menyiapkan panggangan untuk **{target.display_name}**...")
         prompt = f"Roast / hina dengan candaan (tapi jangan kelewatan batas SARA) orang yang bernama {target.display_name}. Gunakan bahasa gaul tongkrongan indo yang pedas tapi lucu."
         try:
-            response = await asyncio.to_thread(model.generate_content, prompt)
+            response = await asyncio.to_thread(client.models.generate_content, model='gemini-2.5-flash', contents=prompt)
             await message.channel.send(f"{target.mention} 🔥\n{response.text.strip()}")
         except Exception:
             await message.channel.send("Tungku roasting sedang rusak (API Error).")
@@ -2289,7 +2289,7 @@ async def on_message(message):
         await message.channel.typing()
         prompt = f"Anda adalah bot Discord bernama W2E. Kepribadian Anda adalah teman tongkrongan yang asik, sedikit sarkas, suka bercanda, tapi selalu membantu. Gunakan bahasa gaul Indonesia (lo, gue, bro, cuy). Jawab pesan berikut dengan singkat dan padat:\nUser ({message.author.display_name}) bilang: {chat_msg}"
         try:
-            response = await asyncio.to_thread(model.generate_content, prompt)
+            response = await asyncio.to_thread(client.models.generate_content, model='gemini-2.5-flash', contents=prompt)
             await message.reply(response.text.strip())
         except Exception:
             await message.channel.send("Lagi males mikir nih (API Error).")
@@ -2310,7 +2310,7 @@ async def on_message(message):
         prompt = f"Berikan rating (1-10) dan roasting/pujian yang lucu ala komentator profesional (bahasa gaul indo) untuk profil Discord ini:\n{profile_data}\n\nBuat singkat aja, 2-3 kalimat max."
         
         try:
-            response = await asyncio.to_thread(model.generate_content, prompt)
+            response = await asyncio.to_thread(client.models.generate_content, model='gemini-2.5-flash', contents=prompt)
             
             embed = discord.Embed(title=f"📈 AI Profile Rating: {target.display_name}", description=response.text.strip(), color=discord.Color.teal())
             if target.display_avatar:
@@ -2343,7 +2343,7 @@ async def on_message(message):
             await message.channel.send(f"🔍 Sedang menerawang stats Valorant untuk **{target}**...")
             prompt = f"Buatlah statistik Valorant palsu dan lucu untuk pemain bernama '{target}'. Cantumkan Rank (yang aneh/rendah), Win Rate (jelek), dan Senjata Andalan yang tidak masuk akal. Buat singkat seperti report dalam bahasa gaul."
             try:
-                response = await asyncio.to_thread(model.generate_content, prompt)
+                response = await asyncio.to_thread(client.models.generate_content, model='gemini-2.5-flash', contents=prompt)
                 await message.channel.send(response.text)
             except Exception:
                 await message.channel.send("API error saat mencari stat Valorant.")
