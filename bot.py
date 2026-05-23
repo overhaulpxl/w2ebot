@@ -1,6 +1,6 @@
 import discord
 import os
-import google.generativeai as genai
+from google import genai
 import asyncio
 from discord import FFmpegPCMAudio
 import logging
@@ -34,20 +34,8 @@ load_dotenv()
 DISCORD_API_KEY = os.getenv('DISCORD_TOKEN', 'MMM')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', 'MMM')
 
-genai.configure(api_key=GEMINI_API_KEY)
-
-generation_config = {
-    "temperature": 1,
-    "top_p": 0.95,
-    "top_k": 40,
-    "max_output_tokens": 8192,
-    "response_mime_type": "text/plain",
-}
-
-model = genai.GenerativeModel(
-    model_name="gemini-2.5-flash",
-    generation_config=generation_config,
-)
+# genai Client
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -917,7 +905,7 @@ async def finished_callback(sink, channel: discord.TextChannel, *args):
             f.write(audio.file.read())
 
         try:
-            uploaded_file = genai.upload_file(path=file_path)
+            uploaded_file = client.files.upload(file=file_path)
             prompt = "Ini adalah rekaman suara dari percakapan discord. Tuliskan transkripnya, lalu berikan balasan yang santai dan lucu berdasarkan ucapan tersebut."
             response = await asyncio.to_thread(model.generate_content, [uploaded_file, prompt])
             await channel.send(f"🎙️ **AI Merespons Suara <@{user_id}>:**\n{response.text}")
