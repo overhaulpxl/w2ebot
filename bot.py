@@ -3529,3 +3529,798 @@ async def slash_radar(interaction: discord.Interaction):
 
 
 client.run(DISCORD_API_KEY)
+
+@tree.command(name="ai", description="Ngobrol langsung dengan Gemini AI")
+async def slash_ai(interaction: discord.Interaction, pertanyaan: str):
+    await interaction.response.defer()
+    response = get_gemini_response(pertanyaan, interaction.user.id)
+    # Handle long messages since discord limits embeds to 4096 and messages to 2000
+    if len(response) > 2000:
+        for i in range(0, len(response), 2000):
+            await interaction.followup.send(response[i:i+2000])
+    else:
+        await interaction.followup.send(response)
+    write_to_memory(f'User: {pertanyaan}\nBot: {response}')
+
+@tree.command(name="ping", description="Cek latency bot")
+async def slash_ping(interaction: discord.Interaction):
+    latency = round(client.latency * 1000)
+    await interaction.response.send_message(f'🏓 Pong! Latency: {latency}ms')
+
+@tree.command(name="setpersona", description="Ubah sifat/persona AI untuk chat selanjutnya")
+async def slash_setpersona(interaction: discord.Interaction, persona: str = None):
+    await interaction.response.defer()
+    uid = str(interaction.user.id)
+    if not persona:
+        if uid in ai_personas:
+            del ai_personas[uid]
+        await interaction.followup.send("✅ Persona AI kamu telah direset ke default.")
+        return
+    ai_personas[uid] = persona
+    await interaction.followup.send(f"✅ Persona AI kamu telah diubah menjadi:\n> *{persona}*")
+
+@tree.command(name="chat", description="Chat santai tanpa prefix AI")
+async def slash_chat(interaction: discord.Interaction, message: str):
+    await interaction.response.defer()
+    response = get_gemini_response(message, interaction.user.id)
+    await interaction.followup.send(response)
+
+@tree.command(name="roast", description="Minta AI meroasting kamu atau orang lain")
+async def slash_roast(interaction: discord.Interaction, target: discord.Member = None):
+    await interaction.response.defer()
+    t = target.display_name if target else interaction.user.display_name
+    query = f"Tolong roast (hina dengan lucu dan savage tapi jangan terlalu kasar) orang yang bernama {t}."
+    response = get_gemini_response(query, interaction.user.id)
+    await interaction.followup.send(response)
+
+@tree.command(name="rate", description="AI akan memberikan rating (1-10) untuk orang ini")
+async def slash_rate(interaction: discord.Interaction, target: discord.Member = None):
+    await interaction.response.defer()
+    t = target.display_name if target else interaction.user.display_name
+    query = f"Berikan rating 1 sampai 10 seberapa keren/cantik/ganteng orang yang bernama {t}, lalu berikan alasan kocak/absurd kenapa kamu memberi nilai tersebut."
+    response = get_gemini_response(query, interaction.user.id)
+    await interaction.followup.send(response)
+
+@tree.command(name="work", description="Bekerja untuk mendapatkan koin")
+async def slash_work(interaction: discord.Interaction):
+    await interaction.response.defer()
+    uid = str(interaction.user.id)
+    stat = get_discord_stat(uid)
+    users = load_json('users.json')
+    now = datetime.now()
+    last_work = users.get(uid, {}).get('lastWork')
+    
+    if last_work:
+        last = datetime.fromisoformat(last_work)
+        delta = (now - last).total_seconds()
+        if delta < 3600:
+            await interaction.followup.send(f"⏳ Bosmu menyuruhmu istirahat. Kerja lagi dalam {int((3600-delta)//60)} menit.")
+            return
+
+    reward = random.randint(50, 200)
+    users.setdefault(uid, {})['lastWork'] = now.isoformat()
+    save_json('users.json', users)
+    
+    update_discord_stat(uid, interaction.user.display_name, stat['coins'] + reward, stat['xp'] + 10, stat['level'], stat['lastDaily'])
+    
+    jobs = ["nguli bangunan", "jaga lilin babi ngepet", "jadi admin slot", "joki ML", "jualan seblak", "nambal ban", "driver gojek", "ngetik captcha"]
+    job = random.choice(jobs)
+    await interaction.followup.send(f"💼 Kamu {job} dan mendapatkan **{reward} Koin RPG**! (+10 XP)")
+
+@tree.command(name="rob", description="Mencuri koin dari member lain (Hati-hati ketahuan!)")
+async def slash_rob(interaction: discord.Interaction, target: discord.Member):
+    await interaction.response.defer()
+    uid = str(interaction.user.id)
+    tid = str(target.id)
+    
+    if uid == tid:
+        await interaction.followup.send("❌ Masa merampok diri sendiri?")
+        return
+        
+    stat_robber = get_discord_stat(uid)
+    stat_target = get_discord_stat(tid)
+    
+    if stat_target['coins'] < 100:
+        await interaction.followup.send(f"❌ {target.display_name} terlalu miskin untuk dirampok.")
+        return
+        
+    users = load_json('users.json')
+    now = datetime.now()
+    last_rob = users.get(uid, {}).get('lastRob')
+    
+    if last_rob:
+        last = datetime.fromisoformat(last_rob)
+        delta = (now - last).total_seconds()
+        if delta < 7200: # 2 hours
+            await interaction.followup.send(f"⏳ Polisi masih patroli! Tunggu {int((7200-delta)//60)} menit lagi sebelum merampok.")
+            return
+
+    users.setdefault(uid, {})['lastRob'] = now.isoformat()
+    save_json('users.json', users)
+
+    success = random.choice([True, False, False]) # 33% win rate
+    if success:
+        stolen = random.randint(10, int(stat_target['coins'] * 0.2)) # Max 20%
+        update_discord_stat(uid, interaction.user.display_name, stat_robber['coins'] + stolen, stat_robber['xp'], stat_robber['level'], stat_robber['lastDaily'])
+        update_discord_stat(tid, target.display_name, stat_target['coins'] - stolen, stat_target['xp'], stat_target['level'], stat_target['lastDaily'])
+        await interaction.followup.send(f"🥷 **BERHASIL!** Kamu merampok **{stolen} Koin** dari {target.mention}!")
+    else:
+        fine = random.randint(10, 100)
+        actual_fine = min(fine, stat_robber['coins'])
+        update_discord_stat(uid, interaction.user.display_name, stat_robber['coins'] - actual_fine, stat_robber['xp'], stat_robber['level'], stat_robber['lastDaily'])
+        await interaction.followup.send(f"🚓 **Terciduk Polisi!** Kamu gagal merampok {target.display_name} dan didenda **{actual_fine} Koin**!")
+
+@tree.command(name="top", description="Lihat peringkat member terkaya dan tertinggi")
+async def slash_top(interaction: discord.Interaction):
+    await interaction.response.defer()
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT user_id, display_name, coins, level FROM discord_stat ORDER BY level DESC, coins DESC LIMIT 10")
+    rows = c.fetchall()
+    conn.close()
+    
+    embed = discord.Embed(title="🏆 W2E Leaderboard 🏆", color=discord.Color.gold())
+    for i, row in enumerate(rows):
+        embed.add_field(name=f"#{i+1} {row[1]}", value=f"Level: {row[3]} | Koin: {row[2]}", inline=False)
+    await interaction.followup.send(embed=embed)
+
+@tree.command(name="weekly", description="Ambil jatah koin mingguan")
+async def slash_weekly(interaction: discord.Interaction):
+    await interaction.response.defer()
+    uid = str(interaction.user.id)
+    stat = get_discord_stat(uid)
+    weekly_data = load_json('weekly.json')
+    
+    today = datetime.now()
+    last_weekly_str = weekly_data.get(uid)
+    
+    if last_weekly_str:
+        last_weekly = datetime.strptime(last_weekly_str, '%Y-%m-%d')
+        if (today - last_weekly).days < 7:
+            days_left = 7 - (today - last_weekly).days
+            await interaction.followup.send(f"⏳ Sabar ya! Kamu baru bisa ambil weekly lagi dalam {days_left} hari.")
+            return
+
+    reward = 5000
+    stat['coins'] += reward
+    weekly_data[uid] = today.strftime('%Y-%m-%d')
+    save_json('weekly.json', weekly_data)
+    update_discord_stat(uid, interaction.user.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+    
+    await interaction.followup.send(f"📅 **WEEKLY CLAIMED!**\nKamu mendapatkan **{reward} Koin RPG** mingguan!")
+
+@tree.command(name="transfer", description="Kirim koin ke member lain")
+async def slash_transfer(interaction: discord.Interaction, target: discord.Member, amount: int):
+    await interaction.response.defer()
+    uid = str(interaction.user.id)
+    tid = str(target.id)
+    
+    if amount <= 0:
+        await interaction.followup.send("❌ Jumlah koin harus lebih dari 0!")
+        return
+    if uid == tid:
+        await interaction.followup.send("❌ Kamu tidak bisa transfer ke diri sendiri!")
+        return
+        
+    stat_sender = get_discord_stat(uid)
+    if stat_sender['coins'] < amount:
+        await interaction.followup.send("❌ Koin kamu tidak cukup!")
+        return
+        
+    stat_target = get_discord_stat(tid)
+    stat_sender['coins'] -= amount
+    stat_target['coins'] += amount
+    
+    update_discord_stat(uid, interaction.user.display_name, stat_sender['coins'], stat_sender['xp'], stat_sender['level'], stat_sender['lastDaily'])
+    update_discord_stat(tid, target.display_name, stat_target['coins'], stat_target['xp'], stat_target['level'], stat_target['lastDaily'])
+    
+    await interaction.followup.send(f"💸 **Transfer Berhasil!**\nKamu telah mengirim **{amount} Koin** ke {target.mention}.")
+
+@tree.command(name="cf", description="Main Coinflip (Judi tebak koin)")
+async def slash_cf(interaction: discord.Interaction, tebakan: str, bet: int):
+    await interaction.response.defer()
+    uid = str(interaction.user.id)
+    tebakan = tebakan.lower()
+    if tebakan not in ['head', 'tail']:
+        await interaction.followup.send("❌ Pilihan hanya 'head' atau 'tail'.")
+        return
+    if bet < 10:
+        await interaction.followup.send("❌ Taruhan minimal 10 Koin.")
+        return
+        
+    stat = get_discord_stat(uid)
+    if stat['coins'] < bet:
+        await interaction.followup.send("❌ Koin kamu tidak cukup!")
+        return
+        
+    result = random.choice(['head', 'tail'])
+    if tebakan == result:
+        stat['coins'] += bet
+        msg = f"🪙 Koin dilempar dan hasilnya: **{result.upper()}**\n🎉 Tebakanmu benar! Kamu menang **{bet} Koin**."
+    else:
+        stat['coins'] -= bet
+        msg = f"🪙 Koin dilempar dan hasilnya: **{result.upper()}**\n💀 Tebakanmu salah! Kamu kalah **{bet} Koin**."
+        
+    update_discord_stat(uid, interaction.user.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+    await interaction.followup.send(msg)
+
+@tree.command(name="flip", description="Flip koin (Head/Tail)")
+async def slash_flip(interaction: discord.Interaction):
+    result = random.choice(['Head', 'Tail'])
+    await interaction.response.send_message(f"🪙 Koin mendarat pada: **{result}**")
+
+@tree.command(name="rps", description="Main Batu Gunting Kertas")
+async def slash_rps(interaction: discord.Interaction, pilihan: str, bet: int):
+    await interaction.response.defer()
+    pilihan = pilihan.lower()
+    valid = ['batu', 'gunting', 'kertas']
+    if pilihan not in valid:
+        await interaction.followup.send("❌ Pilihan hanya: batu, gunting, kertas.")
+        return
+        
+    if bet < 10:
+        await interaction.followup.send("❌ Taruhan minimal 10 Koin.")
+        return
+        
+    uid = str(interaction.user.id)
+    stat = get_discord_stat(uid)
+    if stat['coins'] < bet:
+        await interaction.followup.send("❌ Koin kamu tidak cukup!")
+        return
+        
+    bot_choice = random.choice(valid)
+    if pilihan == bot_choice:
+        msg = f"🤖 Bot memilih **{bot_choice.upper()}**.\nSERI! Koin dikembalikan."
+    elif (pilihan == 'batu' and bot_choice == 'gunting') or \
+         (pilihan == 'gunting' and bot_choice == 'kertas') or \
+         (pilihan == 'kertas' and bot_choice == 'batu'):
+        stat['coins'] += bet
+        msg = f"🤖 Bot memilih **{bot_choice.upper()}**.\n🎉 Kamu MENANG **{bet} Koin**!"
+    else:
+        stat['coins'] -= bet
+        msg = f"🤖 Bot memilih **{bot_choice.upper()}**.\n💀 Kamu KALAH **{bet} Koin**!"
+        
+    update_discord_stat(uid, interaction.user.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+    await interaction.followup.send(msg)
+
+@tree.command(name="gacha", description="Gacha Waifu/Item (Biaya 500 Koin)")
+async def slash_gacha(interaction: discord.Interaction):
+    await interaction.response.defer()
+    uid = str(interaction.user.id)
+    stat = get_discord_stat(uid)
+    cost = 500
+    if stat['coins'] < cost:
+        await interaction.followup.send(f"❌ Koin tidak cukup! Butuh {cost} Koin.")
+        return
+        
+    stat['coins'] -= cost
+    pool = ["Ampas (Zonk)", "Nasi Bungkus", "Panci Bolong", "Kunci Jawaban UN", "Waifu Wangi", "Pedang Excalibur", "Gundam Bekas", "Sertifikat Rumah"]
+    result = random.choice(pool)
+    
+    update_discord_stat(uid, interaction.user.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+    await interaction.followup.send(f"🎰 Kamu memutar Gacha seharga {cost} Koin...\n✨ Kamu mendapatkan: **{result}**!")
+
+@tree.command(name="tebak", description="Game tebak angka 1-10")
+async def slash_tebak(interaction: discord.Interaction, tebakan: int):
+    await interaction.response.defer()
+    jawaban = random.randint(1, 10)
+    if tebakan == jawaban:
+        uid = str(interaction.user.id)
+        stat = get_discord_stat(uid)
+        stat['coins'] += 100
+        update_discord_stat(uid, interaction.user.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+        await interaction.followup.send(f"🎯 BENAR! Angkanya adalah {jawaban}. Kamu dapat 100 Koin!")
+    else:
+        await interaction.followup.send(f"❌ SALAH! Angkanya adalah {jawaban}.")
+
+@tree.command(name="sell", description="Jual item dari inventory kamu")
+async def slash_sell(interaction: discord.Interaction, item_name: str):
+    await interaction.response.defer()
+    uid = str(interaction.user.id)
+    items_data = load_json('items.json')
+    user_inventory = items_data.get(uid, {}).get('inventory', {})
+    
+    # Simple search
+    item_key = next((k for k in user_inventory if k.lower() == item_name.lower()), None)
+    if not item_key or user_inventory[item_key] <= 0:
+        await interaction.followup.send(f"❌ Kamu tidak punya item **{item_name}** di tas.")
+        return
+        
+    shop_data = load_json('shop.json')
+    item_info = next((i for i in shop_data if i['id'] == item_key), None)
+    if not item_info:
+        await interaction.followup.send("❌ Item ini tidak bisa dijual.")
+        return
+        
+    sell_price = int(item_info['price'] * 0.5) # Sell for 50% price
+    user_inventory[item_key] -= 1
+    if user_inventory[item_key] == 0:
+        del user_inventory[item_key]
+        
+    items_data[uid]['inventory'] = user_inventory
+    save_json('items.json', items_data)
+    
+    stat = get_discord_stat(uid)
+    stat['coins'] += sell_price
+    update_discord_stat(uid, interaction.user.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+    
+    await interaction.followup.send(f"🛍️ Berhasil menjual **{item_info['name']}** seharga {sell_price} Koin!")
+
+@tree.command(name="crash", description="Main judi grafik Crash")
+async def slash_crash(interaction: discord.Interaction, bet: int):
+    await interaction.response.defer()
+    uid = str(interaction.user.id)
+    if bet < 10:
+        await interaction.followup.send("❌ Taruhan minimal 10 Koin.")
+        return
+        
+    stat = get_discord_stat(uid)
+    if stat['coins'] < bet:
+        await interaction.followup.send("❌ Koin kamu tidak cukup!")
+        return
+
+    # Crash logic (1.00x to 10.00x)
+    multiplier = 1.00
+    while random.random() > 0.15: # 85% chance to increase
+        multiplier += random.uniform(0.1, 0.5)
+        if multiplier > 10.0:
+            break
+            
+    multiplier = round(min(multiplier, 10.0), 2)
+    win_amount = int(bet * multiplier)
+    
+    if multiplier > 1.2:
+        stat['coins'] += (win_amount - bet)
+        msg = f"📈 Grafik Crash berhenti di **{multiplier}x**!\n🎉 Kamu MENANG dan saldo bertambah **{win_amount - bet} Koin**!"
+    else:
+        stat['coins'] -= bet
+        msg = f"📉 Grafik langsung CRASH di **{multiplier}x**!\n💀 Kamu KALAH dan kehilangan **{bet} Koin**!"
+        
+    update_discord_stat(uid, interaction.user.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+    await interaction.followup.send(msg)
+
+@tree.command(name="box", description="Buka Loot Box (Biaya: 1000 Koin)")
+async def slash_box(interaction: discord.Interaction):
+    await interaction.response.defer()
+    uid = str(interaction.user.id)
+    stat = get_discord_stat(uid)
+    cost = 1000
+    if stat['coins'] < cost:
+        await interaction.followup.send(f"❌ Butuh {cost} Koin untuk membuka Loot Box.")
+        return
+        
+    stat['coins'] -= cost
+    # Loot pool
+    rand = random.random()
+    if rand < 0.05:
+        reward = 5000
+        item = "🪙 JACKPOT! 5000 Koin"
+    elif rand < 0.2:
+        reward = 2000
+        item = "💰 Pouch of Coins (2000 Koin)"
+    elif rand < 0.5:
+        reward = 500
+        item = "🥈 Silver Coin (500 Koin)"
+    else:
+        reward = 10
+        item = "🗑️ Sampah (10 Koin)"
+        
+    stat['coins'] += reward
+    update_discord_stat(uid, interaction.user.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+    await interaction.followup.send(f"📦 Kamu membuka Loot Box...\nIsinya adalah: **{item}**!")
+
+@tree.command(name="portfolio", description="Lihat aset kripto kamu")
+async def slash_portfolio(interaction: discord.Interaction):
+    await interaction.response.defer()
+    uid = str(interaction.user.id)
+    market = load_json('market.json')
+    users = load_json('users.json')
+    portfolio = users.get(uid, {}).get('crypto', {})
+    
+    if not portfolio:
+        await interaction.followup.send("💼 Portfolio kamu kosong. Beli koin kripto di `/market`.")
+        return
+        
+    embed = discord.Embed(title=f"💼 Crypto Portfolio: {interaction.user.display_name}", color=discord.Color.green())
+    total_value = 0
+    for coin, amount in portfolio.items():
+        if coin in market:
+            value = amount * market[coin]['price']
+            total_value += value
+            embed.add_field(name=f"{market[coin]['emoji']} {coin}", value=f"Jumlah: {amount}\nNilai: {value:.2f} Koin", inline=False)
+            
+    embed.add_field(name="Total Estimasi Nilai", value=f"**{total_value:.2f} Koin RPG**", inline=False)
+    await interaction.followup.send(embed=embed)
+
+@tree.command(name="buyrig", description="Beli mesin Miner Kripto (Harga bervariasi)")
+async def slash_buyrig(interaction: discord.Interaction, tier: int):
+    await interaction.response.defer()
+    uid = str(interaction.user.id)
+    stat = get_discord_stat(uid)
+    users = load_json('users.json')
+    
+    prices = {1: 5000, 2: 15000, 3: 50000}
+    if tier not in prices:
+        await interaction.followup.send("❌ Pilihan tier: 1 (Basic), 2 (Pro), 3 (Quantum).")
+        return
+        
+    cost = prices[tier]
+    if stat['coins'] < cost:
+        await interaction.followup.send(f"❌ Koin tidak cukup! Harga Rig Tier {tier} adalah {cost} Koin.")
+        return
+        
+    stat['coins'] -= cost
+    rigs = users.setdefault(uid, {}).setdefault('rigs', {})
+    rigs[str(tier)] = rigs.get(str(tier), 0) + 1
+    
+    save_json('users.json', users)
+    update_discord_stat(uid, interaction.user.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+    
+    await interaction.followup.send(f"🖥️ Berhasil membeli **Mining Rig Tier {tier}** seharga {cost} Koin!\nRig akan otomatis menambang kripto setiap jam.")
+
+@tree.command(name="miner", description="Cek status mesin Miner kamu")
+async def slash_miner(interaction: discord.Interaction):
+    await interaction.response.defer()
+    uid = str(interaction.user.id)
+    users = load_json('users.json')
+    rigs = users.get(uid, {}).get('rigs', {})
+    
+    if not rigs:
+        await interaction.followup.send("🖥️ Kamu belum memiliki Mining Rig. Ketik `/buyrig` untuk membeli.")
+        return
+        
+    rates = {'1': '1-5 Koin/jam', '2': '10-20 Koin/jam', '3': '50-100 Koin/jam'}
+    embed = discord.Embed(title=f"⛏️ Mining Farm: {interaction.user.display_name}", color=discord.Color.dark_grey())
+    
+    for tier, count in rigs.items():
+        embed.add_field(name=f"Rig Tier {tier}", value=f"Jumlah: {count} Unit\nEst. Hashrate: {rates.get(tier)}", inline=False)
+        
+    await interaction.followup.send(embed=embed)
+
+@tree.command(name="pray", description="Berdoa agar mendapatkan berkah Koin")
+async def slash_pray(interaction: discord.Interaction):
+    await interaction.response.defer()
+    uid = str(interaction.user.id)
+    stat = get_discord_stat(uid)
+    users = load_json('users.json')
+    now = datetime.now()
+    last_pray = users.get(uid, {}).get('lastPray')
+    
+    if last_pray:
+        last = datetime.fromisoformat(last_pray)
+        delta = (now - last).total_seconds()
+        if delta < 3600:
+            await interaction.followup.send(f"⏳ Tuhan menyuruhmu bersabar. Berdoa lagi dalam {int((3600-delta)//60)} menit.")
+            return
+
+    users.setdefault(uid, {})['lastPray'] = now.isoformat()
+    save_json('users.json', users)
+    
+    rand = random.random()
+    if rand < 0.1:
+        stat['coins'] += 1000
+        msg = "✨ **MUKJIZAT!** Doamu didengar! Kamu mendapatkan **1000 Koin** dari langit!"
+    elif rand < 0.6:
+        stat['coins'] += 50
+        msg = "🙏 Doamu dikabulkan. Kamu mendapatkan berkah **50 Koin**."
+    else:
+        msg = "💨 Doamu kurang khusyuk. Coba lagi nanti."
+        
+    update_discord_stat(uid, interaction.user.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+    await interaction.followup.send(msg)
+
+@tree.command(name="curse", description="Mengutuk orang agar koinnya hilang")
+async def slash_curse(interaction: discord.Interaction, target: discord.Member):
+    await interaction.response.defer()
+    uid = str(interaction.user.id)
+    tid = str(target.id)
+    
+    if uid == tid:
+        await interaction.followup.send("❌ Masa mengutuk diri sendiri?")
+        return
+        
+    stat = get_discord_stat(uid)
+    if stat['coins'] < 100:
+        await interaction.followup.send("❌ Mengutuk butuh persembahan 100 Koin. Kamu terlalu miskin.")
+        return
+        
+    stat['coins'] -= 100 # Cost of cursing
+    
+    users = load_json('users.json')
+    now = datetime.now()
+    last_curse = users.get(uid, {}).get('lastCurse')
+    
+    if last_curse:
+        last = datetime.fromisoformat(last_curse)
+        delta = (now - last).total_seconds()
+        if delta < 14400: # 4 hours
+            await interaction.followup.send(f"⏳ Energi gelapmu habis. Tunggu {int((14400-delta)//3600)} jam lagi.")
+            update_discord_stat(uid, interaction.user.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+            return
+
+    users.setdefault(uid, {})['lastCurse'] = now.isoformat()
+    save_json('users.json', users)
+    
+    target_stat = get_discord_stat(tid)
+    rand = random.random()
+    
+    if rand < 0.4:
+        loss = random.randint(50, 500)
+        actual_loss = min(loss, target_stat['coins'])
+        target_stat['coins'] -= actual_loss
+        update_discord_stat(tid, target.display_name, target_stat['coins'], target_stat['xp'], target_stat['level'], target_stat['lastDaily'])
+        msg = f"😈 **Kutukan Berhasil!** {target.mention} terkena santet dan kehilangan **{actual_loss} Koin**!"
+    else:
+        # Karma
+        stat['coins'] -= 200
+        msg = f"🛡️ **KUTUKAN BERBALIK!** {target.display_name} dilindungi kekuatan suci. Kamu terkena karma dan kehilangan ekstra **200 Koin**!"
+
+    update_discord_stat(uid, interaction.user.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+    await interaction.followup.send(msg)
+
+@tree.command(name="quest", description="Lihat Misi Harian/Mingguan kamu")
+async def slash_quest(interaction: discord.Interaction):
+    await interaction.response.defer()
+    uid = str(interaction.user.id)
+    quests = get_user_quests(uid)
+    
+    if not quests:
+        await interaction.followup.send("📜 Tidak ada quest yang aktif.")
+        return
+        
+    embed = discord.Embed(title=f"📜 Quest Log: {interaction.user.display_name}", color=discord.Color.dark_purple())
+    for q_id, q_data in quests.items():
+        status = "✅ Selesai" if q_data['progress'] >= q_data['target'] else f"⏳ {q_data['progress']}/{q_data['target']}"
+        embed.add_field(name=q_data['name'], value=f"{q_data['desc']}\nProgress: {status}\nReward: {q_data['reward']} Koin", inline=False)
+        
+    await interaction.followup.send(embed=embed)
+
+@tree.command(name="marry", description="Ajak member lain menikah")
+async def slash_marry(interaction: discord.Interaction, target: discord.Member):
+    await interaction.response.defer()
+    uid = str(interaction.user.id)
+    tid = str(target.id)
+    
+    if uid == tid:
+        await interaction.followup.send("❌ Jomblo ngenes banget sampai nikah sama diri sendiri?")
+        return
+        
+    marriages = load_json('marriages.json')
+    if uid in marriages or tid in marriages:
+        await interaction.followup.send("❌ Salah satu dari kalian sudah menikah! Dilarang poligami/poliandri di server ini.")
+        return
+        
+    # We will just force marry for simplicity in slash command, or ask for confirmation using View
+    class ConfirmMarriage(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=60)
+            self.value = None
+            
+        @discord.ui.button(label="Terima", style=discord.ButtonStyle.green)
+        async def confirm(self, button_interaction: discord.Interaction, button: discord.ui.Button):
+            if str(button_interaction.user.id) != tid:
+                await button_interaction.response.send_message("❌ Ini bukan untukmu!", ephemeral=True)
+                return
+            self.value = True
+            self.stop()
+            
+        @discord.ui.button(label="Tolak", style=discord.ButtonStyle.red)
+        async def cancel(self, button_interaction: discord.Interaction, button: discord.ui.Button):
+            if str(button_interaction.user.id) != tid:
+                await button_interaction.response.send_message("❌ Ini bukan untukmu!", ephemeral=True)
+                return
+            self.value = False
+            self.stop()
+            
+    view = ConfirmMarriage()
+    msg = await interaction.followup.send(f"💍 {target.mention}, apakah kamu mau menikah dengan {interaction.user.display_name}?", view=view, wait=True)
+    await view.wait()
+    
+    if view.value is None:
+        await msg.edit(content="⏳ Waktu habis. Lamaran dibatalkan otomatis.", view=None)
+    elif view.value:
+        marriages[uid] = tid
+        marriages[tid] = uid
+        save_json('marriages.json', marriages)
+        await msg.edit(content=f"🎉 **SAAAAH!** 🎉\n{interaction.user.mention} dan {target.mention} resmi menikah! Selamat menempuh hidup baru!", view=None)
+    else:
+        await msg.edit(content=f"💔 **DITOLAK!**\n{target.display_name} menolak lamaran dari {interaction.user.display_name}. Sabar ya, masih banyak ikan di laut.", view=None)
+
+@tree.command(name="divorce", description="Ceraikan pasanganmu")
+async def slash_divorce(interaction: discord.Interaction):
+    await interaction.response.defer()
+    uid = str(interaction.user.id)
+    marriages = load_json('marriages.json')
+    
+    if uid not in marriages:
+        await interaction.followup.send("❌ Kamu saja belum menikah, mau cerai dari mana?")
+        return
+        
+    tid = marriages[uid]
+    del marriages[uid]
+    if tid in marriages:
+        del marriages[tid]
+        
+    save_json('marriages.json', marriages)
+    await interaction.followup.send(f"💔 Kamu telah resmi **Bercerai** dengan <@{tid}>. Harta gono-gini hangus.")
+
+@tree.command(name="family", description="Lihat status keluarga kamu")
+async def slash_family(interaction: discord.Interaction, target: discord.Member = None):
+    await interaction.response.defer()
+    target_user = target if target else interaction.user
+    uid = str(target_user.id)
+    marriages = load_json('marriages.json')
+    
+    embed = discord.Embed(title=f"👨‍👩‍👦 Keluarga: {target_user.display_name}", color=discord.Color.magenta())
+    if uid in marriages:
+        embed.add_field(name="💍 Pasangan", value=f"<@{marriages[uid]}>", inline=False)
+    else:
+        embed.add_field(name="💍 Pasangan", value="Jomblo abadi", inline=False)
+        
+    await interaction.followup.send(embed=embed)
+
+@tree.command(name="shipper", description="AI akan mencocokkan dua orang")
+async def slash_shipper(interaction: discord.Interaction, orang1: discord.Member, orang2: discord.Member):
+    await interaction.response.defer()
+    query = f"Buatkan rating kecocokan (0-100%) asmara antara {orang1.display_name} dan {orang2.display_name}, lalu berikan prediksi kocak tentang masa depan hubungan mereka."
+    response = get_gemini_response(query, interaction.user.id)
+    await interaction.followup.send(response)
+
+@tree.command(name="adopt", description="Adopsi member lain sebagai anakmu")
+async def slash_adopt(interaction: discord.Interaction, target: discord.Member):
+    await interaction.response.defer()
+    uid = str(interaction.user.id)
+    tid = str(target.id)
+    
+    if uid == tid:
+        await interaction.followup.send("❌ Masa mengadopsi diri sendiri?")
+        return
+        
+    class ConfirmAdopt(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=60)
+            self.value = None
+            
+        @discord.ui.button(label="Terima Adopsi", style=discord.ButtonStyle.green)
+        async def confirm(self, button_interaction: discord.Interaction, button: discord.ui.Button):
+            if str(button_interaction.user.id) != tid:
+                await button_interaction.response.send_message("❌ Ini bukan untukmu!", ephemeral=True)
+                return
+            self.value = True
+            self.stop()
+            
+        @discord.ui.button(label="Tolak", style=discord.ButtonStyle.red)
+        async def cancel(self, button_interaction: discord.Interaction, button: discord.ui.Button):
+            if str(button_interaction.user.id) != tid:
+                await button_interaction.response.send_message("❌ Ini bukan untukmu!", ephemeral=True)
+                return
+            self.value = False
+            self.stop()
+            
+    view = ConfirmAdopt()
+    msg = await interaction.followup.send(f"👶 {target.mention}, apakah kamu mau diadopsi oleh {interaction.user.display_name}?", view=view, wait=True)
+    await view.wait()
+    
+    if view.value is None:
+        await msg.edit(content="⏳ Waktu habis. Adopsi batal.", view=None)
+    elif view.value:
+        users = load_json('users.json')
+        family = users.setdefault(uid, {}).setdefault('children', [])
+        if tid not in family:
+            family.append(tid)
+            save_json('users.json', users)
+            await msg.edit(content=f"🎉 Selamat! {interaction.user.mention} telah resmi menjadi orang tua dari {target.mention}!", view=None)
+        else:
+            await msg.edit(content="❌ Dia sudah menjadi anakmu.", view=None)
+    else:
+        await msg.edit(content=f"💔 {target.display_name} menolak diadopsi oleh {interaction.user.display_name}.", view=None)
+
+@tree.command(name="image", description="Buat gambar menggunakan AI")
+async def slash_image(interaction: discord.Interaction, prompt: str):
+    await interaction.response.defer()
+    # Mocking image generation for now since Gemini free tier might not support image gen in discord bot
+    await interaction.followup.send(f"🎨 **Membuat gambar:** *{prompt}*\n(Maaf, fitur generate gambar sedang dalam perbaikan karena limitasi API)")
+
+@tree.command(name="poll", description="Buat sistem voting (Poll)")
+async def slash_poll(interaction: discord.Interaction, pertanyaan: str, opsi1: str, opsi2: str, opsi3: str = None, opsi4: str = None):
+    await interaction.response.defer()
+    embed = discord.Embed(title="📊 W2E Polling", description=pertanyaan, color=discord.Color.teal())
+    
+    options = [opsi1, opsi2]
+    if opsi3: options.append(opsi3)
+    if opsi4: options.append(opsi4)
+    
+    emojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣']
+    desc = ""
+    for i, opt in enumerate(options):
+        desc += f"{emojis[i]} {opt}\n\n"
+        
+    embed.add_field(name="Pilihan:", value=desc, inline=False)
+    embed.set_footer(text=f"Dibuat oleh {interaction.user.display_name}")
+    
+    msg = await interaction.followup.send(embed=embed, wait=True)
+    for i in range(len(options)):
+        await msg.add_reaction(emojis[i])
+
+@tree.command(name="giveaway", description="Buat Giveaway (Khusus Admin)")
+async def slash_giveaway(interaction: discord.Interaction, hadiah: str, durasi_menit: int):
+    await interaction.response.defer()
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.followup.send("❌ Kamu bukan Admin!")
+        return
+        
+    embed = discord.Embed(title="🎉 **GIVEAWAY!** 🎉", description=f"**Hadiah:** {hadiah}\n**Waktu:** {durasi_menit} Menit\n\nReact dengan 🎉 untuk ikutan!", color=discord.Color.purple())
+    embed.set_footer(text=f"Diselenggarakan oleh {interaction.user.display_name}")
+    
+    msg = await interaction.followup.send(embed=embed, wait=True)
+    await msg.add_reaction("🎉")
+    
+    await asyncio.sleep(durasi_menit * 60)
+    
+    # Fetch message again
+    new_msg = await interaction.channel.fetch_message(msg.id)
+    users = [user async for user in new_msg.reactions[0].users() if not user.bot]
+    
+    if not users:
+        await interaction.channel.send("Giveaway dibatalkan, tidak ada yang ikut.")
+    else:
+        winner = random.choice(users)
+        await interaction.channel.send(f"🎊 Selamat {winner.mention}! Kamu memenangkan **{hadiah}**!")
+
+@tree.command(name="quiz", description="AI akan memberikan pertanyaan kuis")
+async def slash_quiz(interaction: discord.Interaction, topik: str = "Pengetahuan Umum"):
+    await interaction.response.defer()
+    query = f"Berikan satu pertanyaan kuis trivia tentang {topik}. Jangan beri tahu jawabannya dulu."
+    response = get_gemini_response(query, interaction.user.id)
+    await interaction.followup.send(f"🧠 **KUIS W2E:**\n{response}\n*(Silakan jawab di chat biasa!)*")
+
+@tree.command(name="birthday", description="Atur tanggal ulang tahun kamu")
+async def slash_birthday(interaction: discord.Interaction, tanggal_bulan: str):
+    await interaction.response.defer()
+    # Format HH-BB
+    if len(tanggal_bulan) != 5 or tanggal_bulan[2] != '-':
+        await interaction.followup.send("❌ Format salah! Gunakan: DD-MM (Contoh: 25-12 untuk 25 Desember)")
+        return
+        
+    uid = str(interaction.user.id)
+    users = load_json('users.json')
+    users.setdefault(uid, {})['birthday'] = tanggal_bulan
+    save_json('users.json', users)
+    
+    await interaction.followup.send(f"🎂 Ulang tahun kamu berhasil diatur ke **{tanggal_bulan}**!")
+
+@tree.command(name="valo", description="Ajak orang main Valorant")
+async def slash_valo(interaction: discord.Interaction, target: discord.Role = None):
+    await interaction.response.defer()
+    mention = target.mention if target else "@here"
+    await interaction.followup.send(f"🎮 {mention} **Waktunya VALORANT!**\nAda yang mau login nggak nih? Dicariin sama {interaction.user.mention}!")
+
+@tree.command(name="listen", description="Bot akan masuk ke VC dan mentranskrip suaramu via AI")
+async def slash_listen(interaction: discord.Interaction):
+    await interaction.response.send_message("🎧 Fitur transkripsi suara sedang dinonaktifkan sementara untuk optimalisasi server.", ephemeral=True)
+
+@tree.command(name="remindme", description="Buat pengingat/alarm")
+async def slash_remindme(interaction: discord.Interaction, menit: int, pesan: str):
+    await interaction.response.defer()
+    if menit <= 0 or menit > 1440:
+        await interaction.followup.send("❌ Durasi harus antara 1 sampai 1440 menit.")
+        return
+        
+    await interaction.followup.send(f"⏰ Siap! Aku akan mengingatkanmu tentang **'{pesan}'** dalam {menit} menit.")
+    
+    await asyncio.sleep(menit * 60)
+    await interaction.channel.send(f"🔔 {interaction.user.mention} **REMINDER:** {pesan}")
+
+@tree.command(name="bg", description="Set URL background untuk profile card kamu")
+async def slash_bg(interaction: discord.Interaction, url: str):
+    await interaction.response.defer()
+    if not url.startswith('http'):
+        await interaction.followup.send("❌ URL tidak valid.")
+        return
+        
+    uid = str(interaction.user.id)
+    items_data = load_json('items.json')
+    items_data.setdefault(uid, {})['bg_url'] = url
+    save_json('items.json', items_data)
+    
+    await interaction.followup.send(f"🖼️ Background Profile Card kamu berhasil diubah! Cek dengan `/profile`.")
