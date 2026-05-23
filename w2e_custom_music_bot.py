@@ -351,15 +351,22 @@ async def play_next(ctx):
     
     record_track_stat(item['requester'].id, item['title'], item['duration'], item['voice_channel'])
     
-    embed = discord.Embed(title=f"Now Playing", description=f"[{item['title']}]({item['url']})", color=discord.Color.green())
-    embed.add_field(name="Artist", value=item['artist'], inline=True)
-    embed.add_field(name="Duration", value=f"{int(item['duration']//60)}:{int(item['duration']%60):02d}", inline=True)
-    if item['thumbnail']: embed.set_thumbnail(url=item['thumbnail'])
     
-    source_icon = "🟢" if source == 'spotify' else "🔴"
-    embed.set_footer(text=f"Requested by {item['requester'].display_name} | {source_icon} {source.upper()}")
+    embed = discord.Embed(title="🎵 WAY2MUSIC PREMIUM", description=f"Memutar: **[{item['title']}]({item['url']})**", color=discord.Color.gold())
+    embed.add_field(name="🎙️ Artist", value=item['artist'], inline=True)
+    embed.add_field(name="⏱️ Duration", value=f"{int(item['duration']//60)}:{int(item['duration']%60):02d}", inline=True)
+    if item['thumbnail']: 
+        embed.set_image(url=item['thumbnail']) # Use set_image for big premium look
     
+    source_icon = "🟢 Spotify" if source == 'spotify' else "🔴 YouTube"
+    embed.set_footer(text=f"Premium Audio Engine • {source_icon}")
+    
+    req = item['requester']
+    if req:
+        embed.set_author(name=f"Requested by {req.display_name}", icon_url=req.display_avatar.url if req.display_avatar else None)
+        
     await ctx.send(embed=embed, view=MusicPlayerControls(ctx))
+
 
 # --- Web Server API ---
 @web.middleware

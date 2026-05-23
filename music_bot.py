@@ -439,7 +439,7 @@ async def on_message(message):
         if gid not in session_owners:
             session_owners[gid] = message.author.id
 
-        await send_embed(feedback_channel, "🔍 Mencari lagu...")
+        await feedback_channel.send(embed=discord.Embed(title="🔍 Sedang Mencari Lagu...", color=discord.Color.blue()).set_footer(text="W2E Music System"))
         
         if "open.spotify.com/playlist" in query:
             try:
@@ -634,7 +634,19 @@ async def play_music(voice_channel, query, requester, feedback_channel, guild):
             vc = await voice_channel.connect(self_deaf=True)
             voice_clients[gid] = vc
 
-        await send_embed(feedback_channel, f"memuterkan lagu: {title}")
+        
+        try:
+            embed = discord.Embed(title="🎶 Sedang Memutar", description=f"**{title}**", color=discord.Color.green())
+            if 'thumbnail' in current and current['thumbnail']: embed.set_thumbnail(url=current['thumbnail'])
+            if 'duration' in current: embed.add_field(name="Durasi", value=f"{int(current['duration']//60)}:{int(current['duration']%60):02d}")
+            if 'requester' in current and current['requester']:
+                req = current['requester']
+                embed.set_author(name=f"Requested by {req.display_name}", icon_url=req.display_avatar.url if req.display_avatar else None)
+            embed.set_footer(text="WAY2MUSIC - Standard Edition")
+            await feedback_channel.send(embed=embed)
+        except Exception as e:
+            await send_embed(feedback_channel, f"✅ Memutar lagu: **{title}**")
+
 
         def after_play(error):
             if error:

@@ -764,9 +764,37 @@ async def api_broadcast(request):
     except Exception as e:
         return web.json_response({'error': str(e)}, status=500)
 
+async def serve_dashboard(request):
+    try:
+        with open('dashboard.html', 'r', encoding='utf-8') as f:
+            html = f.read()
+        return web.Response(text=html, content_type='text/html')
+    except:
+        return web.Response(text="Dashboard not found.", status=404)
+
+async def get_config_api(request):
+    try:
+        with open('config.json', 'r') as f:
+            data = json.load(f)
+        return web.json_response(data)
+    except:
+        return web.json_response({})
+
+async def update_config_api(request):
+    try:
+        data = await request.json()
+        with open('config.json', 'w') as f:
+            json.dump(data, f)
+        return web.json_response({'status': 'success'})
+    except Exception as e:
+        return web.json_response({'status': 'error', 'msg': str(e)}, status=500)
+
 async def start_web_server():
     app = web.Application(middlewares=[cors_middleware])
     app.router.add_options('/{tail:.*}', handle_options)
+    app.router.add_get('/', serve_dashboard)
+    app.router.add_get('/api/config', get_config_api)
+    app.router.add_post('/api/config', update_config_api)
     app.router.add_get('/api/radar', api_radar)
     app.router.add_post('/api/broadcast', api_broadcast)
     
@@ -781,19 +809,33 @@ async def on_voice_state_update(member, before, after):
     if before.channel is None and after.channel is not None:
         voice_join_times[member.id] = datetime.now()
         # 👑 Booster Voice Intro
+
         if member.premium_since and not member.bot:
             guild = member.guild
             notify_channel = None
-            for ch in guild.text_channels:
-                if 'general' in ch.name.lower() or 'chat' in ch.name.lower():
-                    if ch.permissions_for(guild.me).send_messages:
-                        notify_channel = ch
-                        break
+            
+            # Check config.json first
+            try:
+                import json
+                with open('config.json', 'r') as f:
+                    cfg = json.load(f)
+                if cfg.get('booster_channel_id'):
+                    ch_id = int(cfg['booster_channel_id'])
+                    notify_channel = guild.get_channel(ch_id)
+            except:
+                pass
+                
             if notify_channel is None:
                 for ch in guild.text_channels:
-                    if ch.permissions_for(guild.me).send_messages:
-                        notify_channel = ch
-                        break
+                    if 'general' in ch.name.lower() or 'chat' in ch.name.lower():
+                        if ch.permissions_for(guild.me).send_messages:
+                            notify_channel = ch
+                            break
+                if notify_channel is None:
+                    for ch in guild.text_channels:
+                        if ch.permissions_for(guild.me).send_messages:
+                            notify_channel = ch
+                            break
             if notify_channel:
                 intros = [
                     f"📢 **Perhatian seisi server!** Donatur server kami, **{member.display_name}**, telah hadir di 🔊 **{after.channel.name}**! Sambut kedatangannya! 👑",
