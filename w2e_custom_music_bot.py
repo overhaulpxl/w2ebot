@@ -1,4 +1,55 @@
 import discord
+
+async def send_embed(ctx_or_channel, text, color=None, title=None, ephemeral=False, view=None, file=None):
+    import discord
+    if color is None:
+        t_lower = text.lower()
+        if "❌" in text or "error" in t_lower or "gagal" in t_lower or "not found" in t_lower or "kosong" in t_lower or "salah" in t_lower:
+            color = discord.Color.red()
+        elif "✅" in text or "berhasil" in t_lower or "added" in t_lower or "memuterkan" in t_lower or "playing" in t_lower or "lanjut" in t_lower:
+            color = discord.Color.green()
+        elif "🔍" in text or "mencari" in t_lower or "fetching" in t_lower or "autoplay" in t_lower:
+            color = discord.Color.blurple()
+        elif "⚠️" in text or "pause" in t_lower or "stop" in t_lower:
+            color = discord.Color.orange()
+        else:
+            color = discord.Color.purple()
+
+    embed = discord.Embed(description=text, color=color)
+    if title:
+        embed.title = title
+    embed.set_footer(text="W2E Music System")
+    
+    try:
+        author = None
+        if hasattr(ctx_or_channel, 'author'):
+            author = ctx_or_channel.author
+        elif hasattr(ctx_or_channel, 'user'):
+            author = ctx_or_channel.user
+            
+        if author:
+            icon_url = author.display_avatar.url if author.display_avatar else None
+            embed.set_author(name=author.display_name, icon_url=icon_url)
+    except:
+        pass
+        
+    kwargs = {'embed': embed}
+    if view: kwargs['view'] = view
+    if file: kwargs['file'] = file
+    if ephemeral and hasattr(ctx_or_channel, 'response'): kwargs['ephemeral'] = True
+    
+    try:
+        if hasattr(ctx_or_channel, 'send'):
+            return await ctx_or_channel.send(**kwargs)
+        elif hasattr(ctx_or_channel, 'response') and hasattr(ctx_or_channel.response, 'send_message'):
+            if ctx_or_channel.response.is_done():
+                return await ctx_or_channel.followup.send(**kwargs)
+            else:
+                return await ctx_or_channel.response.send_message(**kwargs)
+    except Exception as e:
+        print(f"Embed send error: {e}")
+
+
 from discord.ext import commands
 import os
 import asyncio
@@ -151,8 +202,8 @@ class MusicPlayerControls(discord.ui.View):
         if not is_whitelisted(interaction.user.id): return
         vc = interaction.guild.voice_client
         if vc:
-            if vc.is_playing(): vc.pause(); await interaction.response.send_message("⏸️ Paused", ephemeral=True)
-            elif vc.is_paused(): vc.resume(); await interaction.response.send_message("▶️ Resumed", ephemeral=True)
+            if vc.is_playing(): vc.pause(); await send_embed(interaction, "⏸️ Paused", ephemeral=True)
+            elif vc.is_paused(): vc.resume(); await send_embed(interaction, "▶️ Resumed", ephemeral=True)
         else:
             await interaction.response.defer()
 
@@ -162,7 +213,7 @@ class MusicPlayerControls(discord.ui.View):
         vc = interaction.guild.voice_client
         if vc and (vc.is_playing() or vc.is_paused()):
             vc.stop()
-            await interaction.response.send_message("⏭️ Skipped", ephemeral=True)
+            await send_embed(interaction, "⏭️ Skipped", ephemeral=True)
         else:
             await interaction.response.defer()
 
@@ -173,14 +224,14 @@ class MusicPlayerControls(discord.ui.View):
         if gid in queues: queues[gid].clear()
         vc = interaction.guild.voice_client
         if vc: vc.stop()
-        await interaction.response.send_message("⏹️ Stopped and cleared queue", ephemeral=True)
+        await send_embed(interaction, "⏹️ Stopped and cleared queue", ephemeral=True)
 
 async def play_next(ctx):
     gid = ctx.guild.id
     if gid not in queues or not queues[gid]:
         # Autoplay logic
         if autoplay_modes.get(gid, False) and gid in play_history and play_history[gid]:
-            await ctx.send("🔍 Autoplay: Memilih lagu rekomendasi selanjutnya...")
+            await send_embed(ctx, "🔍 Autoplay: Memilih lagu rekomendasi selanjutnya...")
             last_url = play_history[gid][-1]
             try:
                 ydl_opts = {'format': 'bestaudio/best', 'quiet': True, 'extract_flat': True}
@@ -425,7 +476,7 @@ async def start_web_server():
 @bot.group(invoke_without_command=True)
 @commands.has_permissions(administrator=True)
 async def whitelist(ctx):
-    await ctx.send("Gunakan `!whitelist add @user`, `!whitelist remove @user`, atau `!whitelist list`")
+    await send_embed(ctx, "Gunakan `!whitelist add @user`, `!whitelist remove @user`, atau `!whitelist list`")
 
 @whitelist.command(name="add")
 @commands.has_permissions(administrator=True)
@@ -435,9 +486,9 @@ async def whitelist_add_cmd(ctx, member: discord.Member):
     if uid not in users:
         users.append(uid)
         save_json(WHITELIST_FILE, users)
-        await ctx.send(f"✅ {member.mention} telah ditambahkan ke whitelist Premium Music!")
+        await send_embed(ctx, f"✅ {member.mention} telah ditambahkan ke whitelist Premium Music!")
     else:
-        await ctx.send(f"⚠️ {member.display_name} sudah ada di whitelist.")
+        await send_embed(ctx, f"⚠️ {member.display_name} sudah ada di whitelist.")
 
 @whitelist.command(name="remove")
 @commands.has_permissions(administrator=True)
@@ -447,16 +498,16 @@ async def whitelist_remove_cmd(ctx, member: discord.Member):
     if uid in users:
         users.remove(uid)
         save_json(WHITELIST_FILE, users)
-        await ctx.send(f"❌ {member.mention} telah dihapus dari whitelist.")
+        await send_embed(ctx, f"❌ {member.mention} telah dihapus dari whitelist.")
     else:
-        await ctx.send(f"⚠️ {member.display_name} tidak ada di whitelist.")
+        await send_embed(ctx, f"⚠️ {member.display_name} tidak ada di whitelist.")
 
 @whitelist.command(name="list")
 @commands.has_permissions(administrator=True)
 async def whitelist_list_cmd(ctx):
     users = load_json(WHITELIST_FILE, [])
     if not users:
-        await ctx.send("Daftar whitelist masih kosong.")
+        await send_embed(ctx, "Daftar whitelist masih kosong.")
         return
     
     msg = "**Daftar Member Premium:**\n"
@@ -475,7 +526,7 @@ async def play(ctx, *, query: str):
     
     is_spotify = "open.spotify.com" in query
     
-    await ctx.send("🔍 Fetching track data...")
+    await send_embed(ctx, "🔍 Fetching track data...")
     
     items_to_add = []
     if is_spotify and sp:
@@ -524,11 +575,11 @@ async def play(ctx, *, query: str):
             add_music_stat(ctx.author.id, 'youtube')
             
     if not items_to_add:
-        await ctx.send("❌ Track not found.")
+        await send_embed(ctx, "❌ Track not found.")
         return
         
     queues[gid].extend(items_to_add)
-    await ctx.send(f"✅ Added {len(items_to_add)} track(s) to queue.")
+    await send_embed(ctx, f"✅ Added {len(items_to_add)} track(s) to queue.")
     
     vc = ctx.guild.voice_client
     if not vc or not vc.is_playing():
@@ -539,7 +590,7 @@ async def play(ctx, *, query: str):
 async def queue(ctx):
     gid = ctx.guild.id
     if gid not in queues or not queues[gid]:
-        await ctx.send("Queue is empty.")
+        await send_embed(ctx, "Queue is empty.")
         return
         
     q_list = queues[gid][:10]
@@ -604,7 +655,7 @@ async def nowplaying(ctx):
                 break
             
     else:
-        await ctx.send("Nothing is currently playing.")
+        await send_embed(ctx, "Nothing is currently playing.")
 
 @bot.command()
 @commands.check(check_whitelist)
@@ -614,7 +665,7 @@ async def profile(ctx, member: discord.Member = None):
     stats = load_json(MUSIC_STATS_FILE)
     
     if uid not in stats:
-        await ctx.send(f"{target.display_name} hasn't played any music yet.")
+        await send_embed(ctx, f"{target.display_name} hasn't played any music yet.")
         return
         
     user_stat = stats[uid]
@@ -644,10 +695,10 @@ async def lyrics(ctx, *, query: str = None):
         if gid in current_song_info:
             query = f"{current_song_info[gid]['title']} {current_song_info[gid]['artist']}"
         else:
-            await ctx.send("No song is playing. Please provide a title: `!lyrics <title>`")
+            await send_embed(ctx, "No song is playing. Please provide a title: `!lyrics <title>`")
             return
             
-    await ctx.send(f"🔍 Searching lyrics for: {query}")
+    await send_embed(ctx, f"🔍 Searching lyrics for: {query}")
     
     try:
         search_url = f"https://genius.com/api/search/multi?per_page=1&q={query}"
@@ -672,15 +723,15 @@ async def lyrics(ctx, *, query: str = None):
                 lyrics_text = lyrics_div.get_text(separator='\n')
                 
             if len(lyrics_text) <= 2000:
-                await ctx.send(f"**Lyrics: {query}**\n\n{lyrics_text}")
+                await send_embed(ctx, f"**Lyrics: {query}**\n\n{lyrics_text}")
             else:
                 chunks = [lyrics_text[i:i+1900] for i in range(0, len(lyrics_text), 1900)]
                 for i, chunk in enumerate(chunks):
-                    await ctx.send(f"**Lyrics: {query}** (Part {i+1})\n\n{chunk}")
+                    await send_embed(ctx, f"**Lyrics: {query}** (Part {i+1})\n\n{chunk}")
         else:
-            await ctx.send("❌ Lyrics not found or track is Instrumental.")
+            await send_embed(ctx, "❌ Lyrics not found or track is Instrumental.")
     except Exception as e:
-        await ctx.send("❌ Error fetching lyrics. It might not exist.")
+        await send_embed(ctx, "❌ Error fetching lyrics. It might not exist.")
 
 @bot.command()
 @commands.check(check_whitelist)
@@ -688,23 +739,23 @@ async def filter(ctx, f_type: str = 'clear'):
     f_type = f_type.lower()
     valid_filters = ['bassboost', 'nightcore', 'vaporwave', '8d', 'clear']
     if f_type not in valid_filters:
-        await ctx.send(f"❌ Filter tidak valid! Pilihan: {', '.join(valid_filters)}")
+        await send_embed(ctx, f"❌ Filter tidak valid! Pilihan: {', '.join(valid_filters)}")
         return
         
     active_filters[ctx.guild.id] = f_type
-    await ctx.send(f"🎛️ Audio Filter disetel ke: **{f_type.upper()}**\n*(Efek akan terasa di lagu berikutnya atau gunakan `!seek 0` untuk restart lagu saat ini)*")
+    await send_embed(ctx, f"🎛️ Audio Filter disetel ke: **{f_type.upper()}**\n*(Efek akan terasa di lagu berikutnya atau gunakan `!seek 0` untuk restart lagu saat ini)*")
 
 @bot.command(aliases=['vol'])
 @commands.check(check_whitelist)
 async def volume(ctx, vol: int):
     if vol < 0 or vol > 100:
-        await ctx.send("❌ Volume harus antara 0 - 100.")
+        await send_embed(ctx, "❌ Volume harus antara 0 - 100.")
         return
     volumes[ctx.guild.id] = vol / 100.0
     vc = ctx.guild.voice_client
     if vc and vc.source:
         vc.source.volume = volumes[ctx.guild.id]
-    await ctx.send(f"🔊 Volume diatur ke **{vol}%**")
+    await send_embed(ctx, f"🔊 Volume diatur ke **{vol}%**")
 
 @bot.command()
 @commands.check(check_whitelist)
@@ -719,12 +770,12 @@ async def loop(ctx, mode: str = None):
     else:
         mode = mode.upper()
         if mode not in ['OFF', 'TRACK', 'QUEUE']:
-            await ctx.send("❌ Pilihan loop: OFF, TRACK, QUEUE")
+            await send_embed(ctx, "❌ Pilihan loop: OFF, TRACK, QUEUE")
             return
         new_mode = mode
         
     loop_modes[gid] = new_mode
-    await ctx.send(f"🔁 Loop mode: **{new_mode}**")
+    await send_embed(ctx, f"🔁 Loop mode: **{new_mode}**")
 
 @bot.command()
 @commands.check(check_whitelist)
@@ -738,12 +789,12 @@ async def seek(ctx, time_str: str):
             
         gid = ctx.guild.id
         if gid not in current_song_info or not ctx.guild.voice_client:
-            await ctx.send("❌ Tidak ada lagu yang diputar.")
+            await send_embed(ctx, "❌ Tidak ada lagu yang diputar.")
             return
             
         dur = current_song_info[gid].get('duration', 0)
         if total_seconds > dur:
-            await ctx.send("❌ Waktu melebihi durasi lagu.")
+            await send_embed(ctx, "❌ Waktu melebihi durasi lagu.")
             return
             
         seek_times[gid] = total_seconds
@@ -753,10 +804,10 @@ async def seek(ctx, time_str: str):
         queues[gid].insert(0, current_song_info[gid])
         
         ctx.guild.voice_client.stop()
-        await ctx.send(f"⏩ Melompat ke **{time_str}**...")
+        await send_embed(ctx, f"⏩ Melompat ke **{time_str}**...")
         
     except ValueError:
-        await ctx.send("❌ Format waktu salah! Contoh: `!seek 1:30` atau `!seek 90`")
+        await send_embed(ctx, "❌ Format waktu salah! Contoh: `!seek 1:30` atau `!seek 90`")
 
 @bot.command()
 @commands.check(check_whitelist)
@@ -765,12 +816,12 @@ async def autoplay(ctx):
     current = autoplay_modes.get(gid, False)
     autoplay_modes[gid] = not current
     status = "ON 🟢" if not current else "OFF 🔴"
-    await ctx.send(f"📻 Autoplay Mode is now **{status}**")
+    await send_embed(ctx, f"📻 Autoplay Mode is now **{status}**")
 
 @bot.group(invoke_without_command=True)
 @commands.check(check_whitelist)
 async def playlist(ctx):
-    await ctx.send("Gunakan: `!playlist save <nama>`, `!playlist list`, `!playlist play <nama>`")
+    await send_embed(ctx, "Gunakan: `!playlist save <nama>`, `!playlist list`, `!playlist play <nama>`")
 
 @playlist.command(name="save")
 @commands.check(check_whitelist)
@@ -778,7 +829,7 @@ async def playlist_save(ctx, name: str):
     gid = ctx.guild.id
     uid = str(ctx.author.id)
     if gid not in queues or not queues[gid]:
-        await ctx.send("❌ Antrean kosong!")
+        await send_embed(ctx, "❌ Antrean kosong!")
         return
         
     pl = load_json('playlists.json', {})
@@ -786,7 +837,7 @@ async def playlist_save(ctx, name: str):
     
     pl[uid][name] = queues[gid].copy()
     save_json('playlists.json', pl)
-    await ctx.send(f"💾 Berhasil menyimpan {len(queues[gid])} lagu ke playlist **{name}**!")
+    await send_embed(ctx, f"💾 Berhasil menyimpan {len(queues[gid])} lagu ke playlist **{name}**!")
 
 @playlist.command(name="list")
 @commands.check(check_whitelist)
@@ -796,7 +847,7 @@ async def playlist_list(ctx):
     user_pl = pl.get(uid, {})
     
     if not user_pl:
-        await ctx.send("Kamu belum punya playlist pribadi.")
+        await send_embed(ctx, "Kamu belum punya playlist pribadi.")
         return
         
     msg = "**Daftar Playlist Kamu:**\n"
@@ -812,18 +863,18 @@ async def playlist_play(ctx, name: str):
     user_pl = pl.get(uid, {})
     
     if name not in user_pl:
-        await ctx.send(f"❌ Playlist '{name}' tidak ditemukan.")
+        await send_embed(ctx, f"❌ Playlist '{name}' tidak ditemukan.")
         return
         
     if not ctx.author.voice:
-        await ctx.send("Masuk voice channel dulu!")
+        await send_embed(ctx, "Masuk voice channel dulu!")
         return
         
     gid = ctx.guild.id
     if gid not in queues: queues[gid] = []
     
     queues[gid].extend(user_pl[name])
-    await ctx.send(f"✅ Berhasil memuat {len(user_pl[name])} lagu dari playlist **{name}**!")
+    await send_embed(ctx, f"✅ Berhasil memuat {len(user_pl[name])} lagu dari playlist **{name}**!")
     
     vc = ctx.guild.voice_client
     if not vc or not vc.is_playing():
@@ -834,7 +885,7 @@ async def playlist_play(ctx, name: str):
 async def quote(ctx, *, text: str):
     gid = ctx.guild.id
     if gid not in current_song_info:
-        await ctx.send("❌ Tidak ada lagu yang diputar.")
+        await send_embed(ctx, "❌ Tidak ada lagu yang diputar.")
         return
         
     item = current_song_info[gid]
@@ -842,7 +893,7 @@ async def quote(ctx, *, text: str):
     title = item.get('title', 'Unknown')
     artist = item.get('artist', 'Unknown')
     
-    await ctx.send("🎨 Membuat Lyric Card...")
+    await send_embed(ctx, "🎨 Membuat Lyric Card...")
     
     try:
         # Download thumbnail
@@ -881,7 +932,7 @@ async def quote(ctx, *, text: str):
         
         await ctx.send(file=discord.File(buf, filename="quote.png"))
     except Exception as e:
-        await ctx.send(f"❌ Gagal membuat gambar: {e}")
+        await send_embed(ctx, f"❌ Gagal membuat gambar: {e}")
 
 @bot.command()
 @commands.check(check_whitelist)
@@ -889,7 +940,7 @@ async def skip(ctx):
     vc = ctx.guild.voice_client
     if vc and (vc.is_playing() or vc.is_paused()):
         vc.stop()
-        await ctx.send("⏭️ Skipped")
+        await send_embed(ctx, "⏭️ Skipped")
 
 @bot.command()
 @commands.check(check_whitelist)
@@ -900,7 +951,7 @@ async def stop(ctx):
     if vc:
         vc.stop()
         await vc.disconnect()
-        await ctx.send("⏹️ Stopped playback and disconnected.")
+        await send_embed(ctx, "⏹️ Stopped playback and disconnected.")
 
 
 @bot.event

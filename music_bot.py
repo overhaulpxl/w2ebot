@@ -1,4 +1,55 @@
 import discord
+
+async def send_embed(ctx_or_channel, text, color=None, title=None, ephemeral=False, view=None, file=None):
+    import discord
+    if color is None:
+        t_lower = text.lower()
+        if "❌" in text or "error" in t_lower or "gagal" in t_lower or "not found" in t_lower or "kosong" in t_lower or "salah" in t_lower:
+            color = discord.Color.red()
+        elif "✅" in text or "berhasil" in t_lower or "added" in t_lower or "memuterkan" in t_lower or "playing" in t_lower or "lanjut" in t_lower:
+            color = discord.Color.green()
+        elif "🔍" in text or "mencari" in t_lower or "fetching" in t_lower or "autoplay" in t_lower:
+            color = discord.Color.blurple()
+        elif "⚠️" in text or "pause" in t_lower or "stop" in t_lower:
+            color = discord.Color.orange()
+        else:
+            color = discord.Color.purple()
+
+    embed = discord.Embed(description=text, color=color)
+    if title:
+        embed.title = title
+    embed.set_footer(text="W2E Music System")
+    
+    try:
+        author = None
+        if hasattr(ctx_or_channel, 'author'):
+            author = ctx_or_channel.author
+        elif hasattr(ctx_or_channel, 'user'):
+            author = ctx_or_channel.user
+            
+        if author:
+            icon_url = author.display_avatar.url if author.display_avatar else None
+            embed.set_author(name=author.display_name, icon_url=icon_url)
+    except:
+        pass
+        
+    kwargs = {'embed': embed}
+    if view: kwargs['view'] = view
+    if file: kwargs['file'] = file
+    if ephemeral and hasattr(ctx_or_channel, 'response'): kwargs['ephemeral'] = True
+    
+    try:
+        if hasattr(ctx_or_channel, 'send'):
+            return await ctx_or_channel.send(**kwargs)
+        elif hasattr(ctx_or_channel, 'response') and hasattr(ctx_or_channel.response, 'send_message'):
+            if ctx_or_channel.response.is_done():
+                return await ctx_or_channel.followup.send(**kwargs)
+            else:
+                return await ctx_or_channel.response.send_message(**kwargs)
+    except Exception as e:
+        print(f"Embed send error: {e}")
+
+
 import os
 import asyncio
 import yt_dlp as youtube_dl
@@ -54,14 +105,14 @@ class MusicControls(discord.ui.View):
             vc = voice_clients[self.gid]
             if vc.is_playing():
                 vc.pause()
-                await interaction.response.send_message("Lagu di-pause.", ephemeral=True)
+                await send_embed(interaction, "Lagu di-pause.", ephemeral=True)
             elif vc.is_paused():
                 vc.resume()
-                await interaction.response.send_message("Lagu di-resume.", ephemeral=True)
+                await send_embed(interaction, "Lagu di-resume.", ephemeral=True)
             else:
-                await interaction.response.send_message("Tidak ada lagu yang diputar.", ephemeral=True)
+                await send_embed(interaction, "Tidak ada lagu yang diputar.", ephemeral=True)
         else:
-            await interaction.response.send_message("Bot tidak terhubung.", ephemeral=True)
+            await send_embed(interaction, "Bot tidak terhubung.", ephemeral=True)
 
     @discord.ui.button(label="Skip", style=discord.ButtonStyle.secondary, emoji="⏭️")
     async def skip_song(self, button: discord.ui.Button, interaction: discord.Interaction):
@@ -69,11 +120,11 @@ class MusicControls(discord.ui.View):
             vc = voice_clients[self.gid]
             if vc.is_playing() or vc.is_paused():
                 vc.stop()
-                await interaction.response.send_message("Lagu di-skip.", ephemeral=True)
+                await send_embed(interaction, "Lagu di-skip.", ephemeral=True)
             else:
-                await interaction.response.send_message("Tidak ada lagu untuk di-skip.", ephemeral=True)
+                await send_embed(interaction, "Tidak ada lagu untuk di-skip.", ephemeral=True)
         else:
-            await interaction.response.send_message("Bot tidak terhubung.", ephemeral=True)
+            await send_embed(interaction, "Bot tidak terhubung.", ephemeral=True)
 
     @discord.ui.button(label="Stop", style=discord.ButtonStyle.danger, emoji="⏹️")
     async def stop_song(self, button: discord.ui.Button, interaction: discord.Interaction):
@@ -82,9 +133,9 @@ class MusicControls(discord.ui.View):
             if self.gid in queues: queues[self.gid].clear()
             if vc.is_playing() or vc.is_paused():
                 vc.stop()
-            await interaction.response.send_message("Musik dihentikan dan antrean dibersihkan.", ephemeral=True)
+            await send_embed(interaction, "Musik dihentikan dan antrean dibersihkan.", ephemeral=True)
         else:
-            await interaction.response.send_message("Bot tidak terhubung.", ephemeral=True)
+            await send_embed(interaction, "Bot tidak terhubung.", ephemeral=True)
 
 # Spotify client
 sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(client_id=SPOTIPY_CLIENT_ID, client_secret=SPOTIPY_CLIENT_SECRET))
@@ -222,15 +273,15 @@ async def on_message(message):
         try:
             vol = int(vol_str)
             if vol < 0 or vol > 100:
-                await message.channel.send("Volume harus antara 0 sampai 100.")
+                await send_embed(message.channel, "Volume harus antara 0 sampai 100.")
                 return
             
             volumes[gid] = vol / 100.0
             if gid in voice_clients and voice_clients[gid].source:
                 voice_clients[gid].source.volume = volumes[gid]
-            await message.channel.send(f"Volume diubah ke {vol}%")
+            await send_embed(message.channel, f"Volume diubah ke {vol}%")
         except ValueError:
-            await message.channel.send("Format volume salah. Gunakan angka, misal: `!w2evolume 50`")
+            await send_embed(message.channel, "Format volume salah. Gunakan angka, misal: `!w2evolume 50`")
 
     if message.content.startswith('!w2enp') or message.content.startswith('!np'):
         gid = message.guild.id
@@ -258,11 +309,11 @@ async def on_message(message):
                 res = f"🎵 **Now Playing:** {title}"
             await message.channel.send(res, view=MusicControls(gid))
         else:
-            await message.channel.send("Tidak ada lagu yang sedang diputar.")
+            await send_embed(message.channel, "Tidak ada lagu yang sedang diputar.")
 
     if message.content.startswith('!find '):
         if not message.mentions:
-            await message.channel.send("Silakan mention user yang ingin dicari: `!find @user`")
+            await send_embed(message.channel, "Silakan mention user yang ingin dicari: `!find @user`")
             return
         target = message.mentions[0]
         if target.voice and target.voice.channel:
@@ -273,9 +324,9 @@ async def on_message(message):
                 delta = datetime.now() - voice_join_times[target.id]
                 minutes = int(delta.total_seconds() // 60)
                 duration_str = f"{minutes} menit"
-            await message.channel.send(f"{target.display_name} sedang berada di voice channel **{channel.name}** selama {duration_str}.\nJoin link: {link}")
+            await send_embed(message.channel, f"{target.display_name} sedang berada di voice channel **{channel.name}** selama {duration_str}.\nJoin link: {link}")
         else:
-            await message.channel.send(f"{target.display_name} tidak sedang berada di voice channel mana pun.")
+            await send_embed(message.channel, f"{target.display_name} tidak sedang berada di voice channel mana pun.")
 
     if message.content.startswith('!checkbots'):
         active_bots = []
@@ -295,7 +346,7 @@ async def on_message(message):
     if message.content.startswith('w2esession'):
         gid = message.guild.id
         if gid not in voice_clients:
-            await message.channel.send("Bot tidak sedang memutar lagu di server ini.")
+            await send_embed(message.channel, "Bot tidak sedang memutar lagu di server ini.")
             return
         owner_id = session_owners.get(gid)
         owner_name = "Unknown"
@@ -305,12 +356,12 @@ async def on_message(message):
         
         q_len = len(queues.get(gid, []))
         l_mode = loop_modes.get(gid, 'OFF')
-        await message.channel.send(f"**Session Info:**\nOwner: {owner_name}\nLoop Mode: {l_mode}\nSongs in queue: {q_len}")
+        await send_embed(message.channel, f"**Session Info:**\nOwner: {owner_name}\nLoop Mode: {l_mode}\nSongs in queue: {q_len}")
 
     if message.content.startswith('w2eclaim'):
         gid = message.guild.id
         if gid not in voice_clients:
-            await message.channel.send("Tidak ada session yang aktif.")
+            await send_embed(message.channel, "Tidak ada session yang aktif.")
             return
         
         current_owner = session_owners.get(gid)
@@ -319,39 +370,39 @@ async def on_message(message):
         if current_owner:
             owner_member = message.guild.get_member(current_owner)
             if owner_member and owner_member in vc.members:
-                await message.channel.send("Owner saat ini masih berada di dalam voice channel. Tidak bisa di-claim.")
+                await send_embed(message.channel, "Owner saat ini masih berada di dalam voice channel. Tidak bisa di-claim.")
                 return
                 
         if message.author not in vc.members:
-            await message.channel.send("Kamu harus berada di voice channel yang sama dengan bot untuk melakukan claim.")
+            await send_embed(message.channel, "Kamu harus berada di voice channel yang sama dengan bot untuk melakukan claim.")
             return
             
         session_owners[gid] = message.author.id
-        await message.channel.send(f"{message.author.display_name} telah mengambil alih ownership session ini.")
+        await send_embed(message.channel, f"{message.author.display_name} telah mengambil alih ownership session ini.")
 
     if message.content.startswith('w2etransfer '):
         gid = message.guild.id
         if gid not in voice_clients or session_owners.get(gid) != message.author.id:
-            await message.channel.send("Kamu bukan owner dari session ini.")
+            await send_embed(message.channel, "Kamu bukan owner dari session ini.")
             return
         
         if not message.mentions:
-            await message.channel.send("Mention user yang ingin ditransfer: `w2etransfer @user`")
+            await send_embed(message.channel, "Mention user yang ingin ditransfer: `w2etransfer @user`")
             return
             
         target = message.mentions[0]
         vc = voice_clients[gid].channel
         if target not in vc.members:
-            await message.channel.send("Target harus berada di voice channel yang sama dengan bot.")
+            await send_embed(message.channel, "Target harus berada di voice channel yang sama dengan bot.")
             return
             
         session_owners[gid] = target.id
-        await message.channel.send(f"Ownership telah ditransfer kepada {target.display_name}.")
+        await send_embed(message.channel, f"Ownership telah ditransfer kepada {target.display_name}.")
 
     if message.content.startswith('w2eloop'):
         gid = message.guild.id
         if gid not in voice_clients:
-            await message.channel.send("Tidak ada lagu yang sedang diputar.")
+            await send_embed(message.channel, "Tidak ada lagu yang sedang diputar.")
             return
             
         current_mode = loop_modes.get(gid, 'OFF')
@@ -362,7 +413,7 @@ async def on_message(message):
         else:
             loop_modes[gid] = 'OFF'
             
-        await message.channel.send(f"Loop mode diubah ke: **{loop_modes[gid]}**")
+        await send_embed(message.channel, f"Loop mode diubah ke: **{loop_modes[gid]}**")
 
     # Music Player — !w2eplay, !w2ep, !play
     PLAY_ALIASES = ('!w2eplay ', '!w2ep ', '!play ')
@@ -370,10 +421,10 @@ async def on_message(message):
     if play_alias:
         query = message.content[len(play_alias):].strip()
         if not query:
-            await message.channel.send('Isi dulu judulnya. Contoh: `!w2eplay Judul Lagu`')
+            await send_embed(message.channel, 'Isi dulu judulnya. Contoh: `!w2eplay Judul Lagu`')
             return
         if message.author.voice is None or message.author.voice.channel is None:
-            await message.channel.send('Masuk voice channel dulu ya!')
+            await send_embed(message.channel, 'Masuk voice channel dulu ya!')
             return
             
         voice_channel = message.author.voice.channel
@@ -388,7 +439,7 @@ async def on_message(message):
         if gid not in session_owners:
             session_owners[gid] = message.author.id
 
-        await feedback_channel.send("🔍 Mencari lagu...")
+        await send_embed(feedback_channel, "🔍 Mencari lagu...")
         
         if "open.spotify.com/playlist" in query:
             try:
@@ -398,9 +449,9 @@ async def on_message(message):
                     track = item['track']
                     track_query = f"{track['name']} {track['artists'][0]['name']}"
                     queues[gid].append({'query': track_query, 'requester': message.author.id})
-                await feedback_channel.send(f"✅ Menambahkan {len(playlist_tracks['items'])} lagu dari playlist Spotify!")
+                await send_embed(feedback_channel, f"✅ Menambahkan {len(playlist_tracks['items'])} lagu dari playlist Spotify!")
             except Exception as e:
-                await feedback_channel.send(f"Error parsing playlist: {str(e)}")
+                await send_embed(feedback_channel, f"Error parsing playlist: {str(e)}")
         elif "youtube.com/playlist" in query or "&list=" in query:
             try:
                 ydl_opts_pl = {'extract_flat': True, 'quiet': True}
@@ -412,9 +463,9 @@ async def on_message(message):
                             if entry.get('title'):
                                 queues[gid].append({'query': f"https://www.youtube.com/watch?v={entry['id']}", 'requester': message.author.id})
                                 added += 1
-                        await feedback_channel.send(f"✅ Menambahkan {added} lagu dari playlist YouTube!")
+                        await send_embed(feedback_channel, f"✅ Menambahkan {added} lagu dari playlist YouTube!")
             except Exception as e:
-                await feedback_channel.send(f"Error parsing YT playlist: {str(e)}")
+                await send_embed(feedback_channel, f"Error parsing YT playlist: {str(e)}")
         else:
             queues[gid].append({'query': query, 'requester': message.author.id})
 
@@ -428,11 +479,11 @@ async def on_message(message):
             vc = voice_clients[message.guild.id]
             if vc.is_playing():
                 vc.pause()
-                await message.channel.send("⏸️ Lagu di-pause!")
+                await send_embed(message.channel, "⏸️ Lagu di-pause!")
             else:
-                await message.channel.send("Tidak ada lagu yang sedang diputar.")
+                await send_embed(message.channel, "Tidak ada lagu yang sedang diputar.")
         else:
-            await message.channel.send("Bot tidak terhubung ke voice channel.")
+            await send_embed(message.channel, "Bot tidak terhubung ke voice channel.")
 
     # Resume — !w2eresume
     if message.content.startswith('!w2eresume'):
@@ -440,11 +491,11 @@ async def on_message(message):
             vc = voice_clients[message.guild.id]
             if vc.is_paused():
                 vc.resume()
-                await message.channel.send("▶️ Lagu dilanjutkan!")
+                await send_embed(message.channel, "▶️ Lagu dilanjutkan!")
             else:
-                await message.channel.send("Lagu tidak sedang di-pause.")
+                await send_embed(message.channel, "Lagu tidak sedang di-pause.")
         else:
-            await message.channel.send("Bot tidak terhubung ke voice channel.")
+            await send_embed(message.channel, "Bot tidak terhubung ke voice channel.")
 
     # Disconnect — !w2edc
     if message.content.startswith('!w2edc'):
@@ -456,9 +507,9 @@ async def on_message(message):
             if gid in queues: del queues[gid]
             if gid in session_owners: del session_owners[gid]
             if gid in loop_modes: del loop_modes[gid]
-            await message.channel.send("👋 Bot keluar dari voice channel.")
+            await send_embed(message.channel, "👋 Bot keluar dari voice channel.")
         else:
-            await message.channel.send("Bot tidak sedang terhubung ke voice channel.")
+            await send_embed(message.channel, "Bot tidak sedang terhubung ke voice channel.")
 
     # Rejoin/Restart — !w2erejoin
     if message.content.startswith('!w2erejoin'):
@@ -467,39 +518,39 @@ async def on_message(message):
             vc = voice_clients[gid]
             vc.stop()
             feedback_channel = client.get_channel(1332111384523309156) or message.channel
-            await feedback_channel.send("🔄 Reconnecting...")
+            await send_embed(feedback_channel, "🔄 Reconnecting...")
             voice_channel = message.author.voice.channel
             vc = await voice_channel.connect()
             voice_clients[gid] = vc
-            await feedback_channel.send("▶️ Melanjutkan...")
+            await send_embed(feedback_channel, "▶️ Melanjutkan...")
             await play_next_song(voice_channel, feedback_channel, message.guild)
         else:
             if message.author.voice is None or message.author.voice.channel is None:
-                await message.channel.send('Masuk voice channel dulu!')
+                await send_embed(message.channel, 'Masuk voice channel dulu!')
                 return
             voice_channel = message.author.voice.channel
             feedback_channel = client.get_channel(1332111384523309156) or message.channel
-            await feedback_channel.send("🔗 Reconnecting...")
+            await send_embed(feedback_channel, "🔗 Reconnecting...")
             vc = await voice_channel.connect()
             voice_clients[gid] = vc
-            await feedback_channel.send("▶️ Lanjut lagu...")
+            await send_embed(feedback_channel, "▶️ Lanjut lagu...")
             await play_next_song(voice_channel, feedback_channel, message.guild)
 
     if message.content.startswith('!w2eclear'):
         gid = message.guild.id
         if gid in queues:
             queues[gid].clear()
-            await message.channel.send("Antrean lagu berhasil dihapus (Cleared).")
+            await send_embed(message.channel, "Antrean lagu berhasil dihapus (Cleared).")
         else:
-            await message.channel.send("Tidak ada antrean lagu.")
+            await send_embed(message.channel, "Tidak ada antrean lagu.")
 
     if message.content.startswith('!w2eshuffle'):
         gid = message.guild.id
         if gid in queues and len(queues[gid]) > 1:
             random.shuffle(queues[gid])
-            await message.channel.send("Antrean lagu berhasil diacak (Shuffled).")
+            await send_embed(message.channel, "Antrean lagu berhasil diacak (Shuffled).")
         else:
-            await message.channel.send("Antrean terlalu sedikit untuk diacak.")
+            await send_embed(message.channel, "Antrean terlalu sedikit untuk diacak.")
 
     if message.content.startswith('!w2eskip'):
         gid = message.guild.id
@@ -507,16 +558,16 @@ async def on_message(message):
             vc = voice_clients[gid]
             if vc.is_playing():
                 vc.stop()
-                await message.channel.send("Lagu di-skip.")
+                await send_embed(message.channel, "Lagu di-skip.")
             else:
-                await message.channel.send("Tidak ada lagu yang sedang diputar.")
+                await send_embed(message.channel, "Tidak ada lagu yang sedang diputar.")
         else:
-            await message.channel.send("Bot tidak berada di voice channel.")
+            await send_embed(message.channel, "Bot tidak berada di voice channel.")
 
     if message.content.startswith('!w2equeue'):
         gid = message.guild.id
         if gid not in queues or not queues[gid]:
-            await message.channel.send("Antrean lagu kosong.")
+            await send_embed(message.channel, "Antrean lagu kosong.")
             return
         
         q_list = queues[gid][:10]
@@ -533,7 +584,7 @@ async def on_message(message):
 async def play_next_song(voice_channel, feedback_channel, guild):
     gid = guild.id
     if gid not in queues or not queues[gid]:
-        await feedback_channel.send("dikarenakan ga ada queue")
+        await send_embed(feedback_channel, "dikarenakan ga ada queue")
         vc = voice_clients.pop(gid, None)
         if vc:
             await vc.disconnect()
@@ -583,7 +634,7 @@ async def play_music(voice_channel, query, requester, feedback_channel, guild):
             vc = await voice_channel.connect(self_deaf=True)
             voice_clients[gid] = vc
 
-        await feedback_channel.send(f"memuterkan lagu: {title}")
+        await send_embed(feedback_channel, f"memuterkan lagu: {title}")
 
         def after_play(error):
             if error:
@@ -617,7 +668,7 @@ async def play_music(voice_channel, query, requester, feedback_channel, guild):
 
     except Exception as e:
         logging.error(f"error cok: {str(e)}")
-        await feedback_channel.send(f"Error: {str(e)}")
+        await send_embed(feedback_channel, f"Error: {str(e)}")
         if gid in queues and len(queues[gid]) > 0:
             queues[gid].pop(0) # Remove failed track
         asyncio.run_coroutine_threadsafe(play_next_song(voice_channel, feedback_channel, guild), client.loop)
