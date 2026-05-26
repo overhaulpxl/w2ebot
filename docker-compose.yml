@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  w2ebot:
+    build: .
+    container_name: w2ebot-main
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./w2ebot.db:/app/w2ebot.db
+    env_file:
+      - .env

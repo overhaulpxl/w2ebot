@@ -1,0 +1,11 @@
+discord.py
+google-genai
+yt-dlp
+aiohttp
+beautifulsoup4
+gTTS
+Pillow
+spotipy
+PyNaCl
+python-dotenv
+davey
