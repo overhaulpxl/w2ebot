@@ -8,7 +8,7 @@ WORKDIR /app
 # Copy requirements and install
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install sqlitedict yt-dlp aiohttp spotipy bs4 Pillow
+RUN pip install aiosqlite yt-dlp aiohttp spotipy bs4 Pillow
 
 # Copy source code
 COPY . .

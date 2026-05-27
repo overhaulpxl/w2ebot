@@ -9,3 +9,4 @@ spotipy
 PyNaCl
 python-dotenv
 davey
+aiosqlite
