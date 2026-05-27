@@ -12,7 +12,8 @@ def setup(tree, client):
         users = await load_json('users.json')
         achievements = users.get(uid, {}).get('achievements', [])
         
-        items_data = await load_json(ITEMS_FILE).get(uid, {})
+        items_dict = await load_json(ITEMS_FILE)
+        items_data = items_dict.get(uid, {})
         bg_url = items_data.get('bg_url')
         
         from w2e_views import ProfileView
