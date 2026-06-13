@@ -8,70 +8,128 @@
     <style>
         body { background-color: #0f172a; color: white; font-family: 'Inter', sans-serif; }
         .glass { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.1); }
+        select { color-scheme: dark; }
     </style>
 </head>
 <body class="min-h-screen flex items-center justify-center p-4">
     <div class="glass p-8 rounded-2xl shadow-2xl w-full max-w-md">
         <div class="text-center mb-8">
             <h1 class="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-500">W2E Dashboard</h1>
-            <p class="text-slate-400 mt-2">Bot Configuration Panel</p>
+            <p class="text-slate-400 mt-2">Announcement Channel Configuration</p>
         </div>
-        
-        <form id="configForm" class="space-y-6">
+
+        <form id="configForm" class="space-y-4">
             <div>
-                <label class="block text-sm font-medium text-slate-300 mb-2">Booster Notification Channel ID</label>
-                <input type="text" id="channelId" class="w-full bg-slate-800 border border-slate-600 rounded-lg p-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition" placeholder="e.g. 1332113600894079131">
-                <p class="text-xs text-slate-500 mt-2">Biarkan kosong untuk otomatis mencari channel "general".</p>
+                <label class="block text-sm font-medium text-slate-300 mb-2">Admin Token</label>
+                <input type="password" id="token" class="w-full bg-slate-800 border border-slate-600 rounded-lg p-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition" placeholder="DASHBOARD_TOKEN">
+                <p class="text-xs text-slate-500 mt-1">Wajib untuk menyimpan. Dikirim lewat header X-Auth-Token.</p>
             </div>
-            
+
+            <hr class="border-slate-700">
+
+            <div id="channelFields" class="space-y-3"></div>
+
             <button type="submit" class="w-full bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white font-bold py-3 px-4 rounded-lg transition transform hover:scale-105 shadow-lg">
                 Save Configuration
             </button>
         </form>
-        
+
         <div id="statusMsg" class="mt-4 text-center text-sm font-semibold hidden"></div>
     </div>
 
     <script>
-        // Load initial config
-        fetch('/api/config')
-            .then(res => res.json())
-            .then(data => {
-                document.getElementById('channelId').value = data.booster_channel_id || '';
-            });
+        // Kategori announcement yang bisa diatur (cocok dengan ANNOUNCE_CATEGORIES di core.py).
+        const CATEGORIES = [
+            { key: 'default',  label: 'Default (semua announcement)' },
+            { key: 'market',   label: 'Market Update' },
+            { key: 'levelup',  label: 'Level Up (Voice)' },
+            { key: 'birthday', label: 'Ulang Tahun' },
+            { key: 'boss',     label: 'Boss Raid' },
+            { key: 'booster',  label: 'Booster Join VC' },
+            { key: 'binomo',   label: 'Hasil Binomo' },
+        ];
 
-        // Save config
+        let channelOptions = [];
+
+        function renderFields(currentConfig) {
+            const container = document.getElementById('channelFields');
+            container.innerHTML = '';
+            CATEGORIES.forEach(cat => {
+                const selected = currentConfig[cat.key] || '';
+                const opts = ['<option value="">— Auto (cari channel general) —</option>']
+                    .concat(channelOptions.map(c =>
+                        `<option value="${c.id}" ${c.id === selected ? 'selected' : ''}>#${c.name}</option>`
+                    )).join('');
+                container.insertAdjacentHTML('beforeend', `
+                    <div>
+                        <label class="block text-sm font-medium text-slate-300 mb-1">${cat.label}</label>
+                        <select data-key="${cat.key}" class="w-full bg-slate-800 border border-slate-600 rounded-lg p-2.5 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition">
+                            ${opts}
+                        </select>
+                    </div>
+                `);
+            });
+        }
+
+        async function init() {
+            try {
+                const [chRes, cfgRes] = await Promise.all([
+                    fetch('/api/channels'),
+                    fetch('/api/announce-config')
+                ]);
+                channelOptions = await chRes.json();
+                if (!Array.isArray(channelOptions)) channelOptions = [];
+                const cfg = await cfgRes.json();
+                renderFields(cfg || {});
+            } catch (err) {
+                document.getElementById('channelFields').innerHTML =
+                    '<p class="text-red-400 text-sm">Gagal memuat data dari bot. Pastikan bot online.</p>';
+            }
+        }
+
         document.getElementById('configForm').addEventListener('submit', (e) => {
             e.preventDefault();
             const btn = e.target.querySelector('button');
             btn.innerHTML = 'Saving...';
-            
-            const payload = {
-                booster_channel_id: document.getElementById('channelId').value
-            };
-            
-            fetch('/api/config', {
+
+            const payload = {};
+            document.querySelectorAll('#channelFields select').forEach(sel => {
+                payload[sel.dataset.key] = sel.value;
+            });
+
+            const token = document.getElementById('token').value;
+
+            fetch('/api/announce-config', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', 'X-Auth-Token': token },
                 body: JSON.stringify(payload)
             })
-            .then(res => res.json())
-            .then(data => {
+            .then(res => res.json().then(data => ({ ok: res.ok, data })))
+            .then(({ ok, data }) => {
                 btn.innerHTML = 'Save Configuration';
                 const status = document.getElementById('statusMsg');
                 status.classList.remove('hidden');
-                if(data.status === 'success') {
+                if (ok && data.status === 'success') {
                     status.innerText = '✅ Settings saved successfully!';
                     status.classList.add('text-green-400');
                     status.classList.remove('text-red-400');
                 } else {
-                    status.innerText = '❌ Error saving settings!';
+                    status.innerText = '❌ ' + (data.error || data.msg || 'Error saving settings!');
                     status.classList.add('text-red-400');
                     status.classList.remove('text-green-400');
                 }
-                setTimeout(() => status.classList.add('hidden'), 3000);
+                setTimeout(() => status.classList.add('hidden'), 4000);
+            })
+            .catch(() => {
+                btn.innerHTML = 'Save Configuration';
+                const status = document.getElementById('statusMsg');
+                status.classList.remove('hidden');
+                status.innerText = '❌ Network error.';
+                status.classList.add('text-red-400');
             });
         });
+
+        init();
     </script>
 </body>
 </html>

@@ -13,6 +13,7 @@ import aiohttp
 import io
 import json
 import re
+import hmac
 
 import math
 
@@ -38,6 +39,10 @@ DISCORD_API_KEY = os.getenv('DISCORD_TOKEN', 'MMM')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', 'MMM')
 ALLOWED_SERVER_ID = int(os.getenv('ALLOWED_SERVER_ID', '887968847842402355'))
 BOT_PREFIX = os.getenv('BOT_PREFIX', 'w!')
+DASHBOARD_TOKEN = os.getenv('DASHBOARD_TOKEN', '')
+# Comma-separated origins yang boleh akses API (mis. web main way2eternal).
+# Kosong = izinkan semua (dev only). Wajib diisi kalau web main di domain lain.
+ALLOWED_ORIGINS = [o.strip() for o in os.getenv('ALLOWED_ORIGINS', '').split(',') if o.strip()]
 
 # genai Client
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
@@ -203,97 +208,21 @@ async def update_discord_stat(uid, display_name, coins, xp, level, last_daily):
     except Exception as e:
         logging.error(f"DB Error update: {e}")
 
-import asyncio
-from math import floor, sqrt
-import json
-import logging
-from datetime import datetime
 
-_json_cache = {}
-
-async def load_json(filepath):
-    basename = os.path.basename(filepath)
-    if basename in _json_cache:
-        return _json_cache[basename]
+async def adjust_coins(uid, delta, display_name=None):
+    # Atomic coin delta — avoids the read-modify-write race where two concurrent
+    # commands read the same balance and the last writer wins. Clamps at 0.
     try:
+        now = datetime.utcnow().isoformat() + "Z"
         async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT content FROM json_store WHERE filename=?", (basename,)) as cursor:
-                row = await cursor.fetchone()
-                if row:
-                    data = json.loads(row[0])
-                    _json_cache[basename] = data
-                    return data
-    except Exception as e:
-        logging.error(f"DB Load Error: {e}")
-    _json_cache[basename] = {}
-    return {}
-
-async def save_json(filepath, data):
-    basename = os.path.basename(filepath)
-    _json_cache[basename] = data
-    try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute("INSERT OR REPLACE INTO json_store (filename, content) VALUES (?, ?)", (basename, json.dumps(data, ensure_ascii=False)))
+            await db.execute(
+                "INSERT INTO DiscordStat (id, displayName, coins, updatedAt) VALUES (?, ?, MAX(0, ?), ?) "
+                "ON CONFLICT(id) DO UPDATE SET coins = MAX(0, coins + ?), "
+                "displayName = COALESCE(?, displayName), updatedAt = ?",
+                (str(uid), display_name or str(uid), delta, now, delta, display_name, now))
             await db.commit()
     except Exception as e:
-        logging.error(f"DB Save Error: {e}")
-
-async def get_discord_stat(uid):
-    try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT coins, xp, level, lastDaily FROM DiscordStat WHERE id=?", (str(uid),)) as cursor:
-                row = await cursor.fetchone()
-                if row:
-                    coins, xp, level, lastDaily = row[0], row[1], row[2], row[3]
-                    
-                    # O(1) Level Up Math
-                    if xp >= level * 100:
-                        a = 50
-                        b = 100 * level - 50
-                        c = -xp
-                        discriminant = b**2 - 4*a*c
-                        if discriminant > 0:
-                            n = floor((-b + sqrt(discriminant)) / (2*a))
-                            if n > 0:
-                                xp_consumed = 100 * n * level + 50 * n * (n - 1)
-                                level += n
-                                xp -= int(xp_consumed)
-                                await db.execute("UPDATE DiscordStat SET xp=?, level=? WHERE id=?", (xp, level, str(uid)))
-                                await db.commit()
-                    return {'coins': coins, 'xp': xp, 'level': level, 'lastDaily': lastDaily}
-    except Exception as e:
-        logging.error(f"DB Error get: {e}")
-    return {'coins': 0, 'xp': 0, 'level': 1, 'lastDaily': ''}
-
-async def update_discord_stat(uid, display_name, coins, xp, level, last_daily):
-    if xp >= level * 100:
-        a = 50
-        b = 100 * level - 50
-        c = -xp
-        discriminant = b**2 - 4*a*c
-        if discriminant > 0:
-            n = floor((-b + sqrt(discriminant)) / (2*a))
-            if n > 0:
-                xp_consumed = 100 * n * level + 50 * n * (n - 1)
-                level += n
-                xp -= int(xp_consumed)
-    try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            now = datetime.utcnow().isoformat() + "Z"
-            await db.execute("""
-                INSERT INTO DiscordStat (id, displayName, coins, xp, level, lastDaily, updatedAt) 
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET 
-                displayName=excluded.displayName,
-                coins=excluded.coins,
-                xp=excluded.xp,
-                level=excluded.level,
-                lastDaily=excluded.lastDaily,
-                updatedAt=excluded.updatedAt
-            """, (str(uid), display_name, coins, xp, level, last_daily, now))
-            await db.commit()
-    except Exception as e:
-        logging.error(f"DB Error update: {e}")
+        logging.error(f"DB Error adjust_coins: {e}")
 
 
 
@@ -1031,6 +960,52 @@ async def generate_love_image(member1, member2, percentage):
         return None
 
 
+ANNOUNCE_CATEGORIES = ['market', 'levelup', 'birthday', 'boss', 'booster', 'binomo']
+
+def _load_config():
+    try:
+        with open('config.json', 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _find_fallback_channel(guild):
+    # Logika lama: cari channel general/chat, kalau gagal ambil channel pertama yang writable.
+    for ch in guild.text_channels:
+        if 'general' in ch.name.lower() or 'chat' in ch.name.lower():
+            if ch.permissions_for(guild.me).send_messages:
+                return ch
+    for ch in guild.text_channels:
+        if ch.permissions_for(guild.me).send_messages:
+            return ch
+    return None
+
+def get_announce_channel(guild, category):
+    # Resolusi: announce_channels[category] -> announce_channels[default] -> fallback lama.
+    # Mengembalikan channel yang writable, atau None.
+    cfg = _load_config()
+    announce = cfg.get('announce_channels', {}) if isinstance(cfg, dict) else {}
+
+    candidates = []
+    if category:
+        candidates.append(announce.get(category))
+    candidates.append(announce.get('default'))
+    # Kompatibilitas: key lama booster_channel_id untuk kategori booster
+    if category == 'booster':
+        candidates.append(cfg.get('booster_channel_id'))
+
+    for cid in candidates:
+        if not cid:
+            continue
+        try:
+            ch = guild.get_channel(int(cid))
+        except (ValueError, TypeError):
+            ch = None
+        if ch and ch.permissions_for(guild.me).send_messages:
+            return ch
+
+    return _find_fallback_channel(guild)
+
 async def check_birthdays():
     await client.wait_until_ready()
     while not client.is_closed():
@@ -1038,20 +1013,9 @@ async def check_birthdays():
         bdays = await load_json('birthdays.json')
         
         # We need a channel to announce birthdays.
-        # Let's try to find a general channel.
         for guild in client.guilds:
-            announce_channel = None
-            for ch in guild.text_channels:
-                if 'general' in ch.name.lower() or 'chat' in ch.name.lower():
-                    if ch.permissions_for(guild.me).send_messages:
-                        announce_channel = ch
-                        break
-            if not announce_channel:
-                for ch in guild.text_channels:
-                    if ch.permissions_for(guild.me).send_messages:
-                        announce_channel = ch
-                        break
-                        
+            announce_channel = get_announce_channel(guild, 'birthday')
+
             if announce_channel:
                 for uid, date_str in bdays.items():
                     if date_str == today_str:
@@ -1063,11 +1027,9 @@ async def check_birthdays():
                             continue
                             
                         # Reward
-                        stat = await get_discord_stat(uid)
-                        stat['coins'] += 1000
                         user = client.get_user(int(uid))
                         name = user.display_name if user else f"User {uid}"
-                        await update_discord_stat(uid, name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+                        await adjust_coins(uid, 1000, name)
                         
                         await announce_channel.send(f"🎉 **SELAMAT ULANG TAHUN!** 🎉\nHari ini adalah hari ulang tahun {user.mention if user else name}!\nSebagai hadiah, kamu mendapatkan **1000 Koin**! 🎁")
                         
@@ -1161,11 +1123,9 @@ async def update_market_prices():
         # Broadcast event message
         if event_message:
             for guild in client.guilds:
-                for ch in guild.text_channels:
-                    if 'general' in ch.name.lower() or 'chat' in ch.name.lower():
-                        if ch.permissions_for(guild.me).send_messages:
-                            client.loop.create_task(ch.send(event_message))
-                            break
+                ch = get_announce_channel(guild, 'market')
+                if ch:
+                    client.loop.create_task(ch.send(event_message))
                             
         # Resolve Binomo Bets
         binomo = await load_json(BINOMO_FILE)
@@ -1186,9 +1146,7 @@ async def update_market_prices():
                     
                 if won:
                     winnings = bet_amount * 2
-                    stat = await get_discord_stat(uid)
-                    stat['coins'] += winnings
-                    await update_discord_stat(uid, f"User_{uid}", stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+                    await adjust_coins(uid, winnings, f"User_{uid}")
                     results.append(f"<@{uid}> **MENANG {winnings} Koin!** (Tebak {symbol} {direction} | Entry: {entry_price}, Now: {new_price})")
                 else:
                     results.append(f"<@{uid}> **RUGI {bet_amount} Koin!** (Tebak {symbol} {direction} | Entry: {entry_price}, Now: {new_price})")
@@ -1199,11 +1157,9 @@ async def update_market_prices():
             if results:
                 result_str = "🎰 **HASIL JUDI BINOMO 10 MENIT INI:** 🎰\n" + "\n".join(results)
                 for guild in client.guilds:
-                    for ch in guild.text_channels:
-                        if 'general' in ch.name.lower() or 'chat' in ch.name.lower():
-                            if ch.permissions_for(guild.me).send_messages:
-                                client.loop.create_task(ch.send(result_str))
-                                break
+                    ch = get_announce_channel(guild, 'binomo')
+                    if ch:
+                        client.loop.create_task(ch.send(result_str))
                             
         await asyncio.sleep(600) # Every 10 minutes
 
@@ -1212,19 +1168,9 @@ async def voice_salary_loop():
     while not client.is_closed():
         await asyncio.sleep(600) # Wait 10 minutes
         for guild in client.guilds:
-            # Cari channel pengumuman (general/chat)
-            announce_channel = None
-            for ch in guild.text_channels:
-                if 'general' in ch.name.lower() or 'chat' in ch.name.lower():
-                    if ch.permissions_for(guild.me).send_messages:
-                        announce_channel = ch
-                        break
-            if not announce_channel:
-                for ch in guild.text_channels:
-                    if ch.permissions_for(guild.me).send_messages:
-                        announce_channel = ch
-                        break
-                        
+            # Channel pengumuman level-up dari VC
+            announce_channel = get_announce_channel(guild, 'levelup')
+
             # Loop setiap voice channel
             for vc in guild.voice_channels:
                 members = [m for m in vc.members if not m.bot]
@@ -1268,14 +1214,11 @@ async def boss_raid_loop():
                 
                 # Cari channel pengumuman
                 for guild in client.guilds:
-                    for ch in guild.text_channels:
-                        if 'general' in ch.name.lower() or 'chat' in ch.name.lower():
-                            if ch.permissions_for(guild.me).send_messages:
-                                client.loop.create_task(
-                                    ch.send(f"⚠️ **BOSS RAID EVENT DIMULAI!** ⚠️\n**{boss_data['name']}** telah muncul dengan {boss_data['hp']} HP!\nKetik `!attack` untuk menyerang! Yang berhasil membunuhnya mendapat hadiah 5000 Koin!")
-                                )
-                                break
-                                break
+                    ch = get_announce_channel(guild, 'boss')
+                    if ch:
+                        client.loop.create_task(
+                            ch.send(f"⚠️ **BOSS RAID EVENT DIMULAI!** ⚠️\n**{boss_data['name']}** telah muncul dengan {boss_data['hp']} HP!\nKetik `!attack` untuk menyerang! Yang berhasil membunuhnya mendapat hadiah 5000 Koin!")
+                        )
                                 
 async def crypto_mining_loop():
     await client.wait_until_ready()
@@ -1326,9 +1269,16 @@ async def on_ready():
 @web.middleware
 async def cors_middleware(request, handler):
     response = await handler(request)
-    response.headers['Access-Control-Allow-Origin'] = '*'
+    origin = request.headers.get('Origin')
+    if ALLOWED_ORIGINS:
+        if origin in ALLOWED_ORIGINS:
+            response.headers['Access-Control-Allow-Origin'] = origin
+            response.headers['Vary'] = 'Origin'
+    else:
+        # Dev mode: tidak ada whitelist, izinkan semua.
+        response.headers['Access-Control-Allow-Origin'] = '*'
     response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, X-Auth-Token'
     return response
 
 async def handle_options(request):
@@ -1360,7 +1310,17 @@ async def api_radar(request):
         })
     return web.json_response(data)
 
+def require_token(request):
+    # Returns True if the request carries a valid X-Auth-Token. If DASHBOARD_TOKEN
+    # is unset, all access is denied (fail closed) to avoid an open write surface.
+    if not DASHBOARD_TOKEN:
+        return False
+    supplied = request.headers.get('X-Auth-Token', '')
+    return hmac.compare_digest(supplied, DASHBOARD_TOKEN)
+
 async def api_broadcast(request):
+    if not require_token(request):
+        return web.json_response({'error': 'unauthorized'}, status=401)
     try:
         data = await request.json()
         channel_type = data.get('channel')
@@ -1423,11 +1383,56 @@ async def get_config_api(request):
         return web.json_response({})
 
 async def update_config_api(request):
+    if not require_token(request):
+        return web.json_response({'error': 'unauthorized'}, status=401)
     try:
         data = await request.json()
         with open('config.json', 'w') as f:
             json.dump(data, f)
         return web.json_response({'status': 'success'})
+    except Exception as e:
+        return web.json_response({'status': 'error', 'msg': str(e)}, status=500)
+
+async def api_channels(request):
+    # Daftar text channel guild untuk dropdown di dashboard / web main.
+    guild = client.get_guild(ALLOWED_SERVER_ID)
+    if not guild:
+        return web.json_response({'error': 'Bot is not in the allowed server'}, status=404)
+    channels = [{'id': str(c.id), 'name': c.name} for c in guild.text_channels]
+    return web.json_response(channels)
+
+async def get_announce_config_api(request):
+    cfg = _load_config()
+    announce = cfg.get('announce_channels', {}) if isinstance(cfg, dict) else {}
+    # Pastikan semua kategori hadir (default + 6) supaya client gampang render.
+    result = {'default': announce.get('default', '')}
+    for cat in ANNOUNCE_CATEGORIES:
+        result[cat] = announce.get(cat, '')
+    return web.json_response(result)
+
+async def update_announce_config_api(request):
+    if not require_token(request):
+        return web.json_response({'error': 'unauthorized'}, status=401)
+    try:
+        data = await request.json()
+        allowed = ['default'] + ANNOUNCE_CATEGORIES
+        announce = {}
+        for key in allowed:
+            val = data.get(key, '')
+            if val is None:
+                val = ''
+            val = str(val).strip()
+            # Hanya terima channel ID berupa digit, atau string kosong (= pakai fallback).
+            if val and not val.isdigit():
+                return web.json_response({'error': f'Invalid channel id for {key}'}, status=400)
+            announce[key] = val
+        cfg = _load_config()
+        if not isinstance(cfg, dict):
+            cfg = {}
+        cfg['announce_channels'] = announce
+        with open('config.json', 'w', encoding='utf-8') as f:
+            json.dump(cfg, f)
+        return web.json_response({'status': 'success', 'announce_channels': announce})
     except Exception as e:
         return web.json_response({'status': 'error', 'msg': str(e)}, status=500)
 
@@ -1440,12 +1445,17 @@ async def start_web_server():
     app.router.add_post('/api/config', update_config_api)
     app.router.add_get('/api/radar', api_radar)
     app.router.add_post('/api/broadcast', api_broadcast)
+    app.router.add_get('/api/channels', api_channels)
+    app.router.add_get('/api/announce-config', get_announce_config_api)
+    app.router.add_post('/api/announce-config', update_announce_config_api)
     
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', 8081)
     await site.start()
     logging.info("Bot API started on port 8081")
+    if not DASHBOARD_TOKEN:
+        logging.warning("DASHBOARD_TOKEN is not set — /api/broadcast and POST /api/config are disabled (fail closed). Set DASHBOARD_TOKEN to enable them.")
 
 @client.event
 async def on_voice_state_update(member, before, after):
@@ -1455,30 +1465,8 @@ async def on_voice_state_update(member, before, after):
 
         if member.premium_since and not member.bot:
             guild = member.guild
-            notify_channel = None
-            
-            # Check config.json first
-            try:
-                import json
-                with open('config.json', 'r') as f:
-                    cfg = json.load(f)
-                if cfg.get('booster_channel_id'):
-                    ch_id = int(cfg['booster_channel_id'])
-                    notify_channel = guild.get_channel(ch_id)
-            except:
-                pass
-                
-            if notify_channel is None:
-                for ch in guild.text_channels:
-                    if 'general' in ch.name.lower() or 'chat' in ch.name.lower():
-                        if ch.permissions_for(guild.me).send_messages:
-                            notify_channel = ch
-                            break
-                if notify_channel is None:
-                    for ch in guild.text_channels:
-                        if ch.permissions_for(guild.me).send_messages:
-                            notify_channel = ch
-                            break
+            notify_channel = get_announce_channel(guild, 'booster')
+
             if notify_channel:
                 intros = [
                     f"👑 **{member.display_name}** (Donatur) telah bergabung ke VC **{after.channel.name}**.",
@@ -1536,15 +1524,14 @@ async def send_long_message(channel, message):
         for i in range(0, len(message), 2000):
             await channel.send(message[i:i+2000])
 
-def write_to_memory(content):
+async def write_to_memory(content):
     try:
-        conn = sqlite3.connect(DB_PATH)
         now = datetime.utcnow().isoformat() + "Z"
-        conn.execute("INSERT INTO ChatMemory (timestamp, content) VALUES (?, ?)", (now, content))
-        # Keep only the last 2000 log entries to prevent DB bloat
-        conn.execute("DELETE FROM ChatMemory WHERE id NOT IN (SELECT id FROM ChatMemory ORDER BY id DESC LIMIT 2000)")
-        conn.commit()
-        conn.close()
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("INSERT INTO ChatMemory (timestamp, content) VALUES (?, ?)", (now, content))
+            # Keep only the last 2000 log entries to prevent DB bloat
+            await db.execute("DELETE FROM ChatMemory WHERE id NOT IN (SELECT id FROM ChatMemory ORDER BY id DESC LIMIT 2000)")
+            await db.commit()
     except Exception as e:
         logging.error(f"Error saving chat memory to DB: {e}")
 
@@ -1606,1597 +1593,10 @@ async def get_gemini_response(query, user_id=None, user_name=None):
             final_query = f"{system_prefix}\nPesan User: {query}"
             chat_session = gemini_client.chats.create(model='gemini-2.5-flash')
             response = await asyncio.to_thread(chat_session.send_message, final_query)
-        return response.text
+        return response.text or "Hmm, gue lagi nggak bisa jawab itu. Coba tanya yang lain deh."
     except Exception as e:
         logging.error(f"Error getting Gemini response: {str(e)}")
         return "Error getting response from Gemini."
-
-    # ── Update Quest Progress ────────────────────────────────────────────────
-    await update_quest_progress(str(message.author.id), 'send_msg', 1)
-    
-    if message.channel.id == 1341038015186862201:
-        nick = getattr(message.author, 'nick', None) or message.author.display_name
-        response = await get_gemini_response(message.content, message.author.id, nick)
-        await send_long_message(message.channel, response)
-        write_to_memory(f'User: {message.content}\nBot: {response}')
-        return
-
-    if message.content.startswith('w2e ai '):
-        prefix = 'w2e ai '
-        query = message.content[len(prefix):].strip()
-        if not query:
-            await send_msg_embed(message.channel, 'Please provide a query.')
-            return
-        nick = getattr(message.author, 'nick', None) or message.author.display_name
-        response = await get_gemini_response(query, message.author.id, nick)
-        await send_long_message(message.channel, response)
-        write_to_memory(f'User: {query}\nBot: {response}')
-    
-    if message.content.startswith('w2e1'):
-        channel_id = 1332111384523309156
-        message_content = message.content[len('w2e1 '):].strip()
-        channel = client.get_channel(channel_id)
-        if channel:
-            await send_long_message(channel, message_content)
-            await send_msg_embed(message.channel, "Message sent to bhot.")
-            write_to_memory(f'User: {message_content}\nBot: Message sent to bhot.')
-        else:
-            await send_msg_embed(message.channel, "Invalid channel ID for bhot.")
-    
-    if message.content.startswith('w2e2'):
-        channel_id = 1332113600894079131
-        message_content = message.content[len('w2e2 '):].strip()
-        channel = client.get_channel(channel_id)
-        if channel:
-            await send_long_message(channel, message_content)
-            await send_msg_embed(message.channel, "Message sent to general.")
-            write_to_memory(f'User: {message_content}\nBot: Message sent to general.')
-        else:
-            await send_msg_embed(message.channel, "Invalid channel ID for general.")
-    
-    if message.content.startswith('w2e3'):
-        channel_id = 1340942564379070535
-        message_content = message.content[len('w2e3 '):].strip()
-        channel = client.get_channel(channel_id)
-        if channel:
-            await send_long_message(channel, message_content)
-            await send_msg_embed(message.channel, "Message sent to console.")
-            write_to_memory(f'User: {message_content}\nBot: Message sent to console.')
-        else:
-            await send_msg_embed(message.channel, "Invalid channel ID for console.")
-
-    if message.content.startswith('w2echannel'):
-        await send_msg_embed(message.channel, "List of channels:\n1. bhot (1332111384523309156)\n2. general (1332113600894079131)\n3. console (1340942564379070535)")
-
-    content_clean = message.content.strip().lower()
-    if content_clean in ['w2ehelp', 'w2e help', '!help', '!w2ehelp', 'w2e w2ehelp', f'{BOT_PREFIX.lower()}help', f'{BOT_PREFIX.lower()} help']:
-        from w2e_help import send_w2e_help
-        await send_w2e_help(message)
-        return
-        
-# ── Coinflip: !w2ecf heads/tails [bet] ───────────────────────────────────
-    if message.content.startswith('w2e cf'):
-        uid = str(message.author.id)
-        stat = await get_discord_stat(uid)
-        parts = message.content.split()
-
-        if len(parts) < 3:
-            await send_msg_embed(message.channel, "Format: `!w2ecf <heads/tails> [bet]` — contoh: `!w2ecf heads 100`")
-            return
-
-        choice = parts[2].lower()
-        if choice not in ('heads', 'tails', 'head', 'tail', 'h', 't'):
-            await send_msg_embed(message.channel, "Pilihannya hanya `heads` atau `tails`!")
-            return
-        choice_normalized = 'heads' if choice in ('heads', 'head', 'h') else 'tails'
-
-        bet = 50
-        if len(parts) >= 4:
-            try:
-                bet = int(parts[3])
-                if bet < 10:
-                    await send_msg_embed(message.channel, "❌ Minimal bet **10 Koin**.")
-                    return
-                if bet > 2000:
-                    await send_msg_embed(message.channel, "❌ Maksimal bet **2000 Koin**.")
-                    return
-            except ValueError:
-                await send_msg_embed(message.channel, "Format: `!w2ecf heads 100`")
-                return
-
-        if stat['coins'] < bet:
-            await send_msg_embed(message.channel, f"❌ Koin tidak cukup! Punya **{stat['coins']}**, butuh **{bet}**.")
-            return
-
-        result = random.choice(['heads', 'tails'])
-        coin_emoji = "🟡" if result == 'heads' else "⚪"
-        flip_msg = await send_msg_embed(message.channel, 
-            f"🪙 **COIN FLIP** — **{message.author.display_name}** pilih **{choice_normalized}**, bet **{bet} Koin**\n"
-            f"*Melempar koin...*"
-        )
-        await asyncio.sleep(1.2)
-
-        if result == choice_normalized:
-            winnings = bet
-            stat['coins'] += winnings
-            result_line = f"{coin_emoji} Koin jatuh: **{result.upper()}** — **MENANG! +{winnings} Koin** 🎉"
-        else:
-            stat['coins'] -= bet
-            result_line = f"{coin_emoji} Koin jatuh: **{result.upper()}** — **KALAH! -{bet} Koin** 💸"
-
-        await update_discord_stat(uid, message.author.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
-        color = discord.Color.green() if result == choice_normalized else discord.Color.red()
-        embed = discord.Embed(
-            description=(
-                f"🪙 **COIN FLIP** — **{message.author.display_name}** pilih **{choice_normalized}**, bet **{bet} Koin**\n"
-                f"{result_line}\n"
-                f"💼 Sisa Koin: **{stat['coins']}**"
-            ),
-            color=color
-        )
-        await flip_msg.edit(embed=embed)
-
-    # ── Lootbox: !w2ebox [common/rare/epic] ──────────────────────────────────
-    if message.content.startswith('w2e box'):
-        uid = str(message.author.id)
-        stat = await get_discord_stat(uid)
-        parts = message.content.split()
-        tier = parts[2].lower() if len(parts) > 2 else 'common'
-
-        BOXES = {
-            'common':    {'cost': 100,  'emoji': '📦', 'color': '⬜', 'min': 50,   'max': 250,  'xp': 10},
-            'rare':      {'cost': 300,  'emoji': '🎁', 'color': '🟦', 'min': 200,  'max': 700,  'xp': 30},
-            'epic':      {'cost': 800,  'emoji': '💜', 'color': '🟪', 'min': 600,  'max': 2000, 'xp': 80},
-            'legendary': {'cost': 2500, 'emoji': '🌟', 'color': '🟨', 'min': 2000, 'max': 8000, 'xp': 200},
-        }
-
-        if tier not in BOXES:
-            box_list = "\n".join([f"{v['emoji']} **{k.capitalize()}** — {v['cost']} Koin" for k, v in BOXES.items()])
-            await send_msg_embed(message.channel, f"Pilih tier box:\n{box_list}\nContoh: `!w2ebox rare`")
-            return
-
-        box = BOXES[tier]
-        if stat['coins'] < box['cost']:
-            await send_msg_embed(message.channel, f"❌ Butuh **{box['cost']} Koin** untuk {tier} box. Punya: **{stat['coins']}**.")
-            return
-
-        stat['coins'] -= box['cost']
-        reward_coins = random.randint(box['min'], box['max'])
-
-        # 10% bonus jackpot multiplier
-        jackpot = False
-        if random.random() < 0.10:
-            reward_coins = int(reward_coins * 2.5)
-            jackpot = True
-
-        stat['coins'] += reward_coins
-        await update_discord_stat(uid, message.author.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
-        await check_level_up(message.channel, message.author, box['xp'])
-
-        open_msg = await send_msg_embed(message.channel, f"{box['emoji']} **Membuka {tier.capitalize()} Box...** {box['color']}{box['color']}{box['color']}")
-        await asyncio.sleep(1.5)
-
-        jackpot_tag = "⚡ **JACKPOT BONUS x2.5!**\n" if jackpot else ""
-        color = discord.Color.gold()
-        embed = discord.Embed(
-            description=(
-                f"{box['emoji']} **{tier.capitalize()} Box Dibuka!**\n"
-                f"{jackpot_tag}"
-                f"💰 Kamu mendapat **+{reward_coins} Koin**!\n"
-                f"💼 Total Koin: **{stat['coins']}**"
-            ),
-            color=color
-        )
-        await open_msg.edit(embed=embed)
-
-    # ── Pray: !w2epray @user ─────────────────────────────────────────────────
-    if message.content.startswith('w2e pray'):
-        if not message.mentions:
-            await send_msg_embed(message.channel, "Mention seseorang dulu! `!w2epray @user`")
-            return
-        target = message.mentions[0]
-        if target == message.author:
-            await send_msg_embed(message.channel, "❌ Kamu tidak bisa mendoakan diri sendiri!")
-            return
-        if target.bot:
-            await send_msg_embed(message.channel, "❌ Bot tidak butuh doa.")
-            return
-
-        uid_target = str(target.id)
-        stat_target = await get_discord_stat(uid_target)
-
-        # Pray memberi 5–50 koin ke target secara random
-        blessing = random.randint(5, 50)
-        stat_target['coins'] += blessing
-        await update_discord_stat(uid_target, target.display_name, stat_target['coins'], stat_target['xp'], stat_target['level'], stat_target['lastDaily'])
-
-        pray_msgs = [
-            f"🙏 **{message.author.display_name}** mendoakan **{target.display_name}**... Semoga rezekinya lancar! (+{blessing} Koin)",
-            f"✨ Doa **{message.author.display_name}** dikabulkan untuk **{target.display_name}**! (+{blessing} Koin diberikan oleh alam semesta)",
-            f"🌟 Langit menurunkan berkah atas doa **{message.author.display_name}** kepada **{target.display_name}**! +{blessing} Koin~",
-        ]
-        await send_msg_embed(message.channel, random.choice(pray_msgs))
-
-    # (Removed duplicate curse command block)
-
-    # ── Admin Add Coin: !w2eaddcoin @user <amount> ───────────────────────────
-    if message.content.startswith('w2e addcoin'):
-        if not message.author.guild_permissions.administrator:
-            await send_msg_embed(message.channel, "❌ Kamu bukan admin, jangan ngide!")
-            return
-            
-        parts = message.content.split()
-        if len(parts) < 3 or not message.mentions:
-            await send_msg_embed(message.channel, "Format: `!w2eaddcoin @user <jumlah>`")
-            return
-            
-        target = message.mentions[0]
-        try:
-            amount = int(parts[-1])
-        except ValueError:
-            await send_msg_embed(message.channel, "❌ Jumlah harus berupa angka!")
-            return
-            
-        uid = str(target.id)
-        stat = await get_discord_stat(uid)
-        stat['coins'] += amount
-        await update_discord_stat(uid, target.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
-        
-        await send_msg_embed(message.channel, f"👑 **ADMIN MAGIC!** {message.author.mention} baru saja menambahkan **{amount} Koin** kepada {target.mention}! Cuan gratis dari pusat!")
-
-    # ── Give: !w2egive @user <amount> ────────────────────────────────────────
-    if message.content.startswith('w2e give'):
-        if not message.mentions:
-            await send_msg_embed(message.channel, "Format: `!w2egive @user <jumlah>` — contoh: `!w2egive @teman 100`")
-            return
-        target = message.mentions[0]
-        if target == message.author:
-            await send_msg_embed(message.channel, "❌ Kamu tidak bisa memberikan koin ke diri sendiri.")
-            return
-        if target.bot:
-            await send_msg_embed(message.channel, "❌ Bot tidak bisa menerima koin.")
-            return
-
-        parts = message.content.split()
-        try:
-            amount = int(parts[-1])
-            if amount <= 0:
-                raise ValueError
-        except ValueError:
-            await send_msg_embed(message.channel, "Masukin jumlah koin yang valid! Contoh: `!w2egive @teman 100`")
-            return
-
-        uid_self = str(message.author.id)
-        stat_self = await get_discord_stat(uid_self)
-
-        if stat_self['coins'] < amount:
-            await send_msg_embed(message.channel, f"❌ Koin tidak cukup! Punya **{stat_self['coins']}**, mau kasih **{amount}**.")
-            return
-
-        uid_target = str(target.id)
-        stat_target = await get_discord_stat(uid_target)
-
-        stat_self['coins'] -= amount
-        stat_target['coins'] += amount
-        await update_discord_stat(uid_self, message.author.display_name, stat_self['coins'], stat_self['xp'], stat_self['level'], stat_self['lastDaily'])
-        await update_discord_stat(uid_target, target.display_name, stat_target['coins'], stat_target['xp'], stat_target['level'], stat_target['lastDaily'])
-
-        await send_msg_embed(message.channel, 
-            f"💸 **{message.author.display_name}** memberikan **{amount} Koin** kepada **{target.display_name}**!\n"
-            f"💼 Sisa koin {message.author.display_name}: **{stat_self['coins']}**"
-        )
-
-    # ── Top Leaderboard: !w2etop ─────────────────────────────────────────────
-    if message.content.startswith('w2e top'):
-        # Sort users by coins using sqlite directly or just fetch all and sort
-        try:
-            conn = sqlite3.connect(DB_PATH)
-            c = conn.cursor()
-            c.execute('SELECT displayName, coins, level FROM DiscordStat ORDER BY coins DESC LIMIT 10')
-            top_users = c.fetchall()
-            conn.close()
-            
-            res = "🏆 **W2E LEADERBOARD - SULTAN SERVER** 🏆\n\n"
-            medals = ["🥇", "🥈", "🥉"]
-            for i, user in enumerate(top_users):
-                rank = medals[i] if i < 3 else f"`#{i+1}`"
-                res += f"{rank} **{user[0]}** — 💰 {user[1]} Koin | Lvl {user[2]}\n"
-            
-            await send_msg_embed(message.channel, res)
-        except Exception as e:
-            await send_msg_embed(message.channel, "Gagal mengambil data leaderboard.")
-
-    # ── Weekly Bonus: !w2eweekly ─────────────────────────────────────────────
-    if message.content.startswith('w2e weekly'):
-        uid = str(message.author.id)
-        stat = await get_discord_stat(uid)
-        weekly_data = await load_json(WEEKLY_FILE)
-        
-        today = datetime.now()
-        last_weekly_str = weekly_data.get(uid)
-        
-        can_claim = True
-        if last_weekly_str:
-            last_weekly = datetime.strptime(last_weekly_str, '%Y-%m-%d')
-            if (today - last_weekly).days < 7:
-                can_claim = False
-                days_left = 7 - (today - last_weekly).days
-                
-        if not can_claim:
-            await send_msg_embed(message.channel, f"❌ Kamu sudah klaim bonus mingguan! Tunggu **{days_left} hari** lagi.")
-            return
-            
-        reward = random.randint(500, 2000)
-        multiplier_str = ""
-        if message.author.premium_since:
-            reward *= 2
-            multiplier_str = "\n*(👑 Booster Bonus x2!)*"
-            
-        weekly_data[uid] = today.strftime('%Y-%m-%d')
-        await save_json(WEEKLY_FILE, weekly_data)
-        
-        stat['coins'] += reward
-        await update_discord_stat(uid, message.author.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
-        await send_msg_embed(message.channel, f"🎁 **BONUS MINGGUAN!** {message.author.display_name} mendapatkan **{reward} Koin**! (Total: {stat['coins']}){multiplier_str}")
-        await check_level_up(message.channel, message.author, 100)
-
-    # ── Rob: !w2erob @user ───────────────────────────────────────────────────
-    if message.content.startswith('w2e rob'):
-        if not message.mentions:
-            await send_msg_embed(message.channel, "Format: `!w2erob @user`")
-            return
-        target = message.mentions[0]
-        if target == message.author:
-            await send_msg_embed(message.channel, "❌ Masa merampok diri sendiri...")
-            return
-        if target.bot:
-            await send_msg_embed(message.channel, "❌ Tidak bisa merampok bot.")
-            return
-
-        uid_self = str(message.author.id)
-        uid_target = str(target.id)
-        
-        # Check cooldown (30 menit per attacker-target combo)
-        cooldown_key = (uid_self, uid_target)
-        if cooldown_key in rob_cooldowns:
-            delta = datetime.now() - rob_cooldowns[cooldown_key]
-            if delta.total_seconds() < 1800:
-                mins_left = int((1800 - delta.total_seconds()) // 60)
-                await send_msg_embed(message.channel, f"⏳ Polisi masih patroli di area {target.display_name}. Tunggu {mins_left} menit lagi!")
-                return
-                
-        stat_self = await get_discord_stat(uid_self)
-        stat_target = await get_discord_stat(uid_target)
-
-        if stat_target['coins'] < 100:
-            await send_msg_embed(message.channel, f"❌ {target.display_name} terlalu miskin untuk dirampok (Koin < 100). Kasihanilah dia.")
-            return
-
-        rob_cooldowns[cooldown_key] = datetime.now()
-
-        # Cek shield target
-        target_items = await load_json(ITEMS_FILE).get(uid_target, {})
-        if target_items.get('shield', 0) > 0:
-            target_items['shield'] -= 1
-            all_items = await load_json(ITEMS_FILE)
-            if uid_target not in all_items: all_items[uid_target] = {}
-            all_items[uid_target]['shield'] = target_items['shield']
-            await save_json(ITEMS_FILE, all_items)
-            
-            await send_msg_embed(message.channel, f"🛡️ **{message.author.display_name}** mencoba merampok, tapi **{target.display_name}** punya Shield! Perampokan GAGAL.")
-            return
-
-        # Cek apakah target adalah booster
-        is_target_booster = False
-        if isinstance(target, discord.Member) and target.premium_since:
-            is_target_booster = True
-
-        # 40% success rate (10% jika target booster)
-        success_chance = 0.10 if is_target_booster else 0.40
-        if random.random() < success_chance:
-            # Sukses
-            pct = random.uniform(0.2, 0.5)
-            stolen = int(stat_target['coins'] * pct)
-            stat_target['coins'] -= stolen
-            stat_self['coins'] += stolen
-            booster_msg = "\n(Gila lu berani ngerampok donatur server!)" if is_target_booster else ""
-            await send_msg_embed(message.channel, f"🥷 **PERAMPOKAN SUKSES!**\n**{message.author.display_name}** berhasil mencuri **{stolen} Koin** dari **{target.display_name}**!{booster_msg}")
-        else:
-            # Gagal
-            fine = random.randint(100, 200)
-            if is_target_booster:
-                fine *= 2 # Denda 2x lipat
-            stat_self['coins'] = max(0, stat_self['coins'] - fine)
-            booster_msg = "\n(Kena karma nyoba ngerampok donatur!)" if is_target_booster else ""
-            await send_msg_embed(message.channel, f"🚨 **TERCYDUK!**\n**{message.author.display_name}** tertangkap basah mencoba merampok **{target.display_name}** dan didenda **{fine} Koin**!{booster_msg}")
-
-        await update_discord_stat(uid_self, message.author.display_name, stat_self['coins'], stat_self['xp'], stat_self['level'], stat_self['lastDaily'])
-        await update_discord_stat(uid_target, target.display_name, stat_target['coins'], stat_target['xp'], stat_target['level'], stat_target['lastDaily'])
-
-    # ── Shop: !w2eshop / !w2ebuy ─────────────────────────────────────────────
-    if message.content.startswith('w2e shop'):
-        is_booster = message.author.premium_since is not None
-        booster_msg = "\n👑 **(Diskon Booster 50% Aktif!)**" if is_booster else ""
-        res = f"🛒 **W2E SULTAN SHOP** 🛒{booster_msg}\n*Gunakan `!w2ebuy <item_id>` untuk membeli*\n\n"
-        for i_id, i_data in SHOP_ITEMS.items():
-            price = int(i_data['price'] * 0.5) if is_booster else i_data['price']
-            res += f"**{i_data['name']}** (`{i_id}`) — 💰 {price}\n└ {i_data['desc']}\n\n"
-        await send_msg_embed(message.channel, res)
-
-    if message.content.startswith('w2e buy'):
-        parts = message.content.split()
-        if len(parts) < 3:
-            await send_msg_embed(message.channel, "Mau beli apa? Contoh: `!w2ebuy shield`")
-            return
-            
-        item_id = parts[2].lower()
-        if item_id not in SHOP_ITEMS:
-            await send_msg_embed(message.channel, "❌ Item tidak ditemukan. Cek `!w2eshop`.")
-            return
-            
-        item = SHOP_ITEMS[item_id]
-        uid = str(message.author.id)
-        stat = await get_discord_stat(uid)
-        
-        is_booster = message.author.premium_since is not None
-        price = int(item['price'] * 0.5) if is_booster else item['price']
-        
-        if stat['coins'] < price:
-            await send_msg_embed(message.channel, f"❌ Uang tidak cukup. Butuh **{price} Koin**.")
-            return
-            
-        stat['coins'] -= price
-        await update_discord_stat(uid, message.author.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
-        
-        items_data = await load_json(ITEMS_FILE)
-        if uid not in items_data: items_data[uid] = {}
-        
-        if item_id == 'double_xp':
-            items_data[uid]['double_xp_until'] = (datetime.now() + timedelta(hours=2)).timestamp()
-        else:
-            items_data[uid][item_id] = items_data[uid].get(item_id, 0) + 1
-            
-        await save_json(ITEMS_FILE, items_data)
-        await send_msg_embed(message.channel, f"🛍️ Berhasil membeli **{item['name']}**! Sisa Koin: {stat['coins']}")
-
-    # ── Inventory & Transfer ───────────────────────────────────────────────
-    if message.content.startswith('w2e inventory'):
-        uid = str(message.author.id)
-        items_data = await load_json(ITEMS_FILE).get(uid, {})
-        
-        if not items_data:
-            await send_msg_embed(message.channel, "🎒 Tas kamu kosong melompong.")
-            return
-            
-        res = f"🎒 **Inventory {message.author.display_name}** 🎒\n"
-        for i_id, count in items_data.items():
-            if isinstance(count, int) and count > 0:
-                name = SHOP_ITEMS.get(i_id, {}).get('name', i_id)
-                res += f"🔸 **{name}**: {count}x\n"
-            elif i_id == 'bg_url' and count:
-                res += "🔸 **Custom Background**: Aktif\n"
-        await send_msg_embed(message.channel, res)
-
-    if message.content.startswith('w2e transfer'):
-        parts = message.content.split()
-        if len(parts) < 3 or not message.mentions:
-            await send_msg_embed(message.channel, "Format: `!w2etransfer @user <jumlah>`")
-            return
-            
-        target = message.mentions[0]
-        if target == message.author or target.bot:
-            await send_msg_embed(message.channel, "❌ Gak bisa transfer ke bot atau diri sendiri.")
-            return
-            
-        try:
-            amount = int(parts[-1])
-            if amount <= 0: raise ValueError
-        except ValueError:
-            await send_msg_embed(message.channel, "❌ Jumlah koin harus angka positif.")
-            return
-            
-        uid1 = str(message.author.id)
-        uid2 = str(target.id)
-        stat1 = await get_discord_stat(uid1)
-        stat2 = await get_discord_stat(uid2)
-        
-        if stat1['coins'] < amount:
-            await send_msg_embed(message.channel, f"❌ Koin kamu gak cukup! Kamu cuma punya **{stat1['coins']} Koin**.")
-            return
-            
-        stat1['coins'] -= amount
-        stat2['coins'] += amount
-        await update_discord_stat(uid1, message.author.display_name, stat1['coins'], stat1['xp'], stat1['level'], stat1['lastDaily'])
-        await update_discord_stat(uid2, target.display_name, stat2['coins'], stat2['xp'], stat2['level'], stat2['lastDaily'])
-        
-        await send_msg_embed(message.channel, f"💸 **Transfer Sukses!**\n{message.author.display_name} mengirimkan **{amount} Koin** ke {target.display_name}.")
-
-    if message.content.startswith('w2e work'):
-        uid = str(message.author.id)
-        if uid in work_cooldowns:
-            delta = datetime.now() - work_cooldowns[uid]
-            if delta.total_seconds() < 3600:
-                mins_left = int((3600 - delta.total_seconds()) // 60)
-                await send_msg_embed(message.channel, f"⏳ Kamu masih capek kerja. Istirahat dulu **{mins_left} menit** lagi!")
-                return
-                
-        work_cooldowns[uid] = datetime.now()
-        
-        jobs = [
-            ("jadi tukang parkir minimarket", 50, 150),
-            ("nge-joki tugas temen", 100, 300),
-            ("mulung botol plastik", 20, 80),
-            ("jadi buzzer Twitter", 150, 400),
-            ("ikut giveaway abal-abal", 10, 50),
-            ("jadi admin judi online", 200, 500),
-        ]
-        job_name, min_c, max_c = random.choice(jobs)
-        reward = random.randint(min_c, max_c)
-        
-        if message.author.premium_since:
-            reward = int(reward * 1.5) # Booster gets 50% more from working
-            
-        stat = await get_discord_stat(uid)
-        stat['coins'] += reward
-        await update_discord_stat(uid, message.author.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
-        
-        booster_txt = " (Boost x1.5)" if message.author.premium_since else ""
-        await send_msg_embed(message.channel, f"💼 {message.author.display_name} baru saja {job_name} dan mendapatkan **{reward} Koin**!{booster_txt}")
-
-    if message.content.startswith('w2e curse'):
-        parts = message.content.split()
-        if len(parts) < 2 or not message.mentions:
-            await send_msg_embed(message.channel, "Format: `!w2ecurse @user`\nBiaya: 100 Koin. Jika target punya Shield, kutukan gagal.")
-            return
-            
-        target = message.mentions[0]
-        if target == message.author or target.bot:
-            await send_msg_embed(message.channel, "❌ Masa ngutuk bot atau diri sendiri...")
-            return
-            
-        uid1 = str(message.author.id)
-        uid2 = str(target.id)
-        stat1 = await get_discord_stat(uid1)
-        
-        if stat1['coins'] < 100:
-            await send_msg_embed(message.channel, "❌ Dukun minta bayaran 100 Koin buat ngutuk. Duit kamu gak cukup.")
-            return
-            
-        stat1['coins'] -= 100
-        await update_discord_stat(uid1, message.author.display_name, stat1['coins'], stat1['xp'], stat1['level'], stat1['lastDaily'])
-        
-        target_items = await load_json(ITEMS_FILE).get(uid2, {})
-        if target_items.get('shield', 0) > 0:
-            target_items['shield'] -= 1
-            all_items = await load_json(ITEMS_FILE)
-            if uid2 not in all_items: all_items[uid2] = {}
-            all_items[uid2]['shield'] = target_items['shield']
-            await save_json(ITEMS_FILE, all_items)
-            
-            await send_msg_embed(message.channel, f"🧿 **KUTUKAN GAGAL!**\n{message.author.display_name} ngirim santet ke {target.display_name}, tapi dia pake **Shield**! Santet mental.")
-            return
-            
-        stat2 = await get_discord_stat(uid2)
-        curse_types = ['coins', 'xp']
-        c_type = random.choice(curse_types)
-        
-        if c_type == 'coins':
-            lost = random.randint(50, 300)
-            stat2['coins'] = max(0, stat2['coins'] - lost)
-            eff_msg = f"kehilangan **{lost} Koin**!"
-        else:
-            lost = random.randint(10, 50)
-            stat2['xp'] = max(0, stat2['xp'] - lost)
-            eff_msg = f"kehilangan **{lost} XP**!"
-            
-        await update_discord_stat(uid2, target.display_name, stat2['coins'], stat2['xp'], stat2['level'], stat2['lastDaily'])
-        await send_msg_embed(message.channel, f"☠️ **KUTUKAN BERHASIL!**\n{target.mention} kena santet dari {message.author.display_name} dan {eff_msg} 👻")
-
-    # ── W2E Casino ───────────────────────────────────────────────────────────
-    if message.content.startswith('w2e slot'):
-        parts = message.content.split()
-        if len(parts) < 3:
-            await send_msg_embed(message.channel, "Format: `!w2eslot <taruhan>`")
-            return
-            
-        try:
-            bet = int(parts[2])
-            if bet < 10: raise ValueError
-        except ValueError:
-            await send_msg_embed(message.channel, "Taruhan harus angka minimal 10.")
-            return
-            
-        uid = str(message.author.id)
-        stat = await get_discord_stat(uid)
-        
-        if stat['coins'] < bet:
-            await send_msg_embed(message.channel, f"❌ Koin tidak cukup. Kamu punya **{stat['coins']} Koin**.")
-            return
-            
-        stat['coins'] -= bet
-        
-        emojis = ['🍎', '🍒', '🍋', '💎', '7️⃣']
-        r1, r2, r3 = random.choice(emojis), random.choice(emojis), random.choice(emojis)
-        
-        res_msg = f"🎰 **W2E SLOTS** 🎰\n\n" \
-                  f"| {r1} | {r2} | {r3} |\n\n"
-                  
-        if r1 == r2 == r3:
-            multiplier = 10 if r1 == '7️⃣' else (5 if r1 == '💎' else 3)
-            win_amount = bet * multiplier
-            stat['coins'] += win_amount
-            res_msg += f"🎉 **JACKPOT!** Tiga simbol sama! Menang **{win_amount} Koin** (x{multiplier})!"
-        elif r1 == r2 or r2 == r3 or r1 == r3:
-            # 2 match, refund money
-            stat['coins'] += bet
-            res_msg += "👍 Dua simbol sama. Taruhan kembali."
-        else:
-            res_msg += "❌ Zonk! Uang taruhan hangus."
-            
-        await update_discord_stat(uid, message.author.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
-        await send_msg_embed(message.channel, res_msg)
-
-    if message.content.startswith('w2e flip'):
-        parts = message.content.split()
-        if len(parts) < 4:
-            await send_msg_embed(message.channel, "Format: `!w2eflip <heads/tails> <taruhan>`")
-            return
-            
-        choice = parts[2].lower()
-        if choice not in ('heads', 'tails', 'head', 'tail', 'h', 't'):
-            await send_msg_embed(message.channel, "Pilihannya cuma `heads` (Angka) atau `tails` (Gambar).")
-            return
-        choice_normalized = 'heads' if choice in ('heads', 'head', 'h') else 'tails'
-            
-        try:
-            bet = int(parts[3])
-            if bet < 10: raise ValueError
-        except ValueError:
-            await send_msg_embed(message.channel, "Taruhan harus angka minimal 10.")
-            return
-            
-        uid = str(message.author.id)
-        stat = await get_discord_stat(uid)
-        
-        if stat['coins'] < bet:
-            await send_msg_embed(message.channel, f"❌ Koin tidak cukup. Kamu punya **{stat['coins']} Koin**.")
-            return
-            
-        stat['coins'] -= bet
-        
-        result = random.choice(['heads', 'tails'])
-        if choice_normalized == result:
-            win = bet * 2
-            stat['coins'] += win
-            await send_msg_embed(message.channel, f"🪙 Koin menunjukkan **{result.upper()}**!\n✅ Tebakanmu benar, memenangkan **{win} Koin**!")
-        else:
-            await send_msg_embed(message.channel, f"🪙 Koin menunjukkan **{result.upper()}**!\n❌ Yah kalah. Uang taruhan hangus.")
-            
-        await update_discord_stat(uid, message.author.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
-
-    if message.content.startswith('w2e crash'):
-        parts = message.content.split()
-        if len(parts) < 3:
-            await send_msg_embed(message.channel, "Format: `!w2ecrash <taruhan>`")
-            return
-            
-        try:
-            bet = int(parts[2])
-            if bet < 10: raise ValueError
-        except ValueError:
-            await send_msg_embed(message.channel, "Taruhan harus angka minimal 10.")
-            return
-            
-        uid = str(message.author.id)
-        stat = await get_discord_stat(uid)
-        
-        if stat['coins'] < bet:
-            await send_msg_embed(message.channel, f"❌ Koin tidak cukup. Kamu punya **{stat['coins']} Koin**.")
-            return
-            
-        stat['coins'] -= bet
-        await update_discord_stat(uid, message.author.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
-        
-        crash_point = round(random.uniform(1.1, 5.0), 1)
-        if random.random() < 0.2: # 20% chance to crash very early
-            crash_point = round(random.uniform(1.0, 1.2), 1)
-        elif random.random() < 0.1: # 10% chance to go very high
-            crash_point = round(random.uniform(5.0, 15.0), 1)
-            
-        current_mult = 1.0
-        
-        embed = discord.Embed(title="🚀 W2E Crash", description=f"**Multiplier:** `{current_mult}x`\n\nKetik `stop` di chat untuk menarik koin!", color=discord.Color.green())
-        embed.set_footer(text=f"Taruhan: {bet} | Dimainkan oleh {message.author.display_name}")
-        msg = await send_msg_embed(message.channel, embed=embed)
-        
-        def check(m):
-            return m.author == message.author and m.channel == message.channel and m.content.lower() == 'stop'
-            
-        crashed = False
-        stopped = False
-        
-        while not crashed and not stopped:
-            try:
-                # Wait 1.5s for stop command
-                resp = await client.wait_for('message', timeout=1.5, check=check)
-                stopped = True
-            except asyncio.TimeoutError:
-                # Increment multiplier
-                current_mult = round(current_mult + random.uniform(0.1, 0.4), 1)
-                if current_mult >= crash_point:
-                    crashed = True
-                    current_mult = crash_point
-                else:
-                    embed.description = f"**Multiplier:** `{current_mult}x`\n\nKetik `stop` di chat untuk menarik koin!"
-                    if current_mult > 3.0: embed.color = discord.Color.gold()
-                    if current_mult > 6.0: embed.color = discord.Color.red()
-                    await msg.edit(embed=embed)
-                    
-        if stopped:
-            win_amount = int(bet * current_mult)
-            stat['coins'] += win_amount
-            await update_discord_stat(uid, message.author.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
-            
-            embed.description = f"**Multiplier Akhir:** `{current_mult}x`\n\n✅ Kamu berhenti tepat waktu dan memenangkan **{win_amount} Koin**!"
-            embed.color = discord.Color.green()
-            await msg.edit(embed=embed)
-        else:
-            embed.description = f"**Multiplier Akhir:** `{current_mult}x`\n\n💥 **CRASH!** Roket meledak! Uang taruhan **{bet}** hangus."
-            embed.color = discord.Color.dark_red()
-            await msg.edit(embed=embed)
-
-    # ── RPS PvP: !w2erps @user [bet] ─────────────────────────────────────────
-    if message.content.startswith('w2e rps'):
-        parts = message.content.split()
-        if not message.mentions or len(parts) < 3:
-            await send_msg_embed(message.channel, "Format: `!w2erps @user <bet>`")
-            return
-            
-        target = message.mentions[0]
-        if target == message.author or target.bot:
-            await send_msg_embed(message.channel, "❌ Gak bisa lawan bot / diri sendiri.")
-            return
-            
-        try:
-            bet = int(parts[-1])
-            if bet < 10: raise ValueError
-        except ValueError:
-            await send_msg_embed(message.channel, "Bet harus angka dan minimal 10.")
-            return
-            
-        uid1 = str(message.author.id)
-        uid2 = str(target.id)
-        stat1 = await get_discord_stat(uid1)
-        stat2 = await get_discord_stat(uid2)
-        
-        if stat1['coins'] < bet:
-            await send_msg_embed(message.channel, f"❌ Koin kamu gak cukup! Punya: {stat1['coins']}")
-            return
-        if stat2['coins'] < bet:
-            await send_msg_embed(message.channel, f"❌ Koin musuh gak cukup! Dia punya: {stat2['coins']}")
-            return
-            
-        # Potong koin di awal
-        stat1['coins'] -= bet
-        stat2['coins'] -= bet
-        await update_discord_stat(uid1, message.author.display_name, stat1['coins'], stat1['xp'], stat1['level'], stat1['lastDaily'])
-        await update_discord_stat(uid2, target.display_name, stat2['coins'], stat2['xp'], stat2['level'], stat2['lastDaily'])
-        
-        await send_msg_embed(message.channel, 
-            f"⚔️ **DUEL RPS** ⚔️\n"
-            f"{message.author.mention} menantang {target.mention} bertaruh **{bet} Koin**!\n"
-            f"Kalian berdua punya **30 detik** untuk membalas pesan ini dengan `batu`, `gunting`, atau `kertas`."
-        )
-        
-        choices = {uid1: None, uid2: None}
-        def check(m):
-            return m.channel == message.channel and str(m.author.id) in choices and m.content.lower() in ['batu', 'gunting', 'kertas']
-            
-        end_time = datetime.now() + timedelta(seconds=30)
-        
-        while None in choices.values() and datetime.now() < end_time:
-            try:
-                msg = await client.wait_for('message', timeout=2.0, check=check)
-                pid = str(msg.author.id)
-                if choices[pid] is None:
-                    choices[pid] = msg.content.lower()
-                    await msg.add_reaction('✅')
-            except asyncio.TimeoutError:
-                pass
-                
-        c1, c2 = choices[uid1], choices[uid2]
-        
-        # Jika ada yg AFK
-        if not c1 or not c2:
-            refund = bet
-            stat1 = await get_discord_stat(uid1)
-            stat2 = await get_discord_stat(uid2)
-            stat1['coins'] += refund
-            stat2['coins'] += refund
-            await update_discord_stat(uid1, message.author.display_name, stat1['coins'], stat1['xp'], stat1['level'], stat1['lastDaily'])
-            await update_discord_stat(uid2, target.display_name, stat2['coins'], stat2['xp'], stat2['level'], stat2['lastDaily'])
-            await send_msg_embed(message.channel, "⏱️ Duel dibatalkan karena ada yang tidak menjawab. Koin dikembalikan.")
-            return
-            
-        # Tentukan pemenang
-        win_rules = {'batu': 'gunting', 'gunting': 'kertas', 'kertas': 'batu'}
-        emojis = {'batu': '🪨', 'gunting': '✂️', 'kertas': '📄'}
-        
-        winnings = bet * 2
-        stat1 = await get_discord_stat(uid1)
-        stat2 = await get_discord_stat(uid2)
-        
-        if c1 == c2:
-            stat1['coins'] += bet
-            stat2['coins'] += bet
-            result = "🤝 **SERI!** Koin dikembalikan."
-        elif win_rules[c1] == c2:
-            stat1['coins'] += winnings
-            result = f"👑 **{message.author.display_name} MENANG!** (+{winnings} Koin)"
-        else:
-            stat2['coins'] += winnings
-            result = f"👑 **{target.display_name} MENANG!** (+{winnings} Koin)"
-            
-        await update_discord_stat(uid1, message.author.display_name, stat1['coins'], stat1['xp'], stat1['level'], stat1['lastDaily'])
-        await update_discord_stat(uid2, target.display_name, stat2['coins'], stat2['xp'], stat2['level'], stat2['lastDaily'])
-        
-        await send_msg_embed(message.channel, 
-            f"**HASIL DUEL:**\n"
-            f"{message.author.display_name}: {emojis[c1]} {c1.upper()}\n"
-            f"{target.display_name}: {emojis[c2]} {c2.upper()}\n\n"
-            f"{result}"
-        )
-
-    # ── Daily Quests: !w2equest ──────────────────────────────────────────────
-    if message.content.startswith('w2e quest'):
-        uid = str(message.author.id)
-        qdata = await get_user_quests(uid)
-        
-        parts = message.content.split()
-        if len(parts) > 2 and parts[2].lower() == 'claim':
-            if qdata['claimed']:
-                await send_msg_embed(message.channel, "❌ Kamu sudah klaim reward hari ini!")
-                return
-            all_done = all(q['done'] for q in qdata['quests'])
-            if not all_done:
-                await send_msg_embed(message.channel, "❌ Selesaikan semua quest dulu!")
-                return
-                
-            qdata['claimed'] = True
-            await save_json(QUESTS_FILE, await load_json(QUESTS_FILE) | {uid: qdata})
-            
-            stat = await get_discord_stat(uid)
-            stat['coins'] += 300
-            await update_discord_stat(uid, message.author.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
-            await send_msg_embed(message.channel, "🎁 **QUEST SELESAI!** Kamu mendapatkan **300 Koin**!")
-            await check_level_up(message.channel, message.author, 50)
-            return
-
-        res = f"📋 **DAILY QUESTS - {message.author.display_name}** 📋\n*Ketik `!w2equest claim` jika semua selesai (+300 Koin)*\n\n"
-        for q in qdata['quests']:
-            status = "✅" if q['done'] else "❌"
-            res += f"{status} **{q['desc']}** ({q['progress']}/{q['target']})\n"
-        
-        if qdata['claimed']:
-            res += "\n🌟 *Semua quest hari ini sudah selesai & diklaim!*"
-            
-        await send_msg_embed(message.channel, res)
-
-    # ── Family System ────────────────────────────────────────────────────────
-    if message.content.startswith('w2e marry'):
-        if not message.mentions:
-            await send_msg_embed(message.channel, "Mau nikah sama siapa? Mention orangnya! `!w2emarry @user`")
-            return
-        target = message.mentions[0]
-        if target == message.author or target.bot:
-            await send_msg_embed(message.channel, "❌ Kamu gak bisa nikah sama diri sendiri/bot.")
-            return
-
-        uid1 = str(message.author.id)
-        uid2 = str(target.id)
-        fam_data = await load_json(FAMILY_FILE)
-        
-        if fam_data.get(uid1, {}).get('partner'):
-            await send_msg_embed(message.channel, "❌ Kamu sudah menikah! Cerai dulu pakai `!w2edivorce`.")
-            return
-        if fam_data.get(uid2, {}).get('partner'):
-            await send_msg_embed(message.channel, "❌ Dia sudah punya pasangan. Cari yang lain!")
-            return
-
-        # Biaya nikah
-        stat = await get_discord_stat(uid1)
-        if stat['coins'] < 500:
-            await send_msg_embed(message.channel, f"❌ Biaya KUA mahal bos. Butuh **500 Koin** (Koinmu: {stat['coins']}).")
-            return
-
-        await send_msg_embed(message.channel, 
-            f"💍 **LAMARAN NIKAH!** 💍\n"
-            f"{message.author.display_name} melamar {target.mention}!\n"
-            f"{target.mention}, ketik `terima` atau `tolak` dalam 60 detik."
-        )
-
-        def check(m):
-            return m.channel == message.channel and m.author == target and m.content.lower() in ['terima', 'tolak']
-
-        try:
-            msg = await client.wait_for('message', timeout=60.0, check=check)
-            if msg.content.lower() == 'terima':
-                stat['coins'] -= 500
-                await update_discord_stat(uid1, message.author.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
-                
-                if uid1 not in fam_data: fam_data[uid1] = {}
-                if uid2 not in fam_data: fam_data[uid2] = {}
-                fam_data[uid1]['partner'] = uid2
-                fam_data[uid2]['partner'] = uid1
-                await save_json(FAMILY_FILE, fam_data)
-                
-                await send_msg_embed(message.channel, f"🎉 **SAAAHHH!** 🎉\n{message.author.mention} dan {target.mention} resmi menikah! (-500 Koin)")
-            else:
-                await send_msg_embed(message.channel, f"💔 Yah... {message.author.mention} lamaranmu ditolak mentah-mentah.")
-        except asyncio.TimeoutError:
-            await send_msg_embed(message.channel, f"⏱️ {target.display_name} kelamaan mikir. Lamaran dibatalkan.")
-
-    if message.content.startswith('w2e divorce'):
-        uid = str(message.author.id)
-        fam_data = await load_json(FAMILY_FILE)
-        
-        partner_id = fam_data.get(uid, {}).get('partner')
-        if not partner_id:
-            await send_msg_embed(message.channel, "❌ Kamu aja masih jomblo, mau cerai sama siapa?")
-            return
-
-        fam_data[uid]['partner'] = None
-        if partner_id in fam_data:
-            fam_data[partner_id]['partner'] = None
-        await save_json(FAMILY_FILE, fam_data)
-        
-        partner_user = client.get_user(int(partner_id))
-        pname = partner_user.display_name if partner_user else f"User {partner_id}"
-        await send_msg_embed(message.channel, f"💔 **CERAI!** {message.author.display_name} resmi bercerai dengan {pname}.")
-
-    if message.content.startswith('w2e adopt'):
-        if not message.mentions:
-            await send_msg_embed(message.channel, "Format: `!w2eadopt @user`")
-            return
-        target = message.mentions[0]
-        uid1 = str(message.author.id)
-        uid2 = str(target.id)
-        
-        if uid1 == uid2 or target.bot:
-            await send_msg_embed(message.channel, "❌ Gak bisa adopsi diri sendiri/bot.")
-            return
-
-        fam_data = await load_json(FAMILY_FILE)
-        
-        if fam_data.get(uid2, {}).get('parent'):
-            await send_msg_embed(message.channel, f"❌ {target.display_name} sudah punya orang tua.")
-            return
-            
-        if uid1 not in fam_data: fam_data[uid1] = {}
-        if uid2 not in fam_data: fam_data[uid2] = {}
-        
-        children = fam_data[uid1].get('children', [])
-        max_children = 15 if message.author.premium_since else 6
-        if len(children) >= max_children:
-            await send_msg_embed(message.channel, f"❌ Keluarga kamu sudah kepenuhan (Maksimal {max_children} anak).")
-            return
-
-        await send_msg_embed(message.channel, f"👶 {message.author.mention} ingin mengadopsi {target.mention} sebagai anak. Ketik `mau` atau `ngga` (60 dtk).")
-
-        def check(m):
-            return m.channel == message.channel and m.author == target and m.content.lower() in ['mau', 'ngga']
-
-        try:
-            msg = await client.wait_for('message', timeout=60.0, check=check)
-            if msg.content.lower() == 'mau':
-                fam_data[uid2]['parent'] = uid1
-                if 'children' not in fam_data[uid1]: fam_data[uid1]['children'] = []
-                fam_data[uid1]['children'].append(uid2)
-                
-                # Jika pengadopsi punya partner, tambah anak ke partner juga
-                partner_id = fam_data[uid1].get('partner')
-                if partner_id:
-                    if 'children' not in fam_data[partner_id]: fam_data[partner_id]['children'] = []
-                    if uid2 not in fam_data[partner_id]['children']:
-                        fam_data[partner_id]['children'].append(uid2)
-                        
-                await save_json(FAMILY_FILE, fam_data)
-                await send_msg_embed(message.channel, f"🍼 **SAH!** {target.mention} sekarang adalah anak dari {message.author.mention}.")
-            else:
-                await send_msg_embed(message.channel, "👶 Adopsi ditolak.")
-        except asyncio.TimeoutError:
-            await send_msg_embed(message.channel, "⏱️ Waktu habis. Adopsi batal.")
-
-    if message.content.startswith('w2e leave'):
-        uid = str(message.author.id)
-        fam_data = await load_json(FAMILY_FILE)
-        parent_id = fam_data.get(uid, {}).get('parent')
-        
-        if not parent_id:
-            await send_msg_embed(message.channel, "❌ Kamu bukan anak siapa-siapa.")
-            return
-            
-        fam_data[uid]['parent'] = None
-        # Hapus dari semua daftar anak
-        for k, v in fam_data.items():
-            if 'children' in v and uid in v['children']:
-                v['children'].remove(uid)
-                
-        await save_json(FAMILY_FILE, fam_data)
-        await send_msg_embed(message.channel, f"🚪 **MABUR!** {message.author.mention} kabur dari rumah dan bukan anak siapa-siapa lagi.")
-
-    if message.content.startswith('w2e family'):
-        target = message.mentions[0] if message.mentions else message.author
-        if not PILLOW_AVAILABLE:
-            await send_msg_embed(message.channel, "🖼️ Modul pembuat gambar tidak tersedia. Info keluarga hanya via database (hubungi dev).")
-            return
-            
-        await send_msg_embed(message.channel, f"📸 Sedang memotret keluarga **{target.display_name}**...")
-        img_buf = await generate_family_image(message.guild, target.id)
-        if img_buf:
-            file = discord.File(fp=img_buf, filename="family_tree.png")
-            await send_msg_embed(message.channel, file=file)
-        else:
-            await send_msg_embed(message.channel, "❌ Terjadi kesalahan saat membuat foto keluarga.")
-
-    if message.content.startswith('w2e image'):
-        if not message.author.premium_since:
-            await send_msg_embed(message.channel, "❌ Maaf, fitur AI Image Generation HANYA tersedia untuk **Server Booster**! 👑")
-            return
-            
-        prompt = message.content[len('w2e image'):].strip()
-        if not prompt:
-            await send_msg_embed(message.channel, "Format: `!w2eimage <deskripsi gambar>`\nContoh: `!w2eimage a cute cat playing guitar in cyberpunk city`")
-            return
-            
-        import urllib.parse
-        encoded_prompt = urllib.parse.quote(prompt)
-        # Tambahkan param random untuk mencegah cache jika prompt sama
-        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?nologo=true&seed={random.randint(1,100000)}"
-        
-        embed = discord.Embed(title="🎨 AI Image Generator", description=f"**Prompt:** {prompt}\n*Powered by Pollinations.ai*", color=discord.Color.purple())
-        embed.set_image(url=url)
-        embed.set_footer(text=f"Requested by {message.author.display_name} (Booster Exclusive)", icon_url=message.author.display_avatar.url if message.author.display_avatar else None)
-        
-        await send_msg_embed(message.channel, embed=embed)
-
-    # ── Community & Engagement ───────────────────────────────────────────────
-    if message.content.startswith('w2e poll'):
-        parts = message.content[len('w2e poll'):].strip().split('|')
-        if len(parts) < 2:
-            await send_msg_embed(message.channel, "Format: `!w2epoll Pertanyaan | Opsi 1 | Opsi 2 | ...`")
-            return
-            
-        question = parts[0].strip()
-        options = [opt.strip() for opt in parts[1:]]
-        
-        if len(options) > 10:
-            await send_msg_embed(message.channel, "❌ Maksimal 10 opsi untuk polling.")
-            return
-            
-        emojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟']
-        
-        desc = ""
-        for i, opt in enumerate(options):
-            desc += f"{emojis[i]} {opt}\n\n"
-            
-        embed = discord.Embed(title=f"📊 {question}", description=desc, color=discord.Color.blue())
-        embed.set_footer(text=f"Polling dibuat oleh {message.author.display_name}")
-        
-        poll_msg = await send_msg_embed(message.channel, embed=embed)
-        for i in range(len(options)):
-            await poll_msg.add_reaction(emojis[i])
-
-    if message.content.startswith('w2e giveaway'):
-        parts = message.content.split()
-        if len(parts) < 4:
-            await send_msg_embed(message.channel, "Format: `!w2egiveaway <waktu_menit> <hadiah>`")
-            return
-            
-        try:
-            mins = int(parts[2])
-            prize = " ".join(parts[3:])
-        except ValueError:
-            await send_msg_embed(message.channel, "Format waktu harus angka (menit).")
-            return
-            
-        embed = discord.Embed(title="🎉 **GIVEAWAY!** 🎉", description=f"**Hadiah:** {prize}\n**Berakhir dalam:** {mins} menit\n\nReact dengan 🎉 untuk ikutan!", color=discord.Color.gold())
-        embed.set_footer(text=f"Giveaway dari {message.author.display_name}")
-        ga_msg = await send_msg_embed(message.channel, embed=embed)
-        await ga_msg.add_reaction("🎉")
-        
-        # Async wait
-        await asyncio.sleep(mins * 60)
-        
-        # Fetch latest message state
-        new_msg = await message.channel.fetch_message(ga_msg.id)
-        reaction = discord.utils.get(new_msg.reactions, emoji="🎉")
-        
-        users = [user async for user in reaction.users() if not user.bot]
-        if not users:
-            await send_msg_embed(message.channel, f"Yah, gak ada yang ikut giveaway **{prize}** 😢")
-            return
-            
-        winner = random.choice(users)
-        await send_msg_embed(message.channel, f"🎊 Selamat {winner.mention}! Kamu memenangkan **{prize}** dari {message.author.mention}! 🎊")
-
-    if message.content.startswith('w2e quiz'):
-        uid = str(message.author.id)
-        stat = await get_discord_stat(uid)
-        
-        if stat['coins'] < 50:
-            await send_msg_embed(message.channel, "❌ Biaya main kuis adalah 50 Koin. Uangmu gak cukup.")
-            return
-            
-        stat['coins'] -= 50
-        await update_discord_stat(uid, message.author.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
-        
-        await send_msg_embed(message.channel, "🤔 **Mencari soal yang sulit...**")
-        prompt = "Berikan SATU pertanyaan pengetahuan umum singkat dan jawabannya dalam satu kata. Format: Pertanyaan | Jawaban. Jangan ada teks tambahan."
-        try:
-            response = await asyncio.to_thread(gemini_client.models.generate_content, model='gemini-2.5-flash', contents=prompt)
-            res_text = response.text.strip()
-            if '|' not in res_text: raise ValueError
-            q, a = res_text.split('|')
-            q = q.strip()
-            a = a.strip().lower()
-        except Exception:
-            await send_msg_embed(message.channel, "Gagal mengambil kuis dari AI. Koin dikembalikan.")
-            stat['coins'] += 50
-            await update_discord_stat(uid, message.author.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
-            return
-            
-        await send_msg_embed(message.channel, f"🎯 **KUIS W2E** 🎯\n{q}\n\n*Jawab dalam 30 detik! Hadiah: 200 Koin! (-50 Koin modal)*")
-        
-        def check(m):
-            return m.channel == message.channel and not m.author.bot
-            
-        try:
-            # Tunggu siapa saja yang jawab benar duluan
-            start_time = datetime.now()
-            while (datetime.now() - start_time).seconds < 30:
-                msg = await client.wait_for('message', timeout=30.0, check=check)
-                if msg.content.lower().strip() == a:
-                    winner_uid = str(msg.author.id)
-                    w_stat = await get_discord_stat(winner_uid)
-                    w_stat['coins'] += 200
-                    await update_discord_stat(winner_uid, msg.author.display_name, w_stat['coins'], w_stat['xp'], w_stat['level'], w_stat['lastDaily'])
-                    await send_msg_embed(message.channel, f"✅ **BENAR!** {msg.author.mention} menjawab **{a.upper()}** dan memenangkan 200 Koin!")
-                    return
-        except asyncio.TimeoutError:
-            pass
-            
-        await send_msg_embed(message.channel, f"⏱️ Waktu habis! Jawaban yang benar adalah: **{a.upper()}**")
-
-    # ── Fun & Hiburan ────────────────────────────────────────────────────────
-    if message.content.startswith('w2e shipper'):
-        if len(message.mentions) < 1:
-            await send_msg_embed(message.channel, "Format: `!w2eshipper @user1 [@user2]`")
-            return
-            
-        user1 = message.author
-        user2 = message.mentions[0]
-        if len(message.mentions) >= 2:
-            user1 = message.mentions[0]
-            user2 = message.mentions[1]
-            
-        if user1 == user2:
-            await send_msg_embed(message.channel, "❌ Jomblo ngenes banget nge-ship diri sendiri...")
-            return
-            
-        # Consistent random based on ID
-        seed = int(user1.id) + int(user2.id)
-        random.seed(seed)
-        match_pct = random.randint(0, 100)
-        random.seed() # reset
-        
-        await send_msg_embed(message.channel, f"❤️ Menerawang kecocokan cinta **{user1.display_name}** & **{user2.display_name}**...")
-        
-        prompt = f"Buatkan ramalan cinta super singkat dan lucu (bisa sarkas atau romantis) untuk dua orang dengan tingkat kecocokan {match_pct}%. Gunakan bahasa gaul anak discord Indonesia (lo-gue, santai, kocak). JANGAN ada basa-basi khas AI seperti 'Ini dia...' atau 'Semoga...'. Langsung ke ramalannya secara natural."
-        try:
-            response = await asyncio.to_thread(gemini_client.models.generate_content, model='gemini-2.5-flash', contents=prompt)
-            desc = response.text.strip()
-            
-            if PILLOW_AVAILABLE:
-                img_buf = await generate_love_image(user1, user2, match_pct)
-                if img_buf:
-                    file = discord.File(fp=img_buf, filename="love.png")
-                    embed = discord.Embed(title="💖 W2E Shipper 💖", description=f"**{user1.display_name}** x **{user2.display_name}**\n\n{desc}", color=discord.Color.brand_red())
-                    embed.set_image(url="attachment://love.png")
-                    await send_msg_embed(message.channel, embed=embed, file=file)
-                    return
-
-            embed = discord.Embed(title="💖 W2E Shipper 💖", description=f"**{user1.display_name}** x **{user2.display_name}**\n\n**Kecocokan: {match_pct}%**\n\n{desc}", color=discord.Color.brand_red())
-            await send_msg_embed(message.channel, embed=embed)
-        except Exception as e:
-            logging.error(f"Error in prefix shipper command: {e}")
-            await send_msg_embed(message.channel, f"**Kecocokan: {match_pct}%**\n(API/Render Error: Gagal generate ramalan).")
-
-
-    if message.content.startswith('w2e roast'):
-        if not message.mentions:
-            await send_msg_embed(message.channel, "Mau roast siapa? `!w2eroast @user`")
-            return
-        target = message.mentions[0]
-        
-        roles = [r.name for r in getattr(target, 'roles', []) if r.name != "@everyone"]
-        roles_str = ", ".join(roles) if roles else "Gak punya role/Polosan"
-        created_date = target.created_at.strftime("%Y") if getattr(target, 'created_at', None) else "Tidak diketahui"
-        avatar_desc = "Default" if not target.display_avatar else "Custom"
-        
-        discord_info = f"Nama: {target.display_name}, Akun dibuat: {created_date}, Roles: {roles_str}, Avatar: {avatar_desc}"
-        
-        await send_msg_embed(message.channel, f"🔥 Sedang menyiapkan panggangan untuk profil Discord **{target.display_name}**...")
-        prompt = f"Roast / hina dengan candaan profil Discord orang ini:\n{discord_info}\n(Jangan kelewatan batas SARA). Gunakan bahasa gaul tongkrongan indo yang pedas, savage, dan lucu. JANGAN pakai bahasa baku khas AI, JANGAN ada basa-basi di awal/akhir seperti 'Tentu, ini dia...' atau 'Semoga terhibur'. Langsung tembak dengan hinaan kocak dan natural."
-        try:
-            response = await asyncio.to_thread(gemini_client.models.generate_content, model='gemini-2.5-flash', contents=prompt)
-            await send_msg_embed(message.channel, f"{target.mention} 🔥\n{response.text.strip()}")
-        except Exception:
-            await send_msg_embed(message.channel, "Tungku roasting sedang rusak (API Error).")
-
-    if message.content.startswith('w2e chat '):
-        chat_msg = message.content[len('!w2echat '):].strip()
-        if not chat_msg:
-            await send_msg_embed(message.channel, "Mau ngomong apa? `!w2echat halo bot`")
-            return
-            
-        await message.channel.typing()
-        prompt = f"Anda adalah bot Discord bernama W2E. Kepribadian Anda adalah teman tongkrongan yang asik, sedikit sarkas, suka bercanda, tapi selalu membantu. Gunakan bahasa gaul Indonesia (lo, gue, bro, cuy, wkwk). Jawab pesan berikut dengan singkat dan padat. JANGAN ada basa-basi formal khas AI, langsung jawab seperti manusia di chat Discord:\nUser ({message.author.display_name}) bilang: {chat_msg}"
-        try:
-            response = await asyncio.to_thread(gemini_client.models.generate_content, model='gemini-2.5-flash', contents=prompt)
-            await send_msg_embed(message, response.text.strip(), reply=True)
-        except Exception:
-            await send_msg_embed(message.channel, "Lagi males mikir nih (API Error).")
-
-    if message.content.startswith('w2e rate'):
-        target = message.mentions[0] if message.mentions else message.author
-        
-        roles = [r.name for r in getattr(target, 'roles', []) if r.name != "@everyone"]
-        roles_str = ", ".join(roles) if roles else "Gak punya role/Polosan"
-        created_date = target.created_at.strftime("%Y") if getattr(target, 'created_at', None) else "Tidak diketahui"
-        joined_date = getattr(target, 'joined_at', None)
-        joined_str = joined_date.strftime("%Y") if joined_date else "Tidak diketahui"
-        is_booster = "Sultan Booster" if getattr(target, 'premium_since', None) else "Member biasa"
-        avatar_desc = "Avatar default" if not target.display_avatar else "Custom avatar"
-        
-        profile_data = f"Nama: {target.display_name}\nAkun dibuat: {created_date}\nJoin server: {joined_str}\nStatus: {is_booster}\nRoles: {roles_str}\nAvatar: {avatar_desc}"
-        
-        await send_msg_embed(message.channel, f"🧐 Sedang membedah profil Discord **{target.display_name}**...")
-        prompt = f"Berikan rating profil (1-10) dan roasting/pujian yang lucu ala komentator (bahasa gaul indo) untuk profil Discord ini:\n{profile_data}\n\nBuat singkat aja, 2-3 kalimat max. Gunakan gaya bahasa santai banget, JANGAN formal, JANGAN pake template tulisan khas AI."
-        
-        try:
-            response = await asyncio.to_thread(gemini_client.models.generate_content, model='gemini-2.5-flash', contents=prompt)
-            
-            embed = discord.Embed(title=f"📈 AI Profile Rating: {target.display_name}", description=response.text.strip(), color=discord.Color.teal())
-            if target.display_avatar:
-                embed.set_thumbnail(url=target.display_avatar.url)
-            await send_msg_embed(message.channel, embed=embed)
-        except Exception:
-            await send_msg_embed(message.channel, "Gagal merating profil (API Error).")
-
-    if message.content.startswith('w2e birthday set'):
-        parts = message.content.split()
-        if len(parts) < 4:
-            await send_msg_embed(message.channel, "Format: `!w2ebirthday set DD-MM` (Contoh: `!w2ebirthday set 25-12`)")
-            return
-            
-        bday_str = parts[3]
-        try:
-            # Validate
-            datetime.strptime(bday_str, "%d-%m")
-            
-            bdays = await load_json('birthdays.json')
-            bdays[str(message.author.id)] = bday_str
-            await save_json('birthdays.json', bdays)
-            await send_msg_embed(message.channel, "🎂 Tanggal lahirmu berhasil disimpan! Kamu akan dapat kejutan di hari H!")
-        except ValueError:
-            await send_msg_embed(message.channel, "❌ Format salah! Gunakan DD-MM (Tanggal-Bulan).")
-
-    if message.content.startswith('w2e valo '):
-        target = message.content[len('!w2evalo '):].strip()
-        if target:
-            await send_msg_embed(message.channel, f"🔍 Sedang menerawang stats Valorant untuk **{target}**...")
-            prompt = f"Buatlah statistik Valorant palsu dan lucu untuk pemain bernama '{target}'. Cantumkan Rank (yang aneh/rendah), Win Rate (jelek), dan Senjata Andalan yang tidak masuk akal. Buat singkat seperti report dalam bahasa gaul tongkrongan. JANGAN ada basa-basi AI."
-            try:
-                response = await asyncio.to_thread(gemini_client.models.generate_content, model='gemini-2.5-flash', contents=prompt)
-                await send_msg_embed(message.channel, response.text)
-            except Exception:
-                await send_msg_embed(message.channel, "API error saat mencari stat Valorant.")
-        return
-
-    if message.content.startswith('w2e listen'):
-        if message.author.voice and message.author.voice.channel:
-            vc = message.guild.voice_client
-            if not vc:
-                vc = await message.author.voice.channel.connect()
-            
-            try:
-                vc.start_recording(
-                    discord.sinks.WaveSink(),
-                    finished_callback,
-                    message.channel
-                )
-                await send_msg_embed(message.channel, "🎙️ **Merekam obrolan selama 10 detik...** Mulai bicara!")
-                await asyncio.sleep(10)
-                if vc.recording:
-                    vc.stop_recording()
-            except Exception as e:
-                await send_msg_embed(message.channel, f"Error memulai recording: {str(e)}\nPastikan sudah menggunakan **Pycord** (`pip install py-cord[voice]`).")
-        else:
-            await send_msg_embed(message.channel, "Kamu harus berada di voice channel terlebih dahulu.")
-        return
-
-    if message.content.startswith('w2e remindme '):
-        parts = message.content.split()
-        if len(parts) < 4:
-            await send_msg_embed(message.channel, "Format: `!w2eremindme <menit> <pesan>`")
-            return
-        try:
-            minutes = float(parts[2])
-            msg_text = message.content.split(None, 3)[3]
-            await send_msg_embed(message.channel, f"⏰ Siap! Aku akan mengingatkanmu tentang **{msg_text}** dalam {minutes} menit.")
-            
-            async def reminder_task(channel, voice_ch, user, delay, text):
-                await asyncio.sleep(delay * 60)
-                await channel.send(f"🔔 {user.mention} Pengingat: {text}")
-                if voice_ch:
-                    vc = message.guild.voice_client
-                    if not vc:
-                        try:
-                            vc = await voice_ch.connect()
-                        except:
-                            return
-                    tts = gtts.gTTS(text=f"Halo {user.display_name}, saatnya {text}", lang='id')
-                    tts.save(f"reminder_{user.id}.mp3")
-                    if not vc.is_playing():
-                        source = FFmpegPCMAudio(f"reminder_{user.id}.mp3")
-                        vc.play(source)
-                        while vc.is_playing():
-                            await asyncio.sleep(1)
-                        if os.path.exists(f"reminder_{user.id}.mp3"):
-                            os.remove(f"reminder_{user.id}.mp3")
-            
-            client.loop.create_task(reminder_task(message.channel, message.author.voice.channel if message.author.voice else None, message.author, minutes, msg_text))
-        except ValueError:
-            await send_msg_embed(message.channel, "Format menit harus berupa angka.")
-        return
-
-    if message.content.startswith('w2e checkmusic') or message.content.startswith('w2e checkbots'):
-        if not message.guild:
-            await send_msg_embed(message.channel, "❌ Perintah ini hanya bisa digunakan di dalam server.")
-            return
-            
-        active_bots = []
-        for member in message.guild.members:
-            if member.bot and member.id != client.user.id:
-                if member.voice and member.voice.channel:
-                    active_bots.append(f"🎵 **{member.display_name}** sedang aktif di 🔊 **{member.voice.channel.name}**")
-                    
-        if active_bots:
-            embed = discord.Embed(
-                title="🔊 Status Aktivitas Bot Musik",
-                description="\n".join(active_bots),
-                color=discord.Color.blue()
-            )
-            embed.set_footer(text=f"Diakses oleh {message.author.display_name}")
-            await send_msg_embed(message.channel, embed=embed)
-        else:
-            await send_msg_embed(message.channel, "ℹ️ Tidak ada bot musik yang sedang aktif di Voice Channel saat ini.")
-        return
-
-    if message.content.startswith('w2e profile'):
-        uid = str(message.author.id)
-        stat = await get_discord_stat(uid)
-        
-        items_data = await load_json(ITEMS_FILE).get(uid, {})
-        bg_url = items_data.get('bg_url')
-        
-        if PILLOW_AVAILABLE:
-            await send_msg_embed(message.channel, "🖼️ Sedang memuat profil card...")
-            img_buf = await generate_profile_image(message.author, stat, bg_url)
-            if img_buf:
-                file = discord.File(fp=img_buf, filename="profile.png")
-                await send_msg_embed(message.channel, file=file)
-                return
-                
-        # Fallback text
-        res = f"**User Profile - {message.author.display_name}**\n"
-        res += f"🏅 **Level:** {stat['level']} | ⚡ **XP:** {stat['xp']}/{stat['level']*100}\n"
-        res += f"💰 **Koin:** {stat['coins']}\n\n"
-        await send_msg_embed(message.channel, res)
-
-    if message.content.startswith('w2e bg'):
-        if not message.author.premium_since:
-            await send_msg_embed(message.channel, "❌ Custom Background Profil cuma buat **Server Booster**! 👑")
-            return
-            
-        parts = message.content.split()
-        if len(parts) < 3:
-            await send_msg_embed(message.channel, "Format: `!w2ebg <URL_GAMBAR>`\nContoh: `!w2ebg https://example.com/image.jpg`")
-            return
-            
-        bg_url = parts[2]
-        if not bg_url.startswith('http'):
-            await send_msg_embed(message.channel, "❌ URL tidak valid.")
-            return
-            
-        uid = str(message.author.id)
-        items_data = await load_json(ITEMS_FILE)
-        if uid not in items_data: items_data[uid] = {}
-        items_data[uid]['bg_url'] = bg_url
-        await save_json(ITEMS_FILE, items_data)
-        
-        await send_msg_embed(message.channel, "✅ Background profil berhasil diupdate! Cek dengan `!profile`")
-
-    if message.content.startswith('w2e setpersona '):
-        persona = message.content[len('!setpersona '):].strip()
-        uid = str(message.author.id)
-        personas = await load_json(PERSONAS_FILE)
-        
-        if persona.lower() == 'reset' or persona.lower() == 'hapus':
-            if uid in personas:
-                del personas[uid]
-                await save_json(PERSONAS_FILE, personas)
-            if uid in chat_sessions:
-                del chat_sessions[uid] # Reset memory so persona takes effect immediately
-            await send_msg_embed(message.channel, "✅ Persona AI kamu telah direset ke default.")
-            return
-            
-        personas[uid] = persona
-        await save_json(PERSONAS_FILE, personas)
-        if uid in chat_sessions:
-            del chat_sessions[uid] # Reset history to force new persona
-        
-        await send_msg_embed(message.channel, f"🎭 Berhasil! Gemini AI sekarang akan membalasmu dengan persona: **{persona}**\nCoba chat pakai `!ai Halo!`")
-
-    if message.content.startswith('w2e bj '):
-        uid = str(message.author.id)
-        stat = await get_discord_stat(uid)
-        
-        try:
-            bet = int(message.content.split()[2])
-            if bet < 50:
-                await send_msg_embed(message.channel, "❌ Minimal taruhan Blackjack adalah 50 Koin.")
-                return
-            if stat['coins'] < bet:
-                await send_msg_embed(message.channel, "❌ Koin kamu tidak cukup!")
-                return
-        except (IndexError, ValueError):
-            await send_msg_embed(message.channel, "Format: `!w2ebj <jumlah_taruhan>`")
-            return
-            
-        stat['coins'] -= bet
-        await update_discord_stat(uid, message.author.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
-        
-        # Simple Blackjack Logic
-        deck = [2,3,4,5,6,7,8,9,10,10,10,10,11] * 4
-        random.shuffle(deck)
-        
-        player_hand = [deck.pop(), deck.pop()]
-        dealer_hand = [deck.pop(), deck.pop()]
-        
-        def calculate_score(hand):
-            score = sum(hand)
-            aces = hand.count(11)
-            while score > 21 and aces > 0:
-                score -= 10
-                aces -= 1
-            return score
-            
-        player_score = calculate_score(player_hand)
-        dealer_score = calculate_score(dealer_hand)
-        
-        if player_score == 21:
-            win_amount = int(bet * 2.5)
-            stat['coins'] += win_amount
-            await update_discord_stat(uid, message.author.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
-            await send_msg_embed(message.channel, f"🃏 **BLACKJACK!** 🃏\nKartu kamu: {player_hand} (21)\nKamu langsung menang **{win_amount} Koin**!")
-            return
-            
-        embed = discord.Embed(title="🃏 W2E Blackjack Casino", color=discord.Color.red())
-        embed.add_field(name=f"Pemain ({player_score})", value=str(player_hand), inline=True)
-        embed.add_field(name="Bandar", value=f"[{dealer_hand[0]}, ?]", inline=True)
-        embed.set_footer(text="Ketik 'hit' untuk tambah kartu, atau 'stand' untuk bertahan.")
-        
-        msg = await send_msg_embed(message.channel, embed=embed)
-        
-        def check(m):
-            return m.author.id == message.author.id and m.channel.id == message.channel.id and m.content.lower() in ['hit', 'stand']
-            
-        playing = True
-        while playing:
-            try:
-                reply = await client.wait_for('message', timeout=30.0, check=check)
-                if reply.content.lower() == 'hit':
-                    player_hand.append(deck.pop())
-                    player_score = calculate_score(player_hand)
-                    
-                    if player_score > 21:
-                        embed.set_field_at(0, name=f"Pemain ({player_score})", value=str(player_hand), inline=True)
-                        embed.description = f"💥 **BUST!** Kamu kelebihan 21. Taruhan **{bet} Koin** hangus."
-                        await send_msg_embed(message.channel, embed=embed)
-                        return
-                    else:
-                        embed.set_field_at(0, name=f"Pemain ({player_score})", value=str(player_hand), inline=True)
-                        await send_msg_embed(message.channel, embed=embed)
-                else:
-                    playing = False
-            except asyncio.TimeoutError:
-                await send_msg_embed(message.channel, "⏳ Waktu habis! Kamu otomatis Stand.")
-                playing = False
-                
-        # Dealer's turn
-        while dealer_score < 17:
-            dealer_hand.append(deck.pop())
-            dealer_score = calculate_score(dealer_hand)
-            
-        embed.set_field_at(0, name=f"Pemain ({player_score})", value=str(player_hand), inline=True)
-        embed.set_field_at(1, name=f"Bandar ({dealer_score})", value=str(dealer_hand), inline=True)
-        
-        if dealer_score > 21:
-            win_amount = bet * 2
-            stat['coins'] += win_amount
-            embed.description = f"🎉 Bandar **Bust!** Kamu menang **{win_amount} Koin**!"
-        elif dealer_score > player_score:
-            embed.description = f"😢 Bandar menang. Taruhan **{bet} Koin** hangus."
-        elif dealer_score < player_score:
-            win_amount = bet * 2
-            stat['coins'] += win_amount
-            embed.description = f"🎉 Kamu menang! Dapet **{win_amount} Koin**!"
-        else:
-            stat['coins'] += bet
-            embed.description = f"🤝 **Seri (Push)!** Taruhan {bet} Koin dikembalikan."
-            
-        await update_discord_stat(uid, message.author.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
-        await send_msg_embed(message.channel, embed=embed)
-
-    if message.content.startswith('w2e attack'):
-        boss_data = await load_json(BOSS_FILE)
-        if not boss_data.get('active', False):
-            await send_msg_embed(message.channel, "❌ Tidak ada Boss yang sedang aktif saat ini.")
-            return
-            
-        uid = str(message.author.id)
-        # Cek cooldown 30 detik
-        if uid in boss_cooldowns:
-            delta = datetime.now() - boss_cooldowns[uid]
-            if delta.total_seconds() < 30:
-                await send_msg_embed(message.channel, f"⏳ Senjatamu masih *cooldown*! Tunggu {int(30 - delta.total_seconds())} detik lagi.")
-                return
-                
-        boss_cooldowns[uid] = datetime.now()
-        
-        damage = random.randint(50, 300)
-        boss_data['hp'] -= damage
-        
-        if boss_data['hp'] <= 0:
-            boss_data['active'] = False
-            await save_json(BOSS_FILE, boss_data)
-            # Ambil dari kas server
-            treasury = await load_json(TREASURY_FILE)
-            if not treasury: treasury = {'balance': 0}
-            balance = treasury.get('balance', 0)
-            
-            reward = 5000
-            if balance < reward:
-                reward = max(1000, balance) # Kasih seadanya, minimal 1000
-                
-            if balance >= reward:
-                treasury['balance'] -= reward
-            else:
-                treasury['balance'] = 0
-            await save_json(TREASURY_FILE, treasury)
-            
-            stat = await get_discord_stat(uid)
-            stat['coins'] += reward
-            await update_discord_stat(uid, message.author.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
-            
-            await send_msg_embed(message.channel, f"💥 **FATAL BLOW!** 💥\n{message.author.mention} berhasil memberikan serangan terakhir sebesar **{damage} DMG** dan membunuh **{boss_data['name']}**!\n🎉 Hadiah pembunuh: **{reward} Koin RPG!** (Diambil dari Kas Server)")
-        else:
-            await save_json(BOSS_FILE, boss_data)
-            await send_msg_embed(message.channel, f"⚔️ {message.author.mention} menyerang **{boss_data['name']}** sebesar **{damage} DMG**! (Sisa HP Boss: {boss_data['hp']}/{boss_data['max_hp']})")
-
-
 
 
 async def send_msg_embed(target, *args, reply=False, **kwargs):
@@ -3298,16 +1698,16 @@ async def clean_caches():
     expired_voice = [k for k, v in voice_join_times.items() if (now - v).total_seconds() > 3600]
     for k in expired_voice: del voice_join_times[k]
     
-    # rob_cooldowns
-    expired_rob = [k for k, v in rob_cooldowns.items() if v < now]
+    # rob_cooldowns (30 min)
+    expired_rob = [k for k, v in rob_cooldowns.items() if (now - v).total_seconds() > 1800]
     for k in expired_rob: del rob_cooldowns[k]
-    
-    # boss_cooldowns
-    expired_boss = [k for k, v in boss_cooldowns.items() if v < now]
+
+    # boss_cooldowns (30 sec)
+    expired_boss = [k for k, v in boss_cooldowns.items() if (now - v).total_seconds() > 30]
     for k in expired_boss: del boss_cooldowns[k]
-    
-    # work_cooldowns
-    expired_work = [k for k, v in work_cooldowns.items() if v < now]
+
+    # work_cooldowns (1 hour)
+    expired_work = [k for k, v in work_cooldowns.items() if (now - v).total_seconds() > 3600]
     for k in expired_work: del work_cooldowns[k]
 
 
@@ -3416,5 +1816,15 @@ async def on_message(message):
             except Exception as e:
                 logging.error(f"Error executing prefix command !{cmd_name}: {e}")
                 await message.channel.send(f"❌ Error mengeksekusi perintah: `{e}`")
-                
-    # Lanjutkan memproses on_message (jika ada AI chat listener dsb nanti)
+        return
+
+    # ── Update Quest Progress ────────────────────────────────────────────────
+    await update_quest_progress(str(message.author.id), 'send_msg', 1)
+
+    # ── AI auto-reply in the dedicated channel ───────────────────────────────
+    if message.channel.id == 1341038015186862201:
+        nick = getattr(message.author, 'nick', None) or message.author.display_name
+        response = await get_gemini_response(message.content, message.author.id, nick)
+        await send_long_message(message.channel, response)
+        await write_to_memory(f'User: {message.content}\nBot: {response}')
+        return

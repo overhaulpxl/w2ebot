@@ -1,168 +1,199 @@
 # Way 2 Eternal Bot (W2E) 🤖✨
 
-Way 2 Eternal Bot adalah Discord Bot modern berskala *Enterprise/Cloud-Ready* yang memadukan **Kecerdasan Buatan (Gemini 2.5 Flash)**, **Sistem Game RPG & Ekonomi Sultan (Market 3.0)**, dan **Visualisasi Gambar Dinamis menggunakan Pillow**, yang tersimpan aman di database relasional **SQLite**.
+Way 2 Eternal Bot is a modern, *Enterprise/Cloud-Ready* Discord bot that blends **Artificial Intelligence (Gemini 2.5 Flash)**, a **Sultan-tier RPG & Economy System (Market 3.0)**, and **dynamic image generation with Pillow**, all stored safely in a relational **SQLite** database.
 
-Bot ini menggunakan arsitektur **Modular Cogs (discord.py)** untuk skalabilitas maksimum, mengelola puluhan command secara terstruktur (RPG, AI, Utils) dengan performa tinggi berkat optimasi query asynchronous menggunakan `aiosqlite`.
+The bot uses a **Modular Cogs (discord.py)** architecture for maximum scalability, managing dozens of commands in a structured way (RPG, AI, Utils) with high performance thanks to asynchronous query optimization via `aiosqlite`.
 
 ---
 
 ## 🌟 Project Overview
 
-Proyek ini dibangun untuk komunitas Discord yang menginginkan fitur lengkap dalam satu bot tanpa perlu mengundang banyak bot berbeda. Fitur unggulannya meliputi:
-1. **AI Chat & Persona**: Mengobrol layaknya manusia dengan gaya bahasa kustom (Gen-Z, Wibu, dll). Memori chat tersimpan secara permanen.
-2. **RPG & Ekonomi**: Simulasi bursa saham (Market), tambang kripto (Mining Rigs), Boss Raid, Judi Casino, dan Manajemen Inventori.
-3. **Sosial & Visual**: Pernikahan virtual, adopsi anak, hingga pembuatan silsilah keluarga (Family Tree) dan Kartu Profil bergambar yang di-*generate* secara dinamis menggunakan Pillow.
-4. **Sistem Hibrida Command**: Mendukung **Slash Commands** (`/`) dari Discord secara bawaan, dan secara ajaib juga mendukung **Prefix Commands** (`w!`) berkat sistem `FakeInteraction` internal yang menerjemahkan pesan teks biasa ke eksekusi sistem Slash Command.
+This project was built for Discord communities that want a complete feature set in a single bot without having to invite many different bots. Highlights include:
+1. **AI Chat & Persona**: Chat like a human with custom language styles (Gen-Z, weeb, etc.). Chat memory is stored permanently.
+2. **RPG & Economy**: A stock-market simulation (Market), crypto mining (Mining Rigs), Boss Raids, casino gambling, and inventory management.
+3. **Social & Visual**: Virtual marriage, child adoption, plus dynamically generated Family Trees and profile cards rendered with Pillow.
+4. **Hybrid Command System**: Supports native Discord **Slash Commands** (`/`) and, magically, also **Prefix Commands** (`w!`) thanks to an internal `FakeInteraction` system that translates plain text messages into Slash Command execution.
 
 ---
 
 ## 🛠️ Setup & Installation Steps
 
-### Persyaratan Sistem (Prerequisites)
-* **Python 3.10** ke atas
-* **FFmpeg** (Untuk voice listener/music) ter-install di PATH OS Anda
-* Token Bot Discord & API Key Gemini
+### Prerequisites
+* **Python 3.10** or higher
+* **FFmpeg** (for the voice listener/music) installed on your OS PATH
+* A Discord Bot Token & a Gemini API Key
 
-### Instalasi Lokal
-1. **Kloning Repositori & Install Dependensi**:
+### Local Installation
+1. **Clone the repository & install dependencies**:
    ```bash
    git clone https://github.com/overhaulpxl/w2ebot.git
    cd w2ebot
    pip install -r requirements.txt
    ```
 
-2. **Konfigurasi Lingkungan (`.env`)**:
-   Buat file `.env` di folder utama:
+2. **Environment configuration (`.env`)**:
+   Create a `.env` file in the project root:
    ```env
-   DISCORD_TOKEN=TOKEN_BOT_DISCORD_ANDA
-   GEMINI_API_KEY=KEY_GEMINI_AI_ANDA
+   DISCORD_TOKEN=YOUR_DISCORD_BOT_TOKEN
+   GEMINI_API_KEY=YOUR_GEMINI_AI_KEY
    ALLOWED_SERVER_ID=887968847842402355
    BOT_PREFIX=w!
+
+   # Optional — Web Dashboard / API
+   DASHBOARD_TOKEN=          # Auth token for state-changing API endpoints. Empty = those endpoints are disabled (fail closed).
+   ALLOWED_ORIGINS=          # Comma-separated CORS whitelist (e.g. https://way2eternal.com). Empty = allow all (dev only).
    ```
 
-3. **Menjalankan Bot**:
-   Windows: Klik dua kali `run_all.bat` atau ketik:
+3. **Run the bot**:
+   On Windows: double-click `run_all.bat`, or run:
    ```bash
    python main.py
    ```
 
-### Instalasi dengan Docker (Production)
-Bot ini telah dikonfigurasi untuk langsung jalan di Docker menggunakan `docker-compose.yml`.
+### Docker Installation (Production)
+The bot is configured to run directly in Docker using `docker-compose.yml`.
 ```bash
-# Buat file database kosong terlebih dahulu
+# Create an empty database file first
 touch w2ebot.db
 
-# Jalankan container di background
+# Run the container in the background
 docker compose up -d --build
 ```
 
 ---
 
+## 🌐 Web Dashboard & API
+
+On startup the bot launches a small HTTP server (aiohttp) on port **`8081`** as a background task in `on_ready`. It serves:
+* A **control dashboard** at `http://localhost:8081` for configuring announcement channels.
+* A **REST API** that the external **way2eternal main website** can consume to read live server state and update settings.
+
+State-changing endpoints (`POST /api/config`, `POST /api/announce-config`, `POST /api/broadcast`) require the header `X-Auth-Token: <DASHBOARD_TOKEN>`. If `DASHBOARD_TOKEN` is empty, those endpoints fail closed (always `401`). When hosting the website on a different domain, set `ALLOWED_ORIGINS` to that origin and put the bot behind an HTTPS reverse proxy.
+
+👉 Full endpoint contract, request/response shapes, integration pattern, and `curl` examples live in **[`API.md`](API.md)**.
+
+### Announcement Channels
+
+The bot posts several kinds of announcements; each can be routed to its own channel via the dashboard or the API. The 6 categories are:
+
+| Category | What it announces |
+|---|---|
+| `market` | Crypto market pump/dump events |
+| `levelup` | Level-ups earned from voice activity |
+| `birthday` | Birthday celebrations |
+| `boss` | Boss raid spawns |
+| `booster` | Server boosters joining a voice channel |
+| `binomo` | Binomo gambling results |
+
+Resolution order for each category: the per-category channel → the `default` channel → the legacy `booster_channel_id` (booster only) → an automatic search for a writable `general`/`chat` channel. Leaving a category empty simply falls back, so the bot works out of the box with no configuration.
+
+---
+
 ## 🏗️ How Each Function / Core Component Works
 
-Arsitektur W2E Bot dibagi menjadi beberapa komponen utama untuk memisahkan logika dan memudahkan pemeliharaan:
+The W2E Bot architecture is split into several main components to separate logic and ease maintenance:
 
-1. **`main.py` (Entry Point)**: 
-   File peluncur utama. Memuat modul konfigurasi dasar dan mengimpor file `core.py`, serta meregistrasi seluruh sub-modul (Cogs) dari folder `cogs/` (seperti `rpg`, `ai`, dan `utils`).
-2. **`core.py` (Core Library & Database)**: 
-   Jantung dari bot. File ini mengelola koneksi `aiosqlite` ke database, fungsi manipulasi JSON/Dictionary (load_json, save_json dengan cache memory `_json_cache` O(1) time complexity), pengaturan Intent (termasuk `message_content`), serta *event listener* utama seperti `on_ready` dan `on_message`.
+1. **`main.py` (Entry Point)**:
+   The main launcher. Loads the base configuration module, imports `core.py`, and registers all sub-modules (Cogs) from the `cogs/` folder (such as `rpg`, `ai`, and `utils`).
+2. **`core.py` (Core Library & Database)**:
+   The heart of the bot. It manages the `aiosqlite` database connection, JSON/dictionary helpers (`load_json`, `save_json` with the in-memory `_json_cache` for O(1) reads), Intent configuration (including `message_content`), the web API, and the main event listeners such as `on_ready` and `on_message`.
 3. **`FakeInteraction` (Prefix Wrapper)**:
-   Berada di `core.py`, kelas ini memotong (intercept) pesan masuk dari `on_message` yang diawali dengan `BOT_PREFIX`. Kelas ini "berpura-pura" menjadi `discord.Interaction` untuk mengelabui argumen slash command, sehingga member dapat memanggil fungsi Slash Command menggunakan teks biasa.
+   Located in `core.py`, this class intercepts incoming `on_message` messages that start with `BOT_PREFIX`. It "pretends" to be a `discord.Interaction` to satisfy slash command arguments, so members can call Slash Command functions using plain text.
 4. **`cogs/rpg.py`**:
-   Menangani seluruh game, matematika, perjudian, toko, boss raid, dan mining kripto.
+   Handles all games, math, gambling, the shop, boss raids, and crypto mining.
 5. **`cogs/ai.py`**:
-   Menangani permintaan API ke Google Gemini 2.5 Flash, manajemen sejarah (memory) percakapan, perintah persona, dan analisis sentimen (*roasting*, *rate*, *shipper*).
+   Handles API requests to Google Gemini 2.5 Flash, conversation history (memory), persona commands, and sentiment analysis (*roasting*, *rate*, *shipper*).
 6. **`cogs/utils.py`**:
-   Utilitas harian seperti cek latency (`ping`), pemungutan suara (`poll`), giveaway, pengingat (`remindme`), serta radar bot dan player (`find`, `checkbots`).
+   Daily utilities such as latency check (`ping`), voting (`poll`), giveaways, reminders (`remindme`), plus bot/player radar (`find`, `checkbots`).
 
 ---
 
 ## 📘 List of All Features / Commands
 
-Berikut adalah daftar lengkap ke-54 command yang tersedia. Semua command bisa dipanggil menggunakan **Prefix** (contoh: `w!help`) atau **Slash** (contoh: `/help`).
+Below is the full list of all 54 available commands. Every command can be invoked using a **Prefix** (e.g. `w!help`) or a **Slash** (e.g. `/help`).
 
-### Kategori A: RPG & Ekonomi
-* **`daily`** - Klaim koin dan XP harian.
-* **`weekly`** - Klaim jatah mingguan koin.
-* **`work`** - Bekerja menambang koin.
-* **`profile`** - Menampilkan gambar kartu profil lengkap dengan level dan aset.
-* **`shop`** - Membuka UI toko W2E.
-* **`buy <item>`** / **`sell <item>`** - Transaksi item.
-* **`inventory`** - Mengecek tas dan buff aktif.
-* **`rob @user`** - Mencuri koin member lain.
-* **`transfer @user <jumlah>`** - Mengirim koin secara aman.
-* **`top`** - Menampilkan Leaderboard (Orang Terkaya & Level Tertinggi).
-* **`buyrig <tier>`** - Membeli mesin mining penghasil pasif income.
-* **`miner`** - Cek efisiensi mesin mining.
-* **`market`** - Cek grafik naik turun mata uang kripto fiktif.
-* **`portfolio`** - Mengecek total aset investasi kripto.
-* **`quest`** - Melihat progres misi harian/mingguan.
-* **`attack`** - Serang bos Raid bersama-sama.
-* **`buypet <pet>`** - Beli peliharaan untuk menambah daya serang.
+### Category A: RPG & Economy
+* **`daily`** - Claim your daily coins and XP.
+* **`weekly`** - Claim your weekly coin allowance.
+* **`work`** - Work to mine coins.
+* **`profile`** - Show a full profile card image with level and assets.
+* **`shop`** - Open the W2E shop UI.
+* **`buy <item>`** / **`sell <item>`** - Item transactions.
+* **`inventory`** - Check your bag and active buffs.
+* **`rob @user`** - Steal coins from another member.
+* **`transfer @user <amount>`** - Send coins safely.
+* **`top`** - Show the leaderboard (richest & highest level).
+* **`buyrig <tier>`** - Buy a mining machine for passive income.
+* **`miner`** - Check your mining machine efficiency.
+* **`market`** - Check the rise and fall of the fictional crypto currencies.
+* **`portfolio`** - Check your total crypto investment assets.
+* **`quest`** - View your daily/weekly mission progress.
+* **`attack`** - Attack the raid boss together.
+* **`buypet <pet>`** - Buy a pet to increase your attack power.
 
-### Kategori B: Judi & Kasino
-* **`cf <pilihan> <bet>`** - Tebak koin kepala/ekor (Heads/Tails).
-* **`flip`** - Lempar koin biasa.
-* **`slot`** - Putar mesin slot buah.
-* **`blackjack <bet>`** - Judi kartu remi klasik melawan bandar AI.
-* **`tebak <angka>`** - Judi tebak angka (1-10).
-* **`crash <bet>`** - Taruhan grafik naik sebelum hancur!
-* **`gacha`** - Buka gulungan gacha item waifu berbayar.
-* **`box`** - Buka Mystery Loot Box.
-* **`rps`** - Main batu gunting kertas.
+### Category B: Gambling & Casino
+* **`cf <choice> <bet>`** - Coin flip, guess heads/tails.
+* **`flip`** - Flip a regular coin.
+* **`slot`** - Spin the fruit slot machine.
+* **`blackjack <bet>`** - Classic card gambling against an AI dealer.
+* **`tebak <number>`** - Number-guessing gamble (1-10).
+* **`crash <bet>`** - Bet on a rising graph before it crashes!
+* **`gacha`** - Open a paid waifu-item gacha roll.
+* **`box`** - Open a Mystery Loot Box.
+* **`rps`** - Play rock-paper-scissors.
 
-### Kategori C: AI & Sosial
-* **`ai <pesan>`** - Ngobrol pintar dengan Gemini.
-* **`chat <pesan>`** - Ngobrol santai tanpa embel-embel AI.
-* **`setpersona <sifat>`** - Mengubah kepribadian balasan AI (Galak, Wibu, Bijak, dll).
-* **`listen`** - AI merekam dan membalas obrolan Voice Channel Anda.
-* **`roast @user`** - AI menghina target secara sarkas dan lucu.
-* **`rate @user`** - AI menilai seberapa menarik seseorang dari skala 1-10.
-* **`image`** - AI membuatkan gambar berdasarkan teks (*Prompt*).
-* **`shipper @user1 @user2`** - Meramal kecocokan jodoh (Gambar Love Card).
-* **`marry @user`** / **`divorce`** - Hubungan pernikahan virtual server.
-* **`adopt @user`** / **`family`** - Hubungan anak angkat dan visualisasi bagan keluarga.
+### Category C: AI & Social
+* **`ai <message>`** - Smart chat with Gemini.
+* **`chat <message>`** - Casual chat without the AI framing.
+* **`setpersona <trait>`** - Change the AI reply personality (fierce, weeb, wise, etc.).
+* **`listen`** - The AI records and replies to your Voice Channel conversation.
+* **`roast @user`** - The AI roasts the target sarcastically and humorously.
+* **`rate @user`** - The AI rates how attractive someone is from 1-10.
+* **`image`** - The AI generates an image from text (*prompt*).
+* **`shipper @user1 @user2`** - Predict relationship compatibility (Love Card image).
+* **`marry @user`** / **`divorce`** - Virtual server marriage.
+* **`adopt @user`** / **`family`** - Adopted-child relationships and family-tree visualization.
 
-### Kategori D: Utilitas
-* **`help`** - Membuka menu panduan interaktif ini.
-* **`ping`** - Cek ping (latensi) bot.
-* **`poll <tanya>;<opsi>`** - Buat sistem voting / poling untuk komunitas.
-* **`giveaway`** - Selenggarakan Giveaway berbatas waktu (Khusus Admin).
-* **`find @user`** - Mencari tahu target sedang nongkrong di Voice Channel mana.
-* **`checkbots`** - Mengecek semua bot musik yang sedang memutar lagu di server.
-* **`remindme <menit> <pesan>`** - Alarm pengingat dari bot.
-* **`birthday <tanggal>`** - Atur ulang tahun Anda untuk kejutan.
-* **`bg <url>`** - Ubah gambar background (banner) Profile Card RPG Anda.
-* **`kas`** - Mengecek saldo pajak brankas admin server.
-* **`valo`** - Mem-ping kawan se-server untuk mabar Valorant.
+### Category D: Utilities
+* **`help`** - Open this interactive help menu.
+* **`ping`** - Check the bot's ping (latency).
+* **`poll <question>;<options>`** - Create a voting/polling system for the community.
+* **`giveaway`** - Run a time-limited giveaway (Admin only).
+* **`find @user`** - Find out which Voice Channel a target is hanging out in.
+* **`checkbots`** - Check all music bots currently playing in the server.
+* **`remindme <minutes> <message>`** - A reminder alarm from the bot.
+* **`birthday <date>`** - Set your birthday for a surprise.
+* **`bg <url>`** - Change the background (banner) image of your RPG profile card.
+* **`kas`** - Check the admin server treasury (tax vault) balance.
+* **`valo`** - Ping fellow server members to play Valorant together.
 
 ---
 
 ## 🎮 Example Usage
 
-Berikut adalah contoh skenario seru yang bisa Anda lakukan menggunakan Bot W2E:
+Here are some fun scenarios you can try with the W2E Bot:
 
-**Skenario 1: Menjadi Kaya dari Kripto Fiktif**
-> **Player:** `w!buyrig 2` *(Membeli mesin Mining Rig Tier 2 seharga koin mahal)*
-> **Player:** `w!miner` *(Mengecek kecepatan hashing mesin tersebut, dan menunggu jam gajian)*
-> **Player:** `w!market` *(Menunggu harga ETHR turun merah, lalu membelinya dalam jumlah besar)*
-> **Player:** `w!portfolio` *(Menikmati grafik hijau saat harga ETHR melonjak naik dan menjualnya!)*
+**Scenario 1: Getting Rich off Fictional Crypto**
+> **Player:** `w!buyrig 2` *(Buys a Tier 2 Mining Rig for an expensive amount of coins)*
+> **Player:** `w!miner` *(Checks the machine's hashing speed, then waits for payday)*
+> **Player:** `w!market` *(Waits for the ETHR price to dip red, then buys it in bulk)*
+> **Player:** `w!portfolio` *(Enjoys the green chart as the ETHR price spikes and sells it!)*
 
-**Skenario 2: Interaksi Emosional dengan AI**
-> **User:** `w!setpersona Pembantu rumah tangga galak bernama Inem`
-> *(AI mengubah karakternya di memori database)*
-> **User:** `w!chat buatin kopi dong nem`
-> **Bot:** *(Membalas dengan marah-marah)* "Bikin sendiri dong, lu kira gue babu robot gratisan? Kopi di laci, air panas di dispenser, ngapain nunggu gue, bos malas!"
+**Scenario 2: Emotional Interaction with the AI**
+> **User:** `w!setpersona A grumpy housemaid named Inem`
+> *(The AI changes its character in the database memory)*
+> **User:** `w!chat make me some coffee, Nem`
+> **Bot:** *(Replies angrily)* "Make it yourself! You think I'm a free robot servant? Coffee's in the drawer, hot water's in the dispenser, why wait for me, you lazy boss!"
 > **User:** `w!roast @Joko`
-> **Bot:** "Joko? Muka lu mirip kuli bangunan salah alamat, mending lu kuli di pelabuhan aja wkwk."
+> **Bot:** "Joko? Your face looks like a construction worker who got lost. You'd be better off as a dock laborer lol."
 
-**Skenario 3: Bertahan Hidup Lewat Perjudian Berbahaya**
-> **Player:** `w!crash 10000` *(Mempertaruhkan 10 Ribu Koin)*
-> *(Grafik mulai naik: 1.2x... 1.5x... 1.8x)*
-> *(Player mengeklik tombol Stop)*
-> *(Grafik hancur di 1.9x)*
-> **Bot:** "Selamat! Anda berhasil kabur di 1.8x dan memenangkan 18,000 Koin!"
+**Scenario 3: Surviving Through Dangerous Gambling**
+> **Player:** `w!crash 10000` *(Wagers 10 thousand coins)*
+> *(The graph starts climbing: 1.2x... 1.5x... 1.8x)*
+> *(Player clicks the Stop button)*
+> *(The graph crashes at 1.9x)*
+> **Bot:** "Congratulations! You escaped at 1.8x and won 18,000 coins!"
 
 ---
 
-*Hak Cipta © Way 2 Eternal Community. Developed with ♥ by the W2E Dev Team.*
+*Copyright © Way 2 Eternal Community. Developed with ♥ by the W2E Dev Team.*

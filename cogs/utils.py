@@ -218,19 +218,24 @@ def setup(tree, client):
         if not interaction.user.guild_permissions.administrator:
             await send_embed(interaction, "❌ Kamu bukan Admin!")
             return
-            
+
+        if durasi_menit < 1 or durasi_menit > 1440:
+            await send_embed(interaction, "❌ Durasi harus antara 1 dan 1440 menit (24 jam).")
+            return
+
         embed = discord.Embed(title="🎉 **GIVEAWAY!** 🎉", description=f"**Hadiah:** {hadiah}\n**Waktu:** {durasi_menit} Menit\n\nReact dengan 🎉 untuk ikutan!", color=discord.Color.purple())
         embed.set_footer(text=f"Diselenggarakan oleh {interaction.user.display_name}")
-        
+
         msg = await interaction.followup.send(embed=embed, wait=True)
         await msg.add_reaction("🎉")
-        
+
         await asyncio.sleep(durasi_menit * 60)
-        
+
         # Fetch message again
         new_msg = await interaction.channel.fetch_message(msg.id)
-        users = [user async for user in new_msg.reactions[0].users() if not user.bot]
-        
+        reaction = discord.utils.get(new_msg.reactions, emoji="🎉")
+        users = [user async for user in reaction.users() if not user.bot] if reaction else []
+
         if not users:
             await interaction.channel.send("Giveaway dibatalkan, tidak ada yang ikut.")
         else:

@@ -1,6 +1,18 @@
 import discord
 import random
 
+
+async def _dispatch(interaction, command_name, *args):
+    # `client` is a plain discord.Client; the CommandTree lives as a module
+    # global in core, so resolve commands through it directly.
+    from core import tree
+    cmd = tree.get_command(command_name)
+    if cmd is None:
+        await interaction.response.send_message(
+            f"❌ Perintah `{command_name}` tidak tersedia.", ephemeral=True)
+        return
+    await cmd.callback(interaction, *args)
+
 class ShopView(discord.ui.View):
     def __init__(self, user, premium_since):
         super().__init__(timeout=90)
@@ -68,32 +80,28 @@ class ProfileView(discord.ui.View):
         if interaction.user.id != self.user.id:
             await interaction.response.send_message("❌ Ini bukan profile Anda.", ephemeral=True)
             return
-        from cogs.rpg import slash_inventory
-        await slash_inventory.callback(interaction)
+        await _dispatch(interaction, "inventory")
 
     @discord.ui.button(label="⛏️ Miner Rigs", style=discord.ButtonStyle.success, emoji="⛏️")
     async def view_miner(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user.id:
             await interaction.response.send_message("❌ Ini bukan profile Anda.", ephemeral=True)
             return
-        from cogs.rpg import slash_miner
-        await slash_miner.callback(interaction)
+        await _dispatch(interaction, "miner")
 
     @discord.ui.button(label="👪 Silsilah Keluarga", style=discord.ButtonStyle.secondary, emoji="👪")
     async def view_family(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user.id:
             await interaction.response.send_message("❌ Ini bukan profile Anda.", ephemeral=True)
             return
-        from cogs.utils import slash_family
-        await slash_family.callback(interaction)
+        await _dispatch(interaction, "family")
 
     @discord.ui.button(label="🛒 Buka Toko", style=discord.ButtonStyle.danger, emoji="🛒")
     async def open_shop(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user.id:
             await interaction.response.send_message("❌ Ini bukan profile Anda.", ephemeral=True)
             return
-        from cogs.rpg import slash_shop
-        await slash_shop.callback(interaction)
+        await _dispatch(interaction, "shop")
 
 class BlackjackView(discord.ui.View):
     def __init__(self, user, bet):
@@ -106,8 +114,7 @@ class BlackjackView(discord.ui.View):
         if interaction.user.id != self.user.id:
             await interaction.response.send_message("❌ Ini bukan game Anda.", ephemeral=True)
             return
-        from cogs.rpg import slash_blackjack
-        await slash_blackjack.callback(interaction, self.bet)
+        await _dispatch(interaction, "blackjack", self.bet)
 
 class SlotView(discord.ui.View):
     def __init__(self, user, bet):
@@ -120,8 +127,7 @@ class SlotView(discord.ui.View):
         if interaction.user.id != self.user.id:
             await interaction.response.send_message("❌ Ini bukan game Anda.", ephemeral=True)
             return
-        from cogs.rpg import slash_slot
-        await slash_slot.callback(interaction, self.bet)
+        await _dispatch(interaction, "slot", self.bet)
 
 class GachaView(discord.ui.View):
     def __init__(self, user):
@@ -133,8 +139,7 @@ class GachaView(discord.ui.View):
         if interaction.user.id != self.user.id:
             await interaction.response.send_message("❌ Ini bukan gacha Anda.", ephemeral=True)
             return
-        from cogs.rpg import slash_gacha
-        await slash_gacha.callback(interaction)
+        await _dispatch(interaction, "gacha")
 
 class BoxView(discord.ui.View):
     def __init__(self, user):
@@ -146,8 +151,7 @@ class BoxView(discord.ui.View):
         if interaction.user.id != self.user.id:
             await interaction.response.send_message("❌ Ini bukan loot box Anda.", ephemeral=True)
             return
-        from cogs.rpg import slash_box
-        await slash_box.callback(interaction)
+        await _dispatch(interaction, "box")
 
 class MarketView(discord.ui.View):
     def __init__(self, user):
@@ -156,13 +160,17 @@ class MarketView(discord.ui.View):
 
     @discord.ui.button(label="🔄 Refresh Harga", style=discord.ButtonStyle.secondary)
     async def refresh_market(self, interaction: discord.Interaction, button: discord.ui.Button):
-        from cogs.rpg import slash_market
-        await slash_market.callback(interaction)
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message("❌ Ini bukan menu market Anda.", ephemeral=True)
+            return
+        await _dispatch(interaction, "market")
 
     @discord.ui.button(label="💼 Cek Portfolio", style=discord.ButtonStyle.primary)
     async def check_portfolio(self, interaction: discord.Interaction, button: discord.ui.Button):
-        from cogs.rpg import slash_portfolio
-        await slash_portfolio.callback(interaction)
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message("❌ Ini bukan menu market Anda.", ephemeral=True)
+            return
+        await _dispatch(interaction, "portfolio")
 
 class MinerView(discord.ui.View):
     def __init__(self, user):
@@ -174,21 +182,18 @@ class MinerView(discord.ui.View):
         if interaction.user.id != self.user.id:
             await interaction.response.send_message("❌ Ini bukan miner Anda.", ephemeral=True)
             return
-        from cogs.rpg import slash_buyrig
-        await slash_buyrig.callback(interaction, 1)
+        await _dispatch(interaction, "buyrig", 1)
 
     @discord.ui.button(label="Beli Rig Tier 2 (30k)", style=discord.ButtonStyle.success, custom_id="buy_rig_2")
     async def buy_rig_2(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user.id:
             await interaction.response.send_message("❌ Ini bukan miner Anda.", ephemeral=True)
             return
-        from cogs.rpg import slash_buyrig
-        await slash_buyrig.callback(interaction, 2)
+        await _dispatch(interaction, "buyrig", 2)
 
     @discord.ui.button(label="Beli Rig Tier 3 (80k)", style=discord.ButtonStyle.danger, custom_id="buy_rig_3")
     async def buy_rig_3(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user.id:
             await interaction.response.send_message("❌ Ini bukan miner Anda.", ephemeral=True)
             return
-        from cogs.rpg import slash_buyrig
-        await slash_buyrig.callback(interaction, 3)
+        await _dispatch(interaction, "buyrig", 3)

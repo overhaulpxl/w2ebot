@@ -144,13 +144,15 @@ def setup(tree, client):
             
         pet_name = pet_name.lower()
         pet_info = PETS[pet_name]
-        
-        if users[uid].get('balance', 0) < pet_info['price']:
+
+        stat = await get_discord_stat(uid)
+        if stat['coins'] < pet_info['price']:
             await send_embed(interaction, "❌ Koin nggak cukup!")
             return
-            
-        users[uid]['balance'] -= pet_info['price']
-        users[uid]['pet'] = pet_name
+
+        stat['coins'] -= pet_info['price']
+        await update_discord_stat(uid, interaction.user.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+        users.setdefault(uid, {})['pet'] = pet_name
         await save_json('users.json', users)
         await send_embed(interaction, f"🎉 Selamat! Kamu telah mengadopsi {pet_info['emoji']} **{pet_name.capitalize()}**!")
     
@@ -166,19 +168,18 @@ def setup(tree, client):
         if stat['coins'] < bet:
             await send_embed(interaction, "❌ Koin tidak cukup!")
             return
-            
-        stat['coins'] -= bet
-        
+
         player_score = random.randint(15, 25)
         dealer_score = random.randint(17, 23)
-        
+
+        net = -bet  # bet is staked; winning/draw branches add back below
         if player_score > 21:
             msg = f"🃏 Nilai kamu {player_score}. **BUSTED!** Uang {bet} hangus."
         elif dealer_score > 21 or player_score > dealer_score:
             win = bet * 2
-            stat['coins'] += win
+            net += win
             msg = f"🃏 Kamu {player_score}, Bandar {dealer_score}. **MENANG!** Dapat {win} Koin!"
-            
+
             # Trophy check
             if win >= 1000000:
                 users = await load_json('users.json')
@@ -189,12 +190,12 @@ def setup(tree, client):
                     await save_json('users.json', users)
                     msg += "\n🏆 **ACHIEVEMENT UNLOCKED: 👑 Sang Raja Judi!**"
         elif player_score == dealer_score:
-            stat['coins'] += bet
+            net += bet
             msg = f"🃏 Sama-sama {player_score}. **DRAW!** Uang dikembalikan."
         else:
             msg = f"🃏 Kamu {player_score}, Bandar {dealer_score}. **BANDAR MENANG!** Uang {bet} hangus."
-            
-        await update_discord_stat(uid, interaction.user.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+
+        await adjust_coins(uid, net, interaction.user.display_name)
         from w2e_views import BlackjackView
         await send_embed(interaction, msg, view=BlackjackView(interaction.user, bet))
     
@@ -354,16 +355,14 @@ def setup(tree, client):
         if stat['coins'] < bet:
             await send_embed(interaction, "❌ Koin tidak cukup!")
             return
-            
-        stat['coins'] -= bet
-        
+
         emojis = ["🍒", "🍋", "🔔", "⭐", "💎", "7️⃣"]
         slots = [random.choice(emojis) for _ in range(3)]
         result = " | ".join(slots)
-        
+
         win = 0
         msg = f"🎰 **W2E SLOT MACHINE** 🎰\n\n[ {result} ]\n\n"
-        
+
         if slots[0] == slots[1] == slots[2]:
             if slots[0] == "7️⃣":
                 win = bet * 10
@@ -376,10 +375,9 @@ def setup(tree, client):
             msg += f"👍 **MINI WIN!** Kamu menang **{win} Koin** (1.5x lipat)!"
         else:
             msg += f"😢 Zonk! Uang taruhan **{bet} Koin** hangus dimakan mesin."
-            
-        stat['coins'] += win
-        await update_discord_stat(uid, interaction.user.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
-        
+
+        await adjust_coins(uid, win - bet, interaction.user.display_name)
+
         from w2e_views import SlotView
         await send_embed(interaction, msg, view=SlotView(interaction.user, bet))
     
@@ -458,23 +456,21 @@ def setup(tree, client):
         success = random.choice([True, False, False]) # 33% win rate
         if success:
             stolen = random.randint(10, int(stat_target['coins'] * 0.2)) # Max 20%
-            await update_discord_stat(uid, interaction.user.display_name, stat_robber['coins'] + stolen, stat_robber['xp'], stat_robber['level'], stat_robber['lastDaily'])
-            await update_discord_stat(tid, target.display_name, stat_target['coins'] - stolen, stat_target['xp'], stat_target['level'], stat_target['lastDaily'])
+            await adjust_coins(uid, stolen, interaction.user.display_name)
+            await adjust_coins(tid, -stolen, target.display_name)
             await send_embed(interaction, f"🥷 **BERHASIL!** Kamu merampok **{stolen} Koin** dari {target.mention}!")
         else:
             fine = random.randint(10, 100)
             actual_fine = min(fine, stat_robber['coins'])
-            await update_discord_stat(uid, interaction.user.display_name, stat_robber['coins'] - actual_fine, stat_robber['xp'], stat_robber['level'], stat_robber['lastDaily'])
+            await adjust_coins(uid, -actual_fine, interaction.user.display_name)
             await send_embed(interaction, f"🚓 **Terciduk Polisi!** Kamu gagal merampok {target.display_name} dan didenda **{actual_fine} Koin**!")
     
     @tree.command(name="top", description="Lihat peringkat member terkaya dan tertinggi")
     async def slash_top(interaction: discord.Interaction):
         await interaction.response.defer()
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("SELECT id, displayName, coins, level FROM DiscordStat ORDER BY level DESC, coins DESC LIMIT 10")
-        rows = c.fetchall()
-        conn.close()
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT id, displayName, coins, level FROM DiscordStat ORDER BY level DESC, coins DESC LIMIT 10") as cursor:
+                rows = await cursor.fetchall()
         
         embed = discord.Embed(title="🏆 W2E Leaderboard 🏆", color=discord.Color.gold())
         for i, row in enumerate(rows):
@@ -523,14 +519,10 @@ def setup(tree, client):
         if stat_sender['coins'] < amount:
             await send_embed(interaction, "❌ Koin kamu tidak cukup!")
             return
-            
-        stat_target = await get_discord_stat(tid)
-        stat_sender['coins'] -= amount
-        stat_target['coins'] += amount
-        
-        await update_discord_stat(uid, interaction.user.display_name, stat_sender['coins'], stat_sender['xp'], stat_sender['level'], stat_sender['lastDaily'])
-        await update_discord_stat(tid, target.display_name, stat_target['coins'], stat_target['xp'], stat_target['level'], stat_target['lastDaily'])
-        
+
+        await adjust_coins(uid, -amount, interaction.user.display_name)
+        await adjust_coins(tid, amount, target.display_name)
+
         await send_embed(interaction, f"💸 **Transfer Berhasil!**\nKamu telah mengirim **{amount} Koin** ke {target.mention}.")
     
     @tree.command(name="cf", description="Main Coinflip (Judi tebak koin)")
@@ -552,13 +544,12 @@ def setup(tree, client):
             
         result = random.choice(['head', 'tail'])
         if tebakan == result:
-            stat['coins'] += bet
             msg = f"🪙 Koin dilempar dan hasilnya: **{result.upper()}**\n🎉 Tebakanmu benar! Kamu menang **{bet} Koin**."
+            await adjust_coins(uid, bet, interaction.user.display_name)
         else:
-            stat['coins'] -= bet
             msg = f"🪙 Koin dilempar dan hasilnya: **{result.upper()}**\n💀 Tebakanmu salah! Kamu kalah **{bet} Koin**."
-            
-        await update_discord_stat(uid, interaction.user.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+            await adjust_coins(uid, -bet, interaction.user.display_name)
+
         await send_embed(interaction, msg)
     
     @tree.command(name="flip", description="Flip koin (Head/Tail)")
@@ -611,23 +602,24 @@ def setup(tree, client):
             await send_embed(interaction, f"❌ Koin tidak cukup! Butuh {cost} Koin.")
             return
             
-        stat['coins'] -= cost
+        if stat['coins'] < cost:
+            await send_embed(interaction, f"❌ Koin tidak cukup! Butuh {cost} Koin.")
+            return
+
         pool = ["Ampas (Zonk)", "Nasi Bungkus", "Panci Bolong", "Kunci Jawaban UN", "Waifu Wangi", "Pedang Excalibur", "Gundam Bekas", "Sertifikat Rumah"]
         result = random.choice(pool)
-        
-        await update_discord_stat(uid, interaction.user.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+
+        await adjust_coins(uid, -cost, interaction.user.display_name)
         from w2e_views import GachaView
         await send_embed(interaction, f"🎰 Kamu memutar Gacha seharga {cost} Koin...\n✨ Kamu mendapatkan: **{result}**!", view=GachaView(interaction.user))
-    
+
     @tree.command(name="tebak", description="Game tebak angka 1-10")
     async def slash_tebak(interaction: discord.Interaction, tebakan: int):
         await interaction.response.defer()
         jawaban = random.randint(1, 10)
         if tebakan == jawaban:
             uid = str(interaction.user.id)
-            stat = await get_discord_stat(uid)
-            stat['coins'] += 100
-            await update_discord_stat(uid, interaction.user.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+            await adjust_coins(uid, 100, interaction.user.display_name)
             await send_embed(interaction, f"🎯 BENAR! Angkanya adalah {jawaban}. Kamu dapat 100 Koin!")
         else:
             await send_embed(interaction, f"❌ SALAH! Angkanya adalah {jawaban}.")
@@ -636,33 +628,37 @@ def setup(tree, client):
     async def slash_sell(interaction: discord.Interaction, item_name: str):
         await interaction.response.defer()
         uid = str(interaction.user.id)
-        items_data = await load_json('items.json')
-        user_inventory = items_data.get(uid, {}).get('inventory', {})
-        
-        # Simple search
-        item_key = next((k for k in user_inventory if k.lower() == item_name.lower()), None)
-        if not item_key or user_inventory[item_key] <= 0:
+        users = await load_json('users.json')
+        user_items = users.get(uid, {}).get('items', {})
+
+        # Match against SHOP_ITEMS keys (id or display name), case-insensitive
+        item_key = next(
+            (k for k in user_items
+             if k.lower() == item_name.lower()
+             or SHOP_ITEMS.get(k, {}).get('name', '').lower() == item_name.lower()),
+            None
+        )
+        if not item_key or user_items.get(item_key, 0) <= 0:
             await send_embed(interaction, f"❌ Kamu tidak punya item **{item_name}** di tas.")
             return
-            
-        shop_data = await load_json('shop.json')
-        item_info = next((i for i in shop_data if i['id'] == item_key), None)
+
+        item_info = SHOP_ITEMS.get(item_key)
         if not item_info:
             await send_embed(interaction, "❌ Item ini tidak bisa dijual.")
             return
-            
+
         sell_price = int(item_info['price'] * 0.5) # Sell for 50% price
-        user_inventory[item_key] -= 1
-        if user_inventory[item_key] == 0:
-            del user_inventory[item_key]
-            
-        items_data[uid]['inventory'] = user_inventory
-        await save_json('items.json', items_data)
-        
+        user_items[item_key] -= 1
+        if user_items[item_key] <= 0:
+            del user_items[item_key]
+
+        users.setdefault(uid, {})['items'] = user_items
+        await save_json('users.json', users)
+
         stat = await get_discord_stat(uid)
         stat['coins'] += sell_price
         await update_discord_stat(uid, interaction.user.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
-        
+
         await send_embed(interaction, f"🛍️ Berhasil menjual **{item_info['name']}** seharga {sell_price} Koin!")
     
     @tree.command(name="crash", description="Main judi grafik Crash")
@@ -689,13 +685,12 @@ def setup(tree, client):
         win_amount = int(bet * multiplier)
         
         if multiplier > 1.2:
-            stat['coins'] += (win_amount - bet)
             msg = f"📈 Grafik Crash berhenti di **{multiplier}x**!\n🎉 Kamu MENANG dan saldo bertambah **{win_amount - bet} Koin**!"
+            await adjust_coins(uid, win_amount - bet, interaction.user.display_name)
         else:
-            stat['coins'] -= bet
             msg = f"📉 Grafik langsung CRASH di **{multiplier}x**!\n💀 Kamu KALAH dan kehilangan **{bet} Koin**!"
-            
-        await update_discord_stat(uid, interaction.user.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+            await adjust_coins(uid, -bet, interaction.user.display_name)
+
         await send_embed(interaction, msg)
     
     @tree.command(name="box", description="Buka Loot Box (Biaya: 1000 Koin)")
@@ -708,8 +703,7 @@ def setup(tree, client):
         if stat['coins'] < cost:
             await send_embed(interaction, f"❌ Butuh {cost} Koin untuk membuka Loot Box.")
             return
-            
-        stat['coins'] -= cost
+
         # Loot pool
         rand = random.random()
         if rand < 0.05:
@@ -724,9 +718,8 @@ def setup(tree, client):
         else:
             reward = 10
             item = "🗑️ Sampah (10 Koin)"
-            
-        stat['coins'] += reward
-        await update_discord_stat(uid, interaction.user.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+
+        await adjust_coins(uid, reward - cost, interaction.user.display_name)
         from w2e_views import BoxView
         await send_embed(interaction, f"📦 Kamu membuka Loot Box...\nIsinya adalah: **{item}**!", view=BoxView(interaction.user))
     
@@ -852,39 +845,35 @@ def setup(tree, client):
         if stat['coins'] < 100:
             await send_embed(interaction, "❌ Mengutuk butuh persembahan 100 Koin. Kamu terlalu miskin.")
             return
-            
-        stat['coins'] -= 100 # Cost of cursing
-        
+
         users = await load_json('users.json')
         now = datetime.now()
         last_curse = users.get(uid, {}).get('lastCurse')
-        
+
         if last_curse:
             last = datetime.fromisoformat(last_curse)
             delta = (now - last).total_seconds()
             if delta < 14400: # 4 hours
                 await send_embed(interaction, f"⏳ Energi gelapmu habis. Tunggu {int((14400-delta)//3600)} jam lagi.")
-                await update_discord_stat(uid, interaction.user.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
                 return
-    
+
+        await adjust_coins(uid, -100, interaction.user.display_name) # Cost of cursing
         users.setdefault(uid, {})['lastCurse'] = now.isoformat()
         await save_json('users.json', users)
-        
+
         target_stat = await get_discord_stat(tid)
         rand = random.random()
-        
+
         if rand < 0.4:
             loss = random.randint(50, 500)
             actual_loss = min(loss, target_stat['coins'])
-            target_stat['coins'] -= actual_loss
-            await update_discord_stat(tid, target.display_name, target_stat['coins'], target_stat['xp'], target_stat['level'], target_stat['lastDaily'])
+            await adjust_coins(tid, -actual_loss, target.display_name)
             msg = f"😈 **Kutukan Berhasil!** {target.mention} terkena santet dan kehilangan **{actual_loss} Koin**!"
         else:
             # Karma
-            stat['coins'] -= 200
+            await adjust_coins(uid, -200, interaction.user.display_name)
             msg = f"🛡️ **KUTUKAN BERBALIK!** {target.display_name} dilindungi kekuatan suci. Kamu terkena karma dan kehilangan ekstra **200 Koin**!"
-    
-        await update_discord_stat(uid, interaction.user.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+
         await send_embed(interaction, msg)
     
     @tree.command(name="quest", description="Lihat Misi Harian/Mingguan kamu")

@@ -1,9 +1,41 @@
+# ── Secrets & environment ──────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Runtime data (bot auto-generates these) ────────────────────────────
+# Game data lives in the SQLite json_store table, not loose .json files,
+# so we ignore the DB + the on-disk runtime config rather than all *.json.
+w2ebot.db
+*.db
+*.sqlite
+*.sqlite3
+config.json
+
+# ── Python ─────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *.class
+*.egg-info/
+.eggs/
+build/
+dist/
 .venv/
-.env
-w2ebot.db
-*.json
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── Assets downloaded/generated at runtime ─────────────────────────────
 fonts/
-*.db
+
+# ── Local tooling / agent config ───────────────────────────────────────
+.agent/
+
+# ── Editors & OS ───────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

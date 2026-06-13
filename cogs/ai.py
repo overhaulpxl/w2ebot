@@ -15,7 +15,7 @@ def setup(tree, client):
                 await interaction.followup.send(response[i:i+2000])
         else:
             await send_embed(interaction, response)
-        write_to_memory(f'User: {pertanyaan}\nBot: {response}')
+        await write_to_memory(f'User: {pertanyaan}\nBot: {response}')
     
     @tree.command(name="setpersona", description="Ubah sifat/persona AI untuk chat selanjutnya")
     async def slash_setpersona(interaction: discord.Interaction, persona: str = None):

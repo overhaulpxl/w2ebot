@@ -136,20 +136,25 @@ class W2EHelpView(discord.ui.View):
     def __init__(self, current_user_id=None):
         super().__init__(timeout=180)
         self.current_user_id = current_user_id
-        
+        self.message = None
+
         # Add the dropdown select menu
         self.add_item(HelpSelect(current_user_id))
-        
+
         # Add quick link buttons
         self.add_item(discord.ui.Button(label="Support Server", url="https://discord.gg/way2eternal", style=discord.ButtonStyle.link, emoji="💬"))
         self.add_item(discord.ui.Button(label="Dashboard", url="http://localhost:8081", style=discord.ButtonStyle.link, emoji="📊"))
 
     async def on_timeout(self):
-        # Disable select menu on timeout
+        # Disable select menu on timeout and push the change to Discord
         for child in self.children:
             if isinstance(child, discord.ui.Select):
                 child.disabled = True
-        pass
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
 
 async def send_w2e_help(target, current_user_id=None):
     """
@@ -176,12 +181,13 @@ async def send_w2e_help(target, current_user_id=None):
     
     if isinstance(target, discord.Interaction):
         if target.response.is_done():
-            await target.followup.send(embed=embed, view=view)
+            view.message = await target.followup.send(embed=embed, view=view, wait=True)
         else:
             await target.response.send_message(embed=embed, view=view)
+            view.message = await target.original_response()
     elif hasattr(target, 'send'): # commands.Context or channel
-        await target.send(embed=embed, view=view)
+        view.message = await target.send(embed=embed, view=view)
     elif isinstance(target, discord.Message):
-        await target.channel.send(embed=embed, view=view)
+        view.message = await target.channel.send(embed=embed, view=view)
     else:
         logging.error("Target tidak didukung oleh send_w2e_help.")
