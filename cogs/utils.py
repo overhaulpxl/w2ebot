@@ -284,10 +284,19 @@ def setup(tree, client):
     @tree.command(name="bg", description="Set URL background untuk profile card kamu")
     async def slash_bg(interaction: discord.Interaction, url: str):
         await interaction.response.defer()
-        if not url.startswith('http'):
-            await send_embed(interaction, "❌ URL tidak valid.")
+        # Validasi + proteksi SSRF: tolak URL non-publik / bukan gambar sebelum disimpan.
+        if not url.lower().startswith(('http://', 'https://')):
+            await send_embed(interaction, "❌ URL tidak valid. Harus diawali http:// atau https://.")
             return
-            
+        if not await asyncio.to_thread(is_safe_remote_url, url):
+            await send_embed(interaction, "❌ URL ditolak (host internal/privat tidak diizinkan).")
+            return
+        # Pastikan benar-benar bisa di-fetch sebagai gambar (sekalian validasi).
+        test_img = await fetch_remote_image(url)
+        if test_img is None:
+            await send_embed(interaction, "❌ URL tidak mengarah ke gambar yang valid / terlalu besar.")
+            return
+
         uid = str(interaction.user.id)
         items_data = await load_json('items.json')
         items_data.setdefault(uid, {})['bg_url'] = url

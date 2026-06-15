@@ -47,25 +47,22 @@ class ShopView(discord.ui.View):
                 return
             
             await interaction.response.defer(ephemeral=True)
-            from core import get_discord_stat, update_discord_stat, load_json, save_json, DB_PATH
-            import sqlite3
-            
+            from core import try_spend, load_json, save_json
+
             uid = str(interaction.user.id)
-            stat = await get_discord_stat(uid)
-            if stat['coins'] < price:
+            # Debit atomik dulu (anti double-spend via klik beruntun / prefix+slash).
+            if not await try_spend(uid, price, interaction.user.display_name):
                 embed = discord.Embed(description=f"❌ Koin kamu tidak cukup! Harga {item_name} adalah {price} Koin.", color=discord.Color.red())
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 return
-                
-            stat['coins'] -= price
+
             users = await load_json('users.json')
-            if uid not in users: users[uid] = {'balance': 0, 'items': {}}
+            if uid not in users: users[uid] = {'items': {}}
             if 'items' not in users[uid]: users[uid]['items'] = {}
-            
+
             users[uid]['items'][item_id] = users[uid]['items'].get(item_id, 0) + 1
             await save_json('users.json', users)
-            await update_discord_stat(uid, interaction.user.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
-            
+
             embed = discord.Embed(description=f"🛍️ Berhasil membeli **{item_name}** seharga {price} Koin! (Cek `/inventory`)", color=discord.Color.green())
             await interaction.followup.send(embed=embed, ephemeral=True)
         return callback

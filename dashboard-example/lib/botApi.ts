@@ -1,0 +1,150 @@
+// lib/botApi.ts
+//
+// Helper untuk memanggil W2E Bot API.
+// botGet  -> boleh dipakai di server maupun (versi public) di client.
+// botPost -> HANYA boleh dipakai di server (Route Handler / Server Action),
+//            karena membawa DASHBOARD_TOKEN.
+
+const SERVER_BASE = process.env.BOT_API_URL ?? "http://localhost:8081";
+const TOKEN = process.env.DASHBOARD_TOKEN ?? "";
+
+/** GET ke bot API (server-side, tanpa cache). */
+export async function botGet<T = unknown>(path: string): Promise<T> {
+  const res = await fetch(`${SERVER_BASE}${path}`, { cache: "no-store" });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error((data as any).error || `GET ${path} -> ${res.status}`);
+  }
+  return res.json() as Promise<T>;
+}
+
+/**
+ * POST ke bot API dengan token. WAJIB dipanggil dari server saja.
+ * Melempar Error berisi pesan dari bot kalau gagal (termasuk 401/409/400).
+ */
+export async function botPost<T = unknown>(
+  path: string,
+  body: unknown,
+): Promise<T> {
+  if (!TOKEN) {
+    throw new Error("DASHBOARD_TOKEN belum di-set di server Next.js");
+  }
+  const res = await fetch(`${SERVER_BASE}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Auth-Token": TOKEN,
+    },
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error((data as any).error || `POST ${path} -> ${res.status}`);
+  }
+  return data as T;
+}
+
+// ── Tipe ringkas (sesuaikan kalau perlu) ─────────────────────────────────────
+export interface SummaryResponse {
+  member_count: number;
+  members_in_voice: number;
+  boss_active: boolean;
+  treasury_balance: number;
+  total_coins_in_circulation: number;
+}
+
+export interface LeaderboardEntry {
+  rank: number;
+  id: string;
+  displayName: string;
+  coins: number;
+  xp: number;
+  level: number;
+}
+
+export interface LeaderboardResponse {
+  sort: "coins" | "level";
+  limit: number;
+  entries: LeaderboardEntry[];
+}
+
+export interface Channel {
+  id: string;
+  name: string;
+}
+
+// default + 6 kategori. Value = channel ID string, "" = pakai fallback.
+export type AnnounceConfig = Record<string, string>;
+
+export const ANNOUNCE_CATEGORIES = [
+  "default",
+  "market",
+  "levelup",
+  "birthday",
+  "boss",
+  "booster",
+  "binomo",
+] as const;
+
+export const ANNOUNCE_LABELS: Record<string, string> = {
+  default: "Default (fallback)",
+  market: "Market (pump/dump kripto)",
+  levelup: "Level Up (XP voice)",
+  birthday: "Ulang Tahun",
+  boss: "Boss Raid",
+  booster: "Server Booster",
+  binomo: "Hasil Binomo",
+};
+
+export interface BotStats {
+  online: boolean;
+  latency_ms: number | null;
+  uptime_seconds: number;
+  guild: {
+    name: string;
+    icon_url: string | null;
+    member_count: number;
+    humans: number | null;
+    bots: number;
+    members_in_voice: number;
+    boosts: number;
+    boost_tier: number;
+    text_channels: number;
+    voice_channels: number;
+    roles: number;
+  } | null;
+  economy: {
+    players: number;
+    total_coins: number;
+    average_level: number;
+    max_level: number;
+    total_xp: number;
+  };
+  treasury_balance: number;
+  boss_active: boolean;
+  commands_registered: number;
+  announce_channels_configured: number;
+  prefix: string;
+}
+
+export interface UserProfile {
+  id: string;
+  displayName: string;
+  coins: number;
+  xp: number;
+  level: number;
+  xp_to_next: number;
+  rank: number | null;
+  lastDaily: string;
+  crypto: Record<string, number>;
+  rigs: Record<string, number>;
+  items: Record<string, number>;
+  pet: string | null;
+  achievements: string[];
+  total_vc_minutes: number;
+  married_to: string | null;
+  children: string[];
+  bg_url: string | null;
+  cooldowns: { work: number; rob: number; pray: number; curse: number };
+}

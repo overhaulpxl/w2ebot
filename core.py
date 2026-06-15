@@ -40,6 +40,8 @@ GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', 'MMM')
 ALLOWED_SERVER_ID = int(os.getenv('ALLOWED_SERVER_ID', '887968847842402355'))
 BOT_PREFIX = os.getenv('BOT_PREFIX', 'w!')
 DASHBOARD_TOKEN = os.getenv('DASHBOARD_TOKEN', '')
+# Channel tempat bot auto-reply pakai AI tanpa perlu prefix. 0 = nonaktif.
+AI_AUTO_REPLY_CHANNEL_ID = int(os.getenv('AI_AUTO_REPLY_CHANNEL_ID', '1341038015186862201'))
 # Comma-separated origins yang boleh akses API (mis. web main way2eternal).
 # Kosong = izinkan semua (dev only). Wajib diisi kalau web main di domain lain.
 ALLOWED_ORIGINS = [o.strip() for o in os.getenv('ALLOWED_ORIGINS', '').split(',') if o.strip()]
@@ -49,12 +51,14 @@ gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 intents = discord.Intents.default()
 intents.message_content = True
-intents.message_content = True
 intents.voice_states = True
 intents.members = True
 
 client = discord.Client(intents=intents)
 tree = discord.app_commands.CommandTree(client)
+
+# Waktu start proses (untuk uptime di /api/bot/stats).
+BOT_START_TIME = datetime.utcnow()
 
 
 
@@ -80,7 +84,6 @@ BOSS_FILE         = 'boss.json'
 RIGS_FILE         = 'rigs.json'
 TREASURY_FILE     = 'treasury.json'
 BINOMO_FILE       = 'binomo.json'
-RIGS_FILE         = 'rigs.json'
 
 # ⬇ Set this to the channel ID of your #custom-role channel
 CUSTOM_ROLE_CHANNEL_ID = 0  # TODO: ganti dengan ID channel #custom-role kamu
@@ -169,10 +172,12 @@ async def get_discord_stat(uid):
                             n = floor((-b + sqrt(discriminant)) / (2*a))
                             if n > 0:
                                 xp_consumed = 100 * n * level + 50 * n * (n - 1)
+                                old_level = level
                                 level += n
                                 xp -= int(xp_consumed)
                                 await db.execute("UPDATE DiscordStat SET xp=?, level=? WHERE id=?", (xp, level, str(uid)))
                                 await db.commit()
+                                logging.info(f"[LEVELUP] uid={uid} naik level {old_level} -> {level} (sisa XP {xp})")
                     return {'coins': coins, 'xp': xp, 'level': level, 'lastDaily': lastDaily}
     except Exception as e:
         logging.error(f"DB Error get: {e}")
@@ -221,8 +226,103 @@ async def adjust_coins(uid, delta, display_name=None):
                 "displayName = COALESCE(?, displayName), updatedAt = ?",
                 (str(uid), display_name or str(uid), delta, now, delta, display_name, now))
             await db.commit()
+            async with db.execute("SELECT coins FROM DiscordStat WHERE id=?", (str(uid),)) as c:
+                row = await c.fetchone()
+            saldo = row[0] if row else '?'
+        arah = '+' if delta >= 0 else ''
+        logging.info(f"[ECONOMY] {display_name or uid} ({uid}) koin {arah}{delta} -> saldo {saldo}")
     except Exception as e:
         logging.error(f"DB Error adjust_coins: {e}")
+
+
+# Alias semantik untuk kredit koin (biar maksud kode jelas).
+async def add_coins(uid, amount, display_name=None):
+    await adjust_coins(uid, amount, display_name)
+
+
+async def try_spend(uid, amount, display_name=None):
+    # Debit ATOMIK dengan syarat saldo cukup. Mengembalikan True kalau berhasil
+    # memotong koin, False kalau saldo kurang / user belum punya row.
+    # Ini menutup race "cek saldo lalu potong" yang bisa dipakai untuk double-spend
+    # via prefix + slash bersamaan. Selalu pakai ini untuk pembelian/biaya.
+    if amount is None or amount <= 0:
+        return True
+    try:
+        now = datetime.utcnow().isoformat() + "Z"
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute(
+                "UPDATE DiscordStat SET coins = coins - ?, "
+                "displayName = COALESCE(?, displayName), updatedAt = ? "
+                "WHERE id = ? AND coins >= ?",
+                (amount, display_name, now, str(uid), amount))
+            await db.commit()
+            ok = cur.rowcount > 0
+            if ok:
+                async with db.execute("SELECT coins FROM DiscordStat WHERE id=?", (str(uid),)) as c:
+                    row = await c.fetchone()
+                saldo = row[0] if row else '?'
+                logging.info(f"[ECONOMY] {display_name or uid} ({uid}) bayar -{amount} -> saldo {saldo}")
+            else:
+                logging.info(f"[ECONOMY] {display_name or uid} ({uid}) GAGAL bayar {amount} (saldo kurang)")
+            return ok
+    except Exception as e:
+        logging.error(f"DB Error try_spend: {e}")
+        return False
+
+
+async def add_xp(uid, display_name, xp_delta):
+    # Increment XP secara ATOMIK. Level-up di-resolve lazy oleh get_discord_stat
+    # (rumus kuadratik di sana), jadi cukup tambah XP-nya saja.
+    if not xp_delta:
+        return
+    try:
+        now = datetime.utcnow().isoformat() + "Z"
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT INTO DiscordStat (id, displayName, xp, updatedAt) VALUES (?, ?, MAX(0, ?), ?) "
+                "ON CONFLICT(id) DO UPDATE SET xp = MAX(0, xp + ?), "
+                "displayName = COALESCE(?, displayName), updatedAt = ?",
+                (str(uid), display_name or str(uid), xp_delta, now, xp_delta, display_name, now))
+            await db.commit()
+        logging.info(f"[XP] {display_name or uid} ({uid}) +{xp_delta} XP")
+    except Exception as e:
+        logging.error(f"DB Error add_xp: {e}")
+
+
+async def set_last_daily(uid, value, display_name=None):
+    # Update kolom lastDaily TANPA menyentuh coins/xp (menghindari clobber saldo).
+    try:
+        now = datetime.utcnow().isoformat() + "Z"
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT INTO DiscordStat (id, displayName, lastDaily, updatedAt) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET lastDaily = ?, "
+                "displayName = COALESCE(?, displayName), updatedAt = ?",
+                (str(uid), display_name or str(uid), value, now, value, display_name, now))
+            await db.commit()
+    except Exception as e:
+        logging.error(f"DB Error set_last_daily: {e}")
+
+
+# Fee transaksi kripto (2% dua arah). Dipakai /buycoin & /sellcoin.
+CRYPTO_FEE_RATE = 0.02
+
+
+async def add_treasury(amount):
+    # Tambah saldo kas komunitas (treasury.json). Dipakai untuk menampung fee
+    # transaksi kripto. Ini JSON blob (bukan kolom SQL), jadi tidak seatomik koin —
+    # tapi risikonya rendah (fee kecil, bukan dompet user langsung).
+    if not amount or amount <= 0:
+        return
+    try:
+        treasury = await load_json(TREASURY_FILE)
+        if not isinstance(treasury, dict):
+            treasury = {}
+        treasury['balance'] = treasury.get('balance', 0) + int(amount)
+        await save_json(TREASURY_FILE, treasury)
+        logging.info(f"[TREASURY] +{int(amount)} koin (fee) -> kas {treasury['balance']}")
+    except Exception as e:
+        logging.error(f"Error add_treasury: {e}")
 
 
 
@@ -254,18 +354,13 @@ QUEST_TEMPLATES = [
 
 async def check_level_up(channel, user, xp_gained):
     uid = str(user.id)
-    stat = await get_discord_stat(uid)
-    stat['xp'] += xp_gained
-    next_level_xp = stat['level'] * 100
-    leveled_up = False
-    while stat['xp'] >= next_level_xp:
-        stat['level'] += 1
-        stat['xp'] -= next_level_xp
-        next_level_xp = stat['level'] * 100
-        leveled_up = True
-    if leveled_up:
-        await channel.send(f"GG {user.mention}, kamu baru saja naik ke **Level {stat['level']}**!")
-    await update_discord_stat(uid, user.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
+    stat_before = await get_discord_stat(uid)
+    level_before = stat_before['level']
+    # Tambah XP atomik; level-up di-resolve oleh get_discord_stat (rumus kuadratik).
+    await add_xp(uid, user.display_name, xp_gained)
+    stat_after = await get_discord_stat(uid)
+    if stat_after['level'] > level_before:
+        await channel.send(f"GG {user.mention}, kamu baru saja naik ke **Level {stat_after['level']}**!")
 
 async def check_toxicity(text):
     prompt = f"Evaluasi pesan berikut. Jika mengandung ujaran kebencian parah, rasisme, atau NSFW ekstrim, balas HANYA dengan kata 'TOXIC'. Jika aman, balas 'SAFE'.\nPesan: {text}"
@@ -300,6 +395,68 @@ async def update_quest_progress(uid, quest_id, amount=1):
             if q['progress'] >= q['target']:
                 q['done'] = True
     await save_json(QUESTS_FILE, quests_data)
+
+import ipaddress
+import socket
+from urllib.parse import urlparse
+
+
+def is_safe_remote_url(url):
+    # Guard SSRF: hanya izinkan http/https ke host publik. Blokir loopback,
+    # private/link-local/reserved IP (mis. 169.254.169.254 metadata, 10.x, dst).
+    # Dipakai sebelum bot mem-fetch URL yang dikontrol user (mis. /bg).
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme not in ('http', 'https'):
+        return False
+    host = parsed.hostname
+    if not host:
+        return False
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except Exception:
+        return False
+    for info in infos:
+        ip_str = info[4][0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            return False
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            return False
+    return True
+
+
+async def fetch_remote_image(url, max_bytes=8 * 1024 * 1024):
+    # Fetch gambar dari URL user dengan proteksi SSRF + batas ukuran + cek tipe.
+    # Mengembalikan PIL.Image atau None. Resolusi DNS divalidasi dulu lewat
+    # is_safe_remote_url (best-effort; masih ada kemungkinan kecil TOCTOU tapi
+    # jauh lebih aman daripada fetch mentah).
+    if not await asyncio.to_thread(is_safe_remote_url, url):
+        logging.warning(f"Blocked unsafe image URL: {url}")
+        return None
+    try:
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    return None
+                ctype = resp.headers.get('Content-Type', '')
+                if not ctype.startswith('image/'):
+                    logging.warning(f"Rejected non-image content-type '{ctype}' from {url}")
+                    return None
+                data = await resp.content.read(max_bytes + 1)
+                if len(data) > max_bytes:
+                    logging.warning(f"Rejected oversized image from {url}")
+                    return None
+                return Image.open(io.BytesIO(data))
+    except Exception as e:
+        logging.error(f"Failed to fetch remote image: {e}")
+        return None
+
 
 # ── Family tree image generator ───────────────────────────────────────────────
 async def fetch_avatar(session, url, size=80):
@@ -699,17 +856,10 @@ async def generate_profile_image(member, stat, bg_url=None):
         except Exception as e:
             logging.error(f"Failed to fetch user avatar: {e}")
 
-    # Fetch background image if bg_url is provided
+    # Fetch background image if bg_url is provided (SSRF-guarded + size/type capped)
     bg_img = None
     if bg_url:
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(bg_url) as resp:
-                    if resp.status == 200:
-                        bg_data = await resp.read()
-                        bg_img = Image.open(io.BytesIO(bg_data))
-        except Exception as e:
-            logging.error(f"Failed to fetch user background: {e}")
+        bg_img = await fetch_remote_image(bg_url)
 
     # Determine user role
     role = "Member"
@@ -962,12 +1112,27 @@ async def generate_love_image(member1, member2, percentage):
 
 ANNOUNCE_CATEGORIES = ['market', 'levelup', 'birthday', 'boss', 'booster', 'binomo']
 
+# Cache config.json di memori supaya get_announce_channel (dipanggil di banyak
+# loop & event) tidak melakukan blocking file I/O di event loop tiap kali.
+_config_cache = None
+
 def _load_config():
+    global _config_cache
+    if _config_cache is not None:
+        return _config_cache
     try:
         with open('config.json', 'r', encoding='utf-8') as f:
-            return json.load(f)
+            _config_cache = json.load(f)
     except Exception:
-        return {}
+        _config_cache = {}
+    return _config_cache
+
+def _save_config(cfg):
+    # Tulis config.json dan refresh cache. Dipakai endpoint web write.
+    global _config_cache
+    with open('config.json', 'w', encoding='utf-8') as f:
+        json.dump(cfg, f)
+    _config_cache = cfg
 
 def _find_fallback_channel(guild):
     # Logika lama: cari channel general/chat, kalau gagal ambil channel pertama yang writable.
@@ -1119,6 +1284,8 @@ async def update_market_prices():
             
         market['last_updated'] = datetime.now().isoformat()
         await save_json(MARKET_FILE, market)
+        if event_message:
+            logging.info(f"[MARKET] Event harga: {target_coin} {event_type}")
         
         # Broadcast event message
         if event_message:
@@ -1178,24 +1345,18 @@ async def voice_salary_loop():
                     for m in members:
                         if not m.voice.self_deaf and not m.voice.deaf:
                             uid = str(m.id)
-                            stat = await get_discord_stat(uid)
-                            stat['xp'] += 15
-                            stat['coins'] += 50
-                            
-                            next_level_xp = stat['level'] * 100
-                            leveled_up = False
-                            while stat['xp'] >= next_level_xp:
-                                stat['level'] += 1
-                                stat['xp'] -= next_level_xp
-                                next_level_xp = stat['level'] * 100
-                                leveled_up = True
-                                
-                            if leveled_up and announce_channel:
+                            # Kredit koin + XP secara atomik (hindari race read-modify-write).
+                            await add_coins(uid, 50, m.display_name)
+
+                            stat_before = await get_discord_stat(uid)
+                            level_before = stat_before['level']
+                            await add_xp(uid, m.display_name, 15)
+                            stat_after = await get_discord_stat(uid)
+
+                            if stat_after['level'] > level_before and announce_channel:
                                 client.loop.create_task(
-                                    announce_channel.send(f"GG {m.mention}, kamu baru saja naik ke **Level {stat['level']}** dari Voice Channel!")
+                                    announce_channel.send(f"GG {m.mention}, kamu baru saja naik ke **Level {stat_after['level']}** dari Voice Channel!")
                                 )
-                                
-                            await update_discord_stat(uid, m.display_name, stat['coins'], stat['xp'], stat['level'], stat['lastDaily'])
 
 async def boss_raid_loop():
     await client.wait_until_ready()
@@ -1211,7 +1372,7 @@ async def boss_raid_loop():
                     'name': '🐉 Naga Emas Koruptor'
                 }
                 await save_json(BOSS_FILE, boss_data)
-                
+                logging.info(f"[BOSS] Boss raid spawn: {boss_data['name']} HP {boss_data['hp']}")
                 # Cari channel pengumuman
                 for guild in client.guilds:
                     ch = get_announce_channel(guild, 'boss')
@@ -1224,27 +1385,33 @@ async def crypto_mining_loop():
     await client.wait_until_ready()
     while not client.is_closed():
         await asyncio.sleep(3600) # Every 1 hour
-        rigs = await load_json(RIGS_FILE)
-        portfolio = await load_json(PORTFOLIO_FILE)
-        
+        users = await load_json('users.json')
+
+        # Hashrate per tier (ETHR per jam per unit rig).
+        TIER_RATES = {'1': (1, 5), '2': (10, 20), '3': (50, 100)}
+
         has_mined = False
-        for uid, count in rigs.items():
-            if count > 0:
-                has_mined = True
-                mined_ethr = random.randint(1, 5) * count
-                if uid not in portfolio:
-                    portfolio[uid] = {}
-                if 'ETHR' not in portfolio[uid]:
-                    # Format is now dict due to PnL changes
-                    portfolio[uid]['ETHR'] = {'amount': 0, 'avg_price': 1000}
-                elif isinstance(portfolio[uid]['ETHR'], int):
-                    # Migration from old format
-                    portfolio[uid]['ETHR'] = {'amount': portfolio[uid]['ETHR'], 'avg_price': 1000}
-                    
-                portfolio[uid]['ETHR']['amount'] += mined_ethr
-                
+        total_mined = 0
+        miner_count = 0
+        for uid, udata in users.items():
+            rigs = udata.get('rigs', {}) if isinstance(udata, dict) else {}
+            if not rigs:
+                continue
+            mined_ethr = 0
+            for tier, count in rigs.items():
+                lo, hi = TIER_RATES.get(str(tier), (1, 5))
+                mined_ethr += random.randint(lo, hi) * count
+            if mined_ethr <= 0:
+                continue
+            has_mined = True
+            miner_count += 1
+            total_mined += mined_ethr
+            crypto = udata.setdefault('crypto', {})
+            crypto['ETHR'] = crypto.get('ETHR', 0) + mined_ethr
+
         if has_mined:
-            await save_json(PORTFOLIO_FILE, portfolio)
+            await save_json('users.json', users)
+            logging.info(f"[MINING] {miner_count} penambang dapat total {total_mined} ETHR")
 
 @client.event
 async def on_ready():
@@ -1349,7 +1516,7 @@ async def serve_dashboard(request):
         with open('dashboard.html', 'r', encoding='utf-8') as f:
             html = f.read()
         return web.Response(text=html, content_type='text/html')
-    except:
+    except Exception:
         return web.Response(text="Dashboard not found.", status=404)
 
 
@@ -1375,23 +1542,32 @@ async def get_server_data(request):
         return web.json_response({'error': str(e)}, status=500)
 
 async def get_config_api(request):
-    try:
-        with open('config.json', 'r') as f:
-            data = json.load(f)
-        return web.json_response(data)
-    except:
-        return web.json_response({})
+    return web.json_response(_load_config())
 
 async def update_config_api(request):
     if not require_token(request):
         return web.json_response({'error': 'unauthorized'}, status=401)
     try:
         data = await request.json()
-        with open('config.json', 'w') as f:
-            json.dump(data, f)
+        # Validasi: body harus objek JSON (dict), bukan list/str/null.
+        if not isinstance(data, dict):
+            return web.json_response({'error': 'Body must be a JSON object'}, status=400)
+        # Jaga agar announce_channels (kalau ada) tetap berbentuk mapping valid,
+        # supaya POST mentah ini tidak merusak struktur yang dipakai bot.
+        if 'announce_channels' in data:
+            ac = data['announce_channels']
+            if not isinstance(ac, dict):
+                return web.json_response({'error': 'announce_channels must be an object'}, status=400)
+            for k, v in ac.items():
+                if v is None:
+                    ac[k] = ''
+                elif not str(v).strip().isdigit() and str(v).strip() != '':
+                    return web.json_response({'error': f'Invalid channel id for {k}'}, status=400)
+        _save_config(data)
         return web.json_response({'status': 'success'})
     except Exception as e:
-        return web.json_response({'status': 'error', 'msg': str(e)}, status=500)
+        logging.error(f"update_config_api error: {e}")
+        return web.json_response({'status': 'error'}, status=500)
 
 async def api_channels(request):
     # Daftar text channel guild untuk dropdown di dashboard / web main.
@@ -1430,11 +1606,410 @@ async def update_announce_config_api(request):
         if not isinstance(cfg, dict):
             cfg = {}
         cfg['announce_channels'] = announce
-        with open('config.json', 'w', encoding='utf-8') as f:
-            json.dump(cfg, f)
+        _save_config(cfg)
         return web.json_response({'status': 'success', 'announce_channels': announce})
     except Exception as e:
-        return web.json_response({'status': 'error', 'msg': str(e)}, status=500)
+        logging.error(f"update_announce_config_api error: {e}")
+        return web.json_response({'status': 'error'}, status=500)
+
+# ── Extra dashboard READ endpoints ───────────────────────────────────────────
+def _resolve_name(uid):
+    # Resolve display name dari cache discord; fallback ke "User <id>".
+    try:
+        u = client.get_user(int(uid))
+        if u:
+            return u.display_name
+    except (ValueError, TypeError):
+        pass
+    return f"User {uid}"
+
+
+async def api_leaderboard(request):
+    # Top member dari DiscordStat. ?sort=coins|level (default level), ?limit=N (1..100).
+    sort = request.query.get('sort', 'level')
+    if sort not in ('coins', 'level'):
+        return web.json_response({'error': "sort must be 'coins' or 'level'"}, status=400)
+    try:
+        limit = int(request.query.get('limit', '10'))
+    except ValueError:
+        limit = 10
+    limit = max(1, min(limit, 100))
+    order = "coins DESC, level DESC" if sort == 'coins' else "level DESC, coins DESC"
+    rows_out = []
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                f"SELECT id, displayName, coins, xp, level FROM DiscordStat ORDER BY {order} LIMIT ?",
+                (limit,)) as cur:
+                rows = await cur.fetchall()
+        for i, r in enumerate(rows):
+            rows_out.append({
+                'rank': i + 1, 'id': str(r[0]),
+                'displayName': r[1] or _resolve_name(r[0]),
+                'coins': r[2], 'xp': r[3], 'level': r[4],
+            })
+    except Exception as e:
+        logging.error(f"api_leaderboard error: {e}")
+        return web.json_response({'error': 'internal error'}, status=500)
+    return web.json_response({'sort': sort, 'limit': limit, 'entries': rows_out})
+
+
+def _cooldown_info(users, uid, now):
+    # Hitung sisa cooldown (detik) untuk tiap aktivitas berbasis users.json.
+    u = users.get(uid, {})
+    specs = {'work': 3600, 'rob': 7200, 'pray': 3600, 'curse': 14400}
+    keymap = {'work': 'lastWork', 'rob': 'lastRob', 'pray': 'lastPray', 'curse': 'lastCurse'}
+    out = {}
+    for name, dur in specs.items():
+        ts = u.get(keymap[name])
+        remaining = 0
+        if ts:
+            try:
+                elapsed = (now - datetime.fromisoformat(ts)).total_seconds()
+                remaining = max(0, int(dur - elapsed))
+            except Exception:
+                remaining = 0
+        out[name] = remaining
+    return out
+
+
+async def api_user(request):
+    uid = request.match_info.get('id', '')
+    if not uid.isdigit():
+        return web.json_response({'error': 'invalid user id'}, status=400)
+    stat = await get_discord_stat(uid)
+    rank = await get_user_rank(uid)
+    users = await load_json('users.json')
+    u = users.get(uid, {})
+    marriages = await load_json('marriages.json')
+    partner = marriages.get(uid)
+    now = datetime.now()
+
+    data = {
+        'id': uid,
+        'displayName': _resolve_name(uid),
+        'coins': stat['coins'],
+        'xp': stat['xp'],
+        'level': stat['level'],
+        'xp_to_next': stat['level'] * 100,
+        'rank': rank,
+        'lastDaily': stat['lastDaily'],
+        'crypto': u.get('crypto', {}),
+        'rigs': u.get('rigs', {}),
+        'items': u.get('items', {}),
+        'pet': u.get('pet'),
+        'achievements': u.get('achievements', []),
+        'total_vc_minutes': u.get('total_vc_minutes', 0),
+        'married_to': partner,
+        'children': u.get('children', []),
+        'bg_url': u.get('bg_url'),
+        'cooldowns': _cooldown_info(users, uid, now),
+    }
+    return web.json_response(data)
+
+
+async def api_market(request):
+    market = await load_json(MARKET_FILE)
+    return web.json_response(market or {})
+
+
+async def api_treasury(request):
+    treasury = await load_json(TREASURY_FILE)
+    balance = treasury.get('balance', 0) if isinstance(treasury, dict) else 0
+    return web.json_response({'balance': balance})
+
+
+async def api_boss(request):
+    boss = await load_json(BOSS_FILE)
+    return web.json_response(boss or {'active': False})
+
+
+async def api_economy_stats(request):
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT COUNT(*), COALESCE(SUM(coins),0), COALESCE(AVG(level),0), COALESCE(MAX(coins),0) FROM DiscordStat") as cur:
+                count, total_coins, avg_level, max_coins = await cur.fetchone()
+            async with db.execute(
+                "SELECT id, displayName, coins FROM DiscordStat ORDER BY coins DESC LIMIT 1") as cur:
+                top = await cur.fetchone()
+    except Exception as e:
+        logging.error(f"api_economy_stats error: {e}")
+        return web.json_response({'error': 'internal error'}, status=500)
+    treasury = await load_json(TREASURY_FILE)
+    top_holder = None
+    if top:
+        top_holder = {'id': str(top[0]), 'displayName': top[1] or _resolve_name(top[0]), 'coins': top[2]}
+    return web.json_response({
+        'player_count': count,
+        'total_coins_in_circulation': int(total_coins),
+        'average_level': round(avg_level, 2),
+        'richest_coins': int(max_coins),
+        'top_holder': top_holder,
+        'treasury_balance': treasury.get('balance', 0) if isinstance(treasury, dict) else 0,
+    })
+
+
+async def api_marriages(request):
+    marriages = await load_json('marriages.json')
+    seen = set()
+    pairs = []
+    for a, b in marriages.items():
+        key = tuple(sorted((str(a), str(b))))
+        if key in seen:
+            continue
+        seen.add(key)
+        pairs.append({
+            'a': {'id': str(a), 'displayName': _resolve_name(a)},
+            'b': {'id': str(b), 'displayName': _resolve_name(b)},
+        })
+    return web.json_response(pairs)
+
+
+async def api_stats_summary(request):
+    guild = client.get_guild(ALLOWED_SERVER_ID)
+    in_voice = 0
+    member_count = 0
+    if guild:
+        member_count = guild.member_count
+        for vc in guild.voice_channels:
+            in_voice += len([m for m in vc.members if not m.bot])
+    boss = await load_json(BOSS_FILE)
+    treasury = await load_json(TREASURY_FILE)
+    total_coins = 0
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT COALESCE(SUM(coins),0) FROM DiscordStat") as cur:
+                row = await cur.fetchone()
+                total_coins = int(row[0]) if row else 0
+    except Exception as e:
+        logging.error(f"api_stats_summary error: {e}")
+    return web.json_response({
+        'member_count': member_count,
+        'members_in_voice': in_voice,
+        'boss_active': bool(boss.get('active', False)) if isinstance(boss, dict) else False,
+        'treasury_balance': treasury.get('balance', 0) if isinstance(treasury, dict) else 0,
+        'total_coins_in_circulation': total_coins,
+    })
+
+
+# ── Extra dashboard WRITE endpoints (token wajib) ─────────────────────────────
+async def api_user_coins(request):
+    if not require_token(request):
+        return web.json_response({'error': 'unauthorized'}, status=401)
+    uid = request.match_info.get('id', '')
+    if not uid.isdigit():
+        return web.json_response({'error': 'invalid user id'}, status=400)
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({'error': 'invalid JSON'}, status=400)
+    name = _resolve_name(uid)
+    if 'delta' in body:
+        try:
+            delta = int(body['delta'])
+        except (ValueError, TypeError):
+            return web.json_response({'error': 'delta must be an integer'}, status=400)
+        await adjust_coins(uid, delta, name)
+    elif 'set' in body:
+        try:
+            value = int(body['set'])
+        except (ValueError, TypeError):
+            return web.json_response({'error': 'set must be an integer'}, status=400)
+        if value < 0:
+            return web.json_response({'error': 'set must be >= 0'}, status=400)
+        stat = await get_discord_stat(uid)
+        await update_discord_stat(uid, name, value, stat['xp'], stat['level'], stat['lastDaily'])
+        logging.info(f"[ECONOMY] (api) {name} ({uid}) coins SET -> {value}")
+    else:
+        return web.json_response({'error': 'provide "delta" or "set"'}, status=400)
+    stat = await get_discord_stat(uid)
+    return web.json_response({'status': 'success', 'id': uid, 'coins': stat['coins']})
+
+
+async def api_user_xp(request):
+    if not require_token(request):
+        return web.json_response({'error': 'unauthorized'}, status=401)
+    uid = request.match_info.get('id', '')
+    if not uid.isdigit():
+        return web.json_response({'error': 'invalid user id'}, status=400)
+    try:
+        body = await request.json()
+        delta = int(body['delta'])
+    except (ValueError, TypeError, KeyError):
+        return web.json_response({'error': 'provide integer "delta"'}, status=400)
+    await add_xp(uid, _resolve_name(uid), delta)
+    stat = await get_discord_stat(uid)
+    return web.json_response({'status': 'success', 'id': uid, 'xp': stat['xp'], 'level': stat['level']})
+
+
+async def api_user_give_item(request):
+    if not require_token(request):
+        return web.json_response({'error': 'unauthorized'}, status=401)
+    uid = request.match_info.get('id', '')
+    if not uid.isdigit():
+        return web.json_response({'error': 'invalid user id'}, status=400)
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({'error': 'invalid JSON'}, status=400)
+    item_id = body.get('item_id')
+    if item_id not in SHOP_ITEMS:
+        return web.json_response({'error': f'unknown item_id (valid: {", ".join(SHOP_ITEMS)})'}, status=400)
+    try:
+        qty = int(body.get('qty', 1))
+    except (ValueError, TypeError):
+        return web.json_response({'error': 'qty must be an integer'}, status=400)
+    if qty <= 0:
+        return web.json_response({'error': 'qty must be > 0'}, status=400)
+    users = await load_json('users.json')
+    items = users.setdefault(uid, {}).setdefault('items', {})
+    items[item_id] = items.get(item_id, 0) + qty
+    await save_json('users.json', users)
+    logging.info(f"[ITEM] (api) beri {qty}x {item_id} ke {uid}")
+    return web.json_response({'status': 'success', 'id': uid, 'items': items})
+
+
+async def api_user_reset_cooldown(request):
+    if not require_token(request):
+        return web.json_response({'error': 'unauthorized'}, status=401)
+    uid = request.match_info.get('id', '')
+    if not uid.isdigit():
+        return web.json_response({'error': 'invalid user id'}, status=400)
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({'error': 'invalid JSON'}, status=400)
+    ctype = (body.get('type') or '').lower()
+    keymap = {'work': 'lastWork', 'rob': 'lastRob', 'pray': 'lastPray', 'curse': 'lastCurse'}
+    valid = set(keymap) | {'daily', 'all'}
+    if ctype not in valid:
+        return web.json_response({'error': f'type must be one of {", ".join(sorted(valid))}'}, status=400)
+    users = await load_json('users.json')
+    u = users.setdefault(uid, {})
+    targets = list(keymap) if ctype in ('all',) else ([ctype] if ctype in keymap else [])
+    for t in targets:
+        u.pop(keymap[t], None)
+    await save_json('users.json', users)
+    if ctype in ('daily', 'all'):
+        await set_last_daily(uid, '', _resolve_name(uid))
+    logging.info(f"[COOLDOWN] (api) reset '{ctype}' untuk {uid}")
+    return web.json_response({'status': 'success', 'id': uid, 'reset': ctype})
+
+
+async def api_boss_spawn(request):
+    if not require_token(request):
+        return web.json_response({'error': 'unauthorized'}, status=401)
+    boss_data = await load_json(BOSS_FILE)
+    if boss_data.get('active', False):
+        return web.json_response({'error': 'boss already active', 'boss': boss_data}, status=409)
+    boss_data = {'active': True, 'hp': 10000, 'max_hp': 10000, 'name': '🐉 Naga Emas Koruptor'}
+    await save_json(BOSS_FILE, boss_data)
+    logging.info("[BOSS] (api) Boss raid dipaksa spawn lewat dashboard")
+    for guild in client.guilds:
+        ch = get_announce_channel(guild, 'boss')
+        if ch:
+            client.loop.create_task(
+                ch.send(f"⚠️ **BOSS RAID EVENT DIMULAI!** ⚠️\n**{boss_data['name']}** telah muncul dengan {boss_data['hp']} HP!\nKetik `!attack` untuk menyerang! Yang berhasil membunuhnya mendapat hadiah 5000 Koin!")
+            )
+    return web.json_response({'status': 'success', 'boss': boss_data})
+
+
+async def api_announce(request):
+    if not require_token(request):
+        return web.json_response({'error': 'unauthorized'}, status=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({'error': 'invalid JSON'}, status=400)
+    category = body.get('category')
+    message = body.get('message')
+    if category not in ANNOUNCE_CATEGORIES and category != 'default':
+        return web.json_response({'error': f'category must be one of {", ".join(ANNOUNCE_CATEGORIES + ["default"])}'}, status=400)
+    if not message:
+        return web.json_response({'error': 'missing message'}, status=400)
+    sent = 0
+    for guild in client.guilds:
+        ch = get_announce_channel(guild, category if category != 'default' else None)
+        if ch:
+            await send_long_message(ch, str(message))
+            sent += 1
+    return web.json_response({'status': 'sent', 'channels': sent})
+
+
+async def api_bot_stats(request):
+    # Statistik detail bot: latency, uptime, info guild, agregat ekonomi.
+    guild = client.get_guild(ALLOWED_SERVER_ID)
+
+    # Latency gateway (ms)
+    latency_ms = None
+    try:
+        if client.latency and client.latency == client.latency:  # bukan NaN
+            latency_ms = round(client.latency * 1000)
+    except Exception:
+        latency_ms = None
+
+    # Uptime
+    uptime_seconds = int((datetime.utcnow() - BOT_START_TIME).total_seconds())
+
+    # Info guild
+    guild_info = None
+    if guild:
+        bots = sum(1 for m in guild.members if m.bot)
+        humans = guild.member_count - bots if guild.member_count else None
+        in_voice = sum(len([m for m in vc.members if not m.bot]) for vc in guild.voice_channels)
+        guild_info = {
+            'name': guild.name,
+            'icon_url': str(guild.icon.url) if guild.icon else None,
+            'member_count': guild.member_count,
+            'humans': humans,
+            'bots': bots,
+            'members_in_voice': in_voice,
+            'boosts': guild.premium_subscription_count,
+            'boost_tier': guild.premium_tier,
+            'text_channels': len(guild.text_channels),
+            'voice_channels': len(guild.voice_channels),
+            'roles': len(guild.roles),
+        }
+
+    # Agregat ekonomi dari DiscordStat
+    economy = {}
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT COUNT(*), COALESCE(SUM(coins),0), COALESCE(AVG(level),0), COALESCE(MAX(level),0), COALESCE(SUM(xp),0) FROM DiscordStat") as cur:
+                row = await cur.fetchone()
+        economy = {
+            'players': row[0],
+            'total_coins': int(row[1]),
+            'average_level': round(row[2], 2),
+            'max_level': row[3],
+            'total_xp': int(row[4]),
+        }
+    except Exception as e:
+        logging.error(f"api_bot_stats economy error: {e}")
+
+    treasury = await load_json(TREASURY_FILE)
+    boss = await load_json(BOSS_FILE)
+
+    # Jumlah kategori announce yang sudah dikonfigurasi
+    cfg = _load_config()
+    announce = cfg.get('announce_channels', {}) if isinstance(cfg, dict) else {}
+    configured = sum(1 for k in (['default'] + ANNOUNCE_CATEGORIES) if announce.get(k))
+
+    return web.json_response({
+        'online': guild is not None,
+        'latency_ms': latency_ms,
+        'uptime_seconds': uptime_seconds,
+        'guild': guild_info,
+        'economy': economy,
+        'treasury_balance': treasury.get('balance', 0) if isinstance(treasury, dict) else 0,
+        'boss_active': bool(boss.get('active', False)) if isinstance(boss, dict) else False,
+        'commands_registered': len(tree.get_commands()),
+        'announce_channels_configured': configured,
+        'prefix': BOT_PREFIX,
+    })
+
 
 async def start_web_server():
     app = web.Application(middlewares=[cors_middleware])
@@ -1448,6 +2023,25 @@ async def start_web_server():
     app.router.add_get('/api/channels', api_channels)
     app.router.add_get('/api/announce-config', get_announce_config_api)
     app.router.add_post('/api/announce-config', update_announce_config_api)
+
+    # READ tambahan (tanpa token)
+    app.router.add_get('/api/leaderboard', api_leaderboard)
+    app.router.add_get('/api/user/{id}', api_user)
+    app.router.add_get('/api/market', api_market)
+    app.router.add_get('/api/treasury', api_treasury)
+    app.router.add_get('/api/boss', api_boss)
+    app.router.add_get('/api/economy/stats', api_economy_stats)
+    app.router.add_get('/api/marriages', api_marriages)
+    app.router.add_get('/api/stats/summary', api_stats_summary)
+    app.router.add_get('/api/bot/stats', api_bot_stats)
+
+    # WRITE tambahan (token wajib)
+    app.router.add_post('/api/user/{id}/coins', api_user_coins)
+    app.router.add_post('/api/user/{id}/xp', api_user_xp)
+    app.router.add_post('/api/user/{id}/give-item', api_user_give_item)
+    app.router.add_post('/api/user/{id}/reset-cooldown', api_user_reset_cooldown)
+    app.router.add_post('/api/boss/spawn', api_boss_spawn)
+    app.router.add_post('/api/announce', api_announce)
     
     runner = web.AppRunner(app)
     await runner.setup()
@@ -1488,14 +2082,17 @@ async def on_voice_state_update(member, before, after):
                 uid = str(member.id)
                 users = await load_json('users.json')
                 if uid not in users:
-                    users[uid] = {'balance': 0, 'items': {}, 'achievements': [], 'total_vc_minutes': 0}
-                
+                    users[uid] = {'items': {}, 'achievements': [], 'total_vc_minutes': 0}
+
                 # Tambah XP & Koin
                 xp_gained = minutes * 10
                 coins_gained = minutes * 5
-                users[uid]['balance'] += coins_gained
                 users[uid]['total_vc_minutes'] = users[uid].get('total_vc_minutes', 0) + minutes
-                
+
+                # Koin masuk ke dompet asli (DiscordStat.coins) secara atomik,
+                # bukan ke users.json['balance'] yang dulu cuma write-only.
+                await add_coins(uid, coins_gained, member.display_name)
+
                 # Check No-Lifer Achievement
                 if users[uid]['total_vc_minutes'] >= 1440 and 'no_lifer' not in users[uid].get('achievements', []):
                     if 'achievements' not in users[uid]: users[uid]['achievements'] = []
@@ -1506,14 +2103,12 @@ async def on_voice_state_update(member, before, after):
                         if ch.permissions_for(guild.me).send_messages:
                             asyncio.create_task(ch.send(f"🏆 **ACHIEVEMENT UNLOCKED!** {member.mention} baru saja mendapatkan gelar **🧟‍♂️ No-Lifer** karena telah menghabiskan total 24 jam di Voice Channel!"))
                             break
-                            
+
                 await save_json('users.json', users)
-                
-                # Update DB XP (using existing get/update_discord_stat)
-                stat = await get_discord_stat(uid)
-                new_xp = stat['xp'] + xp_gained
-                await update_discord_stat(uid, member.display_name, stat['coins'], new_xp, stat['level'], stat['lastDaily'])
-                
+
+                # Tambah XP secara atomik (level-up di-resolve lazy oleh get_discord_stat).
+                await add_xp(uid, member.display_name, xp_gained)
+
                 # Optional: Send DM or channel message for XP gained if you want, but it might be spammy.
                 logging.info(f"{member.display_name} earned {xp_gained} XP and {coins_gained} Coins from {minutes} mins in VC.")
 
@@ -1648,7 +2243,7 @@ async def send_embed(interaction, text, color=None, title=None, ephemeral=False,
         if interaction.user:
             icon_url = interaction.user.display_avatar.url if interaction.user.display_avatar else None
             embed.set_author(name=interaction.user.display_name, icon_url=icon_url)
-    except:
+    except Exception:
         pass
         
     kwargs = {'embed': embed}
@@ -1661,20 +2256,36 @@ async def send_embed(interaction, text, color=None, title=None, ephemeral=False,
         else:
             return await interaction.response.send_message(**kwargs)
     except Exception as e:
-        print(f"Embed send error: {e}")
+        logging.error(f"Embed send error: {e}")
 
 # ============================================================================
 # SLASH COMMANDS (APP COMMANDS)
 
+@client.event
+async def on_interaction(interaction: discord.Interaction):
+    # Log tiap pemakaian slash command ke console (prefix di-log di on_message).
+    try:
+        if interaction.type == discord.InteractionType.application_command:
+            data = interaction.data or {}
+            name = data.get('name', '?')
+            opts = data.get('options', []) or []
+            arg_str = " ".join(f"{o.get('name')}={o.get('value')}" for o in opts)
+            user = interaction.user
+            logging.info(f"[CMD] (slash) {user} ({getattr(user, 'id', '?')}) -> {name} {arg_str}".rstrip())
+    except Exception as e:
+        logging.error(f"on_interaction log error: {e}")
+
 @tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
     logging.error(f'App Command Error: {error}')
+    # Jangan bocorkan detail exception ke user; cukup pesan generik.
+    user_msg = '❌ Terjadi kesalahan saat menjalankan perintah. Coba lagi nanti ya.'
     try:
         if interaction.response.is_done():
-            await interaction.followup.send(f'❌ Terjadi kesalahan saat menjalankan perintah: {str(error)}', ephemeral=True)
+            await interaction.followup.send(user_msg, ephemeral=True)
         else:
-            await interaction.response.send_message(f'❌ Terjadi kesalahan saat menjalankan perintah: {str(error)}', ephemeral=True)
-    except:
+            await interaction.response.send_message(user_msg, ephemeral=True)
+    except Exception:
         pass
 
 
@@ -1764,6 +2375,7 @@ async def on_message(message):
         # Check if the command exists in the CommandTree
         cmd = tree.get_command(cmd_name)
         if cmd:
+            logging.info(f"[CMD] (prefix) {message.author} ({message.author.id}) -> {cmd_name} {' '.join(args_list)}".rstrip())
             interaction = FakeInteraction(message)
             
             # Sangat basic argument parsing (untuk command yg butuh target dll)
@@ -1815,14 +2427,14 @@ async def on_message(message):
                 await cmd.callback(interaction, **kwargs)
             except Exception as e:
                 logging.error(f"Error executing prefix command !{cmd_name}: {e}")
-                await message.channel.send(f"❌ Error mengeksekusi perintah: `{e}`")
+                await message.channel.send("❌ Gagal mengeksekusi perintah. Cek format argumennya ya.")
         return
 
     # ── Update Quest Progress ────────────────────────────────────────────────
     await update_quest_progress(str(message.author.id), 'send_msg', 1)
 
     # ── AI auto-reply in the dedicated channel ───────────────────────────────
-    if message.channel.id == 1341038015186862201:
+    if message.channel.id == AI_AUTO_REPLY_CHANNEL_ID:
         nick = getattr(message.author, 'nick', None) or message.author.display_name
         response = await get_gemini_response(message.content, message.author.id, nick)
         await send_long_message(message.channel, response)

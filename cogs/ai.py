@@ -62,11 +62,10 @@ def setup(tree, client):
             await send_embed(interaction, "❌ Jomblo ngenes banget nge-ship diri sendiri...")
             return
             
-        # Consistent random based on ID
+        # Consistent random based on ID (pakai instance lokal, JANGAN reseed PRNG
+        # global — itu bikin roll judi yang jalan bersamaan jadi bisa ditebak).
         seed = int(orang1.id) + int(orang2.id)
-        random.seed(seed)
-        match_pct = random.randint(0, 100)
-        random.seed() # reset
+        match_pct = random.Random(seed).randint(0, 100)
         
         prompt = f"Buatkan ramalan cinta super singkat dan lucu (bisa sarkas atau romantis) untuk dua orang dengan tingkat kecocokan {match_pct}%. Gunakan bahasa gaul anak discord Indonesia (lo-gue, santai, kocak). JANGAN ada basa-basi khas AI seperti 'Ini dia...' atau 'Semoga...'. Langsung ke ramalannya secara natural."
         try:

@@ -54,6 +54,8 @@ def get_help_embed(category: str, guild=None) -> discord.Embed:
             (f"`{BOT_PREFIX}miner`", "Pantau status farm mining rig pasif milikmu."),
             (f"`{BOT_PREFIX}market`", "Pantau tren naik-turun bursa kripto fiktif terupdate."),
             (f"`{BOT_PREFIX}portfolio`", "Cek kepemilikan dan nilai aset kripto fiktif milikmu."),
+            (f"`{BOT_PREFIX}buycoin <symbol> <jumlah>`", "Beli kripto pakai Koin (fee 2%, dukung `all`)."),
+            (f"`{BOT_PREFIX}sellcoin <symbol> <jumlah>`", "Jual kripto jadi Koin (fee 2%, dukung `all`)."),
             (f"`{BOT_PREFIX}tebak <1-10>`", "Bermain tebak angka berhadiah 100 koin."),
             (f"`{BOT_PREFIX}cf <head/tail> <bet>`", "Judi lempar koin (Coinflip) menggunakan taruhan koin."),
             (f"`{BOT_PREFIX}blackjack <bet>`", "Bermain blackjack melawan bandar dealer AI."),

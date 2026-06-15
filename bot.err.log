@@ -1,0 +1,31 @@
+[2026-06-15 19:07:37] [INFO    ] discord.client: logging in using static token
+2026-06-15 19:07:37,738 INFO logging in using static token
+[2026-06-15 19:07:39] [INFO    ] discord.gateway: Shard ID None has connected to Gateway (Session ID: 066737c0414c51e6301df0bdba472f50).
+2026-06-15 19:07:39,345 INFO Shard ID None has connected to Gateway (Session ID: 066737c0414c51e6301df0bdba472f50).
+2026-06-15 19:07:42,360 INFO We have logged in as Way 2 Eternal#0486
+2026-06-15 19:07:42,363 INFO Bot API started on port 8081
+2026-06-15 19:08:33,422 INFO 127.0.0.1 [15/Jun/2026:19:08:33 +0700] "GET /api/channels HTTP/1.1" 200 9403 "-" "Mozilla/5.0 (Windows NT; Windows NT 10.0; en-US) WindowsPowerShell/5.1.19041.6033"
+2026-06-15 19:08:33,893 INFO 127.0.0.1 [15/Jun/2026:19:08:33 +0700] "GET /api/announce-config HTTP/1.1" 200 401 "-" "Mozilla/5.0 (Windows NT; Windows NT 10.0; en-US) WindowsPowerShell/5.1.19041.6033"
+2026-06-15 19:08:40,037 INFO 127.0.0.1 [15/Jun/2026:19:08:40 +0700] "GET /api/channels HTTP/1.1" 200 9403 "-" "node"
+2026-06-15 19:08:40,037 INFO 127.0.0.1 [15/Jun/2026:19:08:40 +0700] "GET /api/announce-config HTTP/1.1" 200 401 "-" "node"
+2026-06-15 19:08:40,044 INFO 127.0.0.1 [15/Jun/2026:19:08:40 +0700] "GET /api/bot/stats HTTP/1.1" 200 909 "-" "node"
+2026-06-15 19:08:40,045 INFO 127.0.0.1 [15/Jun/2026:19:08:40 +0700] "GET /api/leaderboard?sort=coins&limit=10 HTTP/1.1" 200 1385 "-" "node"
+2026-06-15 19:08:40,073 INFO 127.0.0.1 [15/Jun/2026:19:08:40 +0700] "GET /api/stats/summary HTTP/1.1" 200 428 "-" "node"
+2026-06-15 19:10:01,512 INFO 127.0.0.1 [15/Jun/2026:19:10:01 +0700] "GET /api/channels HTTP/1.1" 200 9403 "-" "Mozilla/5.0 (Windows NT; Windows NT 10.0; en-US) WindowsPowerShell/5.1.19041.6033"
+2026-06-15 19:10:02,261 INFO 127.0.0.1 [15/Jun/2026:19:10:02 +0700] "POST /api/announce-config HTTP/1.1" 200 464 "-" "node"
+2026-06-15 19:10:33,974 INFO 127.0.0.1 [15/Jun/2026:19:10:33 +0700] "POST /api/announce-config HTTP/1.1" 200 445 "-" "node"
+2026-06-15 19:13:26,990 INFO [ECONOMY] nichole (739763693109116929) koin +10 -> saldo 1260
+2026-06-15 19:13:27,001 INFO [XP] nichole (739763693109116929) +20 XP
+2026-06-15 19:13:27,001 INFO nichole earned 20 XP and 10 Coins from 2 mins in VC.
+2026-06-15 19:13:28,809 INFO [ECONOMY] maleo (1387340599052603402) koin +5 -> saldo 755
+2026-06-15 19:13:28,820 INFO [XP] maleo (1387340599052603402) +10 XP
+2026-06-15 19:13:28,820 INFO maleo earned 10 XP and 5 Coins from 1 mins in VC.
+2026-06-15 19:13:56,023 INFO 127.0.0.1 [15/Jun/2026:19:13:56 +0700] "GET /api/channels HTTP/1.1" 200 9403 "-" "node"
+2026-06-15 19:13:56,023 INFO 127.0.0.1 [15/Jun/2026:19:13:56 +0700] "GET /api/announce-config HTTP/1.1" 200 401 "-" "node"
+2026-06-15 19:13:56,028 INFO 127.0.0.1 [15/Jun/2026:19:13:56 +0700] "GET /api/bot/stats HTTP/1.1" 200 910 "-" "node"
+2026-06-15 19:13:56,028 INFO 127.0.0.1 [15/Jun/2026:19:13:56 +0700] "GET /api/stats/summary HTTP/1.1" 200 428 "-" "node"
+2026-06-15 19:13:56,029 INFO 127.0.0.1 [15/Jun/2026:19:13:56 +0700] "GET /api/leaderboard?sort=coins&limit=10 HTTP/1.1" 200 1385 "-" "node"
+2026-06-15 19:15:01,232 INFO [CMD] (slash) swettiesp (1357778673717088259) -> checkbots
+2026-06-15 19:15:11,266 INFO [ECONOMY] ric (1220311383942627383) koin +5 -> saldo 5
+2026-06-15 19:15:11,279 INFO [XP] ric (1220311383942627383) +10 XP
+2026-06-15 19:15:11,279 INFO ric earned 10 XP and 5 Coins from 1 mins in VC.

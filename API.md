@@ -38,6 +38,86 @@ read live server state and configure announcement channels.
 | GET | `/api/announce-config` | — | Current announcement-channel mapping. |
 | POST | `/api/announce-config` | ✅ token | Set announcement-channel mapping (validated). |
 | POST | `/api/broadcast` | ✅ token | Send a message to a channel as the bot. |
+| GET | `/api/leaderboard` | — | Top players. Query: `sort=coins\|level` (default `level`), `limit=1..100` (default 10). |
+| GET | `/api/user/{id}` | — | Full player profile (coins, xp, level, rank, crypto, rigs, items, pet, achievements, marriage, cooldowns, bg_url). |
+| GET | `/api/market` | — | Full crypto market: price + 10-point history per coin. |
+| GET | `/api/treasury` | — | Community treasury balance. |
+| GET | `/api/boss` | — | Current boss-raid state. |
+| GET | `/api/economy/stats` | — | Aggregates: player count, coins in circulation, avg level, top holder, treasury. |
+| GET | `/api/marriages` | — | List of married pairs (de-duplicated, names resolved). |
+| GET | `/api/stats/summary` | — | One-call dashboard summary (members, in-voice, boss, treasury, total coins). |
+| POST | `/api/user/{id}/coins` | ✅ token | Adjust coins. Body `{"delta": N}` (relative) or `{"set": N}` (absolute, ≥0). |
+| POST | `/api/user/{id}/xp` | ✅ token | Add XP. Body `{"delta": N}` (level-up auto-resolved). |
+| POST | `/api/user/{id}/give-item` | ✅ token | Grant item. Body `{"item_id": "shield", "qty": 1}` (item_id must exist in shop). |
+| POST | `/api/user/{id}/reset-cooldown` | ✅ token | Reset cooldown. Body `{"type": "work\|rob\|pray\|curse\|daily\|all"}`. |
+| POST | `/api/boss/spawn` | ✅ token | Force-spawn a boss raid (409 if one is already active). |
+| POST | `/api/announce` | ✅ token | Broadcast to an announce category. Body `{"category": "market", "message": "..."}`. |
+
+---
+
+## Extra dashboard endpoints
+
+All READ endpoints below are open (no token), follow the same CORS rules, and return JSON.
+All WRITE endpoints require the `X-Auth-Token` header and fail closed when `DASHBOARD_TOKEN` is unset.
+
+> ⚠️ The write endpoints under `/api/user/...` can mint coins/items and reset limits.
+> Keep `DASHBOARD_TOKEN` server-side only (never in browser JS), and set a real
+> `ALLOWED_ORIGINS` in production (not `*`).
+
+### GET `/api/leaderboard?sort=level&limit=10`
+```json
+{ "sort": "level", "limit": 10, "entries": [
+  { "rank": 1, "id": "123", "displayName": "naykeren", "coins": 99000, "xp": 40, "level": 12 }
+]}
+```
+
+### GET `/api/user/{id}`
+```json
+{
+  "id": "123", "displayName": "naykeren",
+  "coins": 12345, "xp": 40, "level": 12, "xp_to_next": 1200, "rank": 3,
+  "lastDaily": "2026-06-15T09:00:00",
+  "crypto": { "ETHR": 14 }, "rigs": { "1": 2 }, "items": { "shield": 1 },
+  "pet": "wolf", "achievements": ["no_lifer"], "total_vc_minutes": 1500,
+  "married_to": "456", "children": [], "bg_url": null,
+  "cooldowns": { "work": 0, "rob": 5400, "pray": 0, "curse": 12000 }
+}
+```
+`cooldowns` values are seconds remaining (0 = ready). Errors: `400 {"error":"invalid user id"}` if id isn't digits.
+
+### POST `/api/user/{id}/coins`
+```bash
+curl -X POST http://localhost:8081/api/user/123/coins \
+  -H "Content-Type: application/json" -H "X-Auth-Token: YOUR_TOKEN" \
+  -d '{"delta": 5000}'      # or {"set": 12345}
+# -> {"status":"success","id":"123","coins":17345}
+```
+
+### POST `/api/user/{id}/give-item`
+```bash
+curl -X POST http://localhost:8081/api/user/123/give-item \
+  -H "Content-Type: application/json" -H "X-Auth-Token: YOUR_TOKEN" \
+  -d '{"item_id":"shield","qty":2}'
+```
+Valid `item_id`: `shield`, `double_xp`, `lucky_charm`.
+
+### POST `/api/user/{id}/reset-cooldown`
+```bash
+curl -X POST http://localhost:8081/api/user/123/reset-cooldown \
+  -H "Content-Type: application/json" -H "X-Auth-Token: YOUR_TOKEN" \
+  -d '{"type":"all"}'
+```
+
+### POST `/api/boss/spawn`
+`200 {"status":"success","boss":{...}}` or `409 {"error":"boss already active"}`.
+
+### POST `/api/announce`
+```bash
+curl -X POST http://localhost:8081/api/announce \
+  -H "Content-Type: application/json" -H "X-Auth-Token: YOUR_TOKEN" \
+  -d '{"category":"market","message":"Pengumuman dari dashboard!"}'
+```
+`category` is one of `market`, `levelup`, `birthday`, `boss`, `booster`, `binomo`, `default`.
 
 ---
 

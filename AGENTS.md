@@ -1,0 +1,51 @@
+# AGENTS.md
+
+Way 2 Eternal Bot (W2E): single-guild Discord bot — Gemini AI chat + RPG/economy + Pillow image generation + small aiohttp web API.
+
+Detailed architecture lives in `CLAUDE.md` (read it first). This file only captures the gotchas an agent would otherwise miss.
+
+## Commands
+
+```bash
+python main.py                 # run locally (entry point)
+run_all.bat                    # Windows shortcut (same thing)
+docker compose up -d --build   # Docker; mounts ./w2ebot.db as a volume
+```
+
+- No tests, no linter, no build/typecheck step. Verify changes by tracing code paths and, when possible, running the bot. Do not invent a test command.
+- FFmpeg must be on PATH for voice/`listen` features.
+- Web API/dashboard serves on port `8081`, launched as a background task in `on_ready`.
+- Required `.env`: `DISCORD_TOKEN`, `GEMINI_API_KEY`, `ALLOWED_SERVER_ID` (default `887968847842402355`), `BOT_PREFIX` (default `w!`). Optional: `DASHBOARD_TOKEN`, `ALLOWED_ORIGINS`.
+
+## Where code goes
+
+- `main.py` is entry point ONLY (`from core import *`, calls each cog's `setup(tree, client)`, then `client.run()`). Never add logic here.
+- `core.py` (~1830 lines) = DB schema, helpers, all `@client.event` handlers, background `@tasks.loop` jobs, web API, the FakeInteraction prefix system. New shared utilities go here.
+- Commands go inside the existing `setup(tree, client)` of the matching cog: `cogs/rpg.py` (game/economy/gambling/mining/boss), `cogs/ai.py` (Gemini/persona/memory), `cogs/utils.py` (ping/poll/giveaway/remindme/birthday).
+- `w2e_help.py` must be updated when adding/removing commands. `w2e_views.py` / `embedder.py` hold shared UI views and embed helpers.
+
+## Non-obvious rules
+
+- **Every command parameter must be a typed annotation.** Prefix parsing (`w!cmd`) reads the callback signature via `FakeInteraction` to coerce string args into `int`/`float`/`discord.Member`/`discord.Role`. Untyped or complex Discord-native option types break prefix mode. `ephemeral` is silently stripped in prefix mode.
+- **Prefix mode bypasses the slash framework.** `on_message` invokes the raw command callback directly, so `@app_commands.checks`, cooldowns, and `default_permissions` do NOT run for `w!` commands. Permission gates must be re-checked manually inside the callback (e.g. `interaction.user.guild_permissions.administrator`, as `kas`/`giveaway` do) — decorator-only checks are not enough.
+- **`remindme` and `giveaway` are in-memory `asyncio.sleep` timers** — they silently vanish on bot restart (no persistence/resume). Don't assume long-running reminders survive a redeploy.
+- **Async DB:** always `aiosqlite` inside async (`async with aiosqlite.connect(DB_PATH)`). The only sync `sqlite3` use is `_init_db()` at import. Never use sync `sqlite3` or `time.sleep()` in async paths.
+- **Two persistence patterns:** structured player stats → `DiscordStat` table via `get_discord_stat`/`update_discord_stat` (these auto-run the level-up math — don't reimplement it; for XP gains use `check_level_up`). Game data → `json_store` key-value blobs via `load_json(FILE)`/`save_json(FILE, data)`, cached in `_json_cache`. File-name constants live at the top of `core.py`; add a constant for any new JSON file.
+- **Coins are money — mutate them ATOMICALLY only.** Never do `stat = get_discord_stat()` → `stat['coins'] += x` → `update_discord_stat(...)`; that read-modify-write races (double-spend via concurrent prefix+slash) and `update_discord_stat`'s absolute write can resurrect already-spent coins. Use the atomic helpers in `core.py`: `try_spend(uid, amount)` (conditional debit, returns `False` if insufficient — use for ALL purchases/bets/costs), `add_coins(uid, amount)` (credit winnings/rewards), `add_xp(uid, name, xp)`, `set_last_daily(...)`. `update_discord_stat` is now only for non-coin fields. The single wallet of record is `DiscordStat.coins`; `users.json['balance']` is dead — do not write it.
+- **Crypto/mining lives in `users.json`.** Rigs at `users[uid]['rigs']` (`{tier: count}`), holdings at `users[uid]['crypto']` (`{symbol: amount}`). The legacy `rigs.json`/`portfolio.json` files are unused — don't reintroduce them. Crypto is bought/sold with coins via `/buycoin`/`/sellcoin`: debit with `try_spend`, credit with `add_coins`, and a 2% fee (`CRYPTO_FEE_RATE`) goes to the treasury via `add_treasury`. Buy adds holding only after a successful atomic debit; sell decrements holding (and saves) before crediting coins.
+- **Treasury (`treasury.json`, `{'balance': N}`)** is a JSON blob — use `add_treasury(amount)` to credit it. Not as atomic as `DiscordStat.coins`, but only fees flow in (low risk). `/kas` reads it.
+- **User-supplied URLs must be SSRF-guarded.** Before the bot fetches any user-provided URL (e.g. `/bg`), run it through `is_safe_remote_url()` / `fetch_remote_image()` in `core.py` (blocks private/loopback/link-local IPs, caps size, checks content-type).
+- **Announcements:** always resolve target channel via `get_announce_channel(guild, category)`. Don't re-implement channel search. Categories: `market`, `levelup`, `birthday`, `boss`, `booster`, `binomo`.
+- **Web API write routes** (`POST /api/config`, `/api/announce-config`, `/api/broadcast`, `/api/user/{id}/coins|xp|give-item|reset-cooldown`, `/api/boss/spawn`, `/api/announce`) guard with `require_token(request)` (fail-closed when `DASHBOARD_TOKEN` unset). Read routes (`/api/leaderboard`, `/api/user/{id}`, `/api/market`, `/api/treasury`, `/api/boss`, `/api/economy/stats`, `/api/marriages`, `/api/stats/summary`) are open. All handlers live in `core.py` and are registered in `start_web_server()`. Coin/XP write routes go through the atomic helpers (`adjust_coins`/`add_xp`); never add a raw coin write. Full contract in `API.md`.
+- New tables: add `CREATE TABLE IF NOT EXISTS` to `_init_db()`. New imports: add to `requirements.txt`.
+- Embed colors: info `0x5865F2`, success `0x57F287`, warning `0xFEE75C`, error `0xED4245`, premium `0xFFD700`.
+
+## Conventions
+
+- Comments, command responses, and user-facing docs are written in **Indonesian** — keep that.
+
+## Stale / do-not-run
+
+- `setup_dashboard.py` and `lock_bot.py` are one-off codegen scripts that patch a file named `bot.py`. That file no longer exists (it became `core.py`). Do NOT run them — they will crash and their logic is already baked into `core.py`.
+- `Dockerfile` line 11 `pip install`s extra packages (`yt-dlp`, `bs4`, etc.) not all of which are in `requirements.txt`. If adding imports, keep both in sync.
+- `migrate_db.py` / `migrate_gemini.py` are one-off migrations, not part of normal runs.
