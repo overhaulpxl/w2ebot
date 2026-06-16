@@ -39,17 +39,27 @@ read live server state and configure announcement channels.
 | POST | `/api/announce-config` | ✅ token | Set announcement-channel mapping (validated). |
 | POST | `/api/broadcast` | ✅ token | Send a message to a channel as the bot. |
 | GET | `/api/leaderboard` | — | Top players. Query: `sort=coins\|level` (default `level`), `limit=1..100` (default 10). |
-| GET | `/api/user/{id}` | — | Full player profile (coins, xp, level, rank, crypto, rigs, items, pet, achievements, marriage, cooldowns, bg_url). |
+| GET | `/api/user/{id}` | — | Full player profile (coins, xp, level, rank, crypto, rigs, items, pet, achievements, marriage, cooldowns, bg_url, games, top_games, persona, birthday, bounty, weekly, quest). |
 | GET | `/api/market` | — | Full crypto market: price + 10-point history per coin. |
 | GET | `/api/treasury` | — | Community treasury balance. |
 | GET | `/api/boss` | — | Current boss-raid state. |
 | GET | `/api/economy/stats` | — | Aggregates: player count, coins in circulation, avg level, top holder, treasury. |
 | GET | `/api/marriages` | — | List of married pairs (de-duplicated, names resolved). |
 | GET | `/api/stats/summary` | — | One-call dashboard summary (members, in-voice, boss, treasury, total coins). |
+| GET | `/api/bot/stats` | — | Detailed bot stats: latency, uptime, guild detail, economy aggregates. |
+| GET | `/api/economy/level-distribution` | — | Player count grouped by level (for bar chart). |
+| GET | `/api/audit` | ✅ token | Admin audit log (recent write actions). Query `limit=1..500` (default 100). |
 | POST | `/api/user/{id}/coins` | ✅ token | Adjust coins. Body `{"delta": N}` (relative) or `{"set": N}` (absolute, ≥0). |
 | POST | `/api/user/{id}/xp` | ✅ token | Add XP. Body `{"delta": N}` (level-up auto-resolved). |
 | POST | `/api/user/{id}/give-item` | ✅ token | Grant item. Body `{"item_id": "shield", "qty": 1}` (item_id must exist in shop). |
 | POST | `/api/user/{id}/reset-cooldown` | ✅ token | Reset cooldown. Body `{"type": "work\|rob\|pray\|curse\|daily\|all"}`. |
+| POST | `/api/user/{id}/persona` | ✅ token | Set/reset persona AI. Body `{"persona": "..."}` (kosong = reset). |
+| POST | `/api/user/{id}/birthday` | ✅ token | Set/hapus birthday. Body `{"date": "DD-MM"}` (kosong = hapus). |
+| POST | `/api/user/{id}/bg` | ✅ token | Set/hapus background profil (SSRF-guarded). Body `{"url": "..."}`. |
+| POST | `/api/user/{id}/divorce` | ✅ token | Admin paksa cerai. Body `{}`. |
+| POST | `/api/user/{id}/bounty` | ✅ token | Set/hapus bounty. Body `{"amount": N}` (0 = hapus). |
+| POST | `/api/user/{id}/reset-weekly` | ✅ token | Reset klaim weekly. Body `{}`. |
+| POST | `/api/user/{id}/reset-quest` | ✅ token | Reset progress quest. Body `{}`. |
 | POST | `/api/boss/spawn` | ✅ token | Force-spawn a boss raid (409 if one is already active). |
 | POST | `/api/announce` | ✅ token | Broadcast to an announce category. Body `{"category": "market", "message": "..."}`. |
 
@@ -63,6 +73,28 @@ All WRITE endpoints require the `X-Auth-Token` header and fail closed when `DASH
 > ⚠️ The write endpoints under `/api/user/...` can mint coins/items and reset limits.
 > Keep `DASHBOARD_TOKEN` server-side only (never in browser JS), and set a real
 > `ALLOWED_ORIGINS` in production (not `*`).
+
+### GET `/api/bot/stats`
+Detailed bot stats: `online`, `latency_ms`, `uptime_seconds`, `guild` (member/human/bot
+counts, in-voice, boosts+tier, channel/role counts), `economy` (players, total_coins,
+average_level, max_level, total_xp), `treasury_balance`, `boss_active`,
+`commands_registered`, `announce_channels_configured`, `prefix`.
+
+### GET `/api/economy/level-distribution`
+```json
+{ "buckets": [ { "level": 1, "count": 65 }, { "level": 2, "count": 18 } ] }
+```
+
+### GET `/api/audit?limit=100` (token)
+Recent admin write actions. Token required (fail-closed when `DASHBOARD_TOKEN` unset).
+```json
+{ "limit": 100, "entries": [
+  { "id": 1, "ts": "2026-06-16T01:17:34Z", "action": "coins",
+    "target_id": "529168872696446988", "detail": "delta=5000 -> 11167", "source": "api" }
+]}
+```
+Actions logged: `coins`, `xp`, `give-item`, `reset-cooldown`, `persona`, `birthday`, `bg`, `divorce`, `bounty`, `reset-weekly`, `reset-quest`, `boss-spawn`, `announce`, `announce-config`.
+
 
 ### GET `/api/leaderboard?sort=level&limit=10`
 ```json
@@ -80,10 +112,23 @@ All WRITE endpoints require the `X-Auth-Token` header and fail closed when `DASH
   "crypto": { "ETHR": 14 }, "rigs": { "1": 2 }, "items": { "shield": 1 },
   "pet": "wolf", "achievements": ["no_lifer"], "total_vc_minutes": 1500,
   "married_to": "456", "children": [], "bg_url": null,
-  "cooldowns": { "work": 0, "rob": 5400, "pray": 0, "curse": 12000 }
+  "cooldowns": { "work": 0, "rob": 5400, "pray": 0, "curse": 12000 },
+  "games": { "slot": { "plays": 20, "wins": 8, "losses": 12 }, "cf": { "plays": 5, "wins": 3, "losses": 2 } },
+  "top_games": [
+    { "game": "slot", "plays": 20, "wins": 8, "win_rate": 40.0 },
+    { "game": "cf", "plays": 5, "wins": 3, "win_rate": 60.0 }
+  ],
+  "persona": "Gen-Z gaul",
+  "birthday": "25-12",
+  "bounty": 5000,
+  "weekly_claimed": "2026-06-10",
+  "quest": { "date": "2026-06-16", "quests": [...], "claimed": false }
 }
 ```
-`cooldowns` values are seconds remaining (0 = ready). Errors: `400 {"error":"invalid user id"}` if id isn't digits.
+- `cooldowns` values are seconds remaining (0 = ready).
+- `games` only appears after player has played (starts from 0).
+- `top_games` is the top 3 games by play count.
+- Errors: `400 {"error":"invalid user id"}` if id isn't digits.
 
 ### POST `/api/user/{id}/coins`
 ```bash
@@ -118,6 +163,62 @@ curl -X POST http://localhost:8081/api/announce \
   -d '{"category":"market","message":"Pengumuman dari dashboard!"}'
 ```
 `category` is one of `market`, `levelup`, `birthday`, `boss`, `booster`, `binomo`, `default`.
+
+### POST `/api/user/{id}/persona`
+```bash
+curl -X POST http://localhost:8081/api/user/123/persona \
+  -H "Content-Type: application/json" -H "X-Auth-Token: YOUR_TOKEN" \
+  -d '{"persona":"Gen-Z gaul savage"}'
+# Reset: {"persona":""}
+```
+
+### POST `/api/user/{id}/birthday`
+```bash
+curl -X POST http://localhost:8081/api/user/123/birthday \
+  -H "Content-Type: application/json" -H "X-Auth-Token: YOUR_TOKEN" \
+  -d '{"date":"25-12"}'
+# Hapus: {"date":""}
+```
+
+### POST `/api/user/{id}/bg`
+```bash
+curl -X POST http://localhost:8081/api/user/123/bg \
+  -H "Content-Type: application/json" -H "X-Auth-Token: YOUR_TOKEN" \
+  -d '{"url":"https://example.com/bg.jpg"}'
+# Hapus: {"url":""}
+# SSRF-guarded: host privat/loopback ditolak; harus gambar valid.
+```
+
+### POST `/api/user/{id}/divorce`
+```bash
+curl -X POST http://localhost:8081/api/user/123/divorce \
+  -H "Content-Type: application/json" -H "X-Auth-Token: YOUR_TOKEN" \
+  -d '{}'
+# -> {"status":"success","id":"123","divorced_from":"456"}
+# Error jika user tidak menikah: 400 {"error":"user tidak menikah"}
+```
+
+### POST `/api/user/{id}/bounty`
+```bash
+curl -X POST http://localhost:8081/api/user/123/bounty \
+  -H "Content-Type: application/json" -H "X-Auth-Token: YOUR_TOKEN" \
+  -d '{"amount":5000}'
+# Hapus: {"amount":0}
+```
+
+### POST `/api/user/{id}/reset-weekly`
+```bash
+curl -X POST http://localhost:8081/api/user/123/reset-weekly \
+  -H "Content-Type: application/json" -H "X-Auth-Token: YOUR_TOKEN" \
+  -d '{}'
+```
+
+### POST `/api/user/{id}/reset-quest`
+```bash
+curl -X POST http://localhost:8081/api/user/123/reset-quest \
+  -H "Content-Type: application/json" -H "X-Auth-Token: YOUR_TOKEN" \
+  -d '{}'
+```
 
 ---
 
@@ -279,19 +380,52 @@ curl http://localhost:8081/api/channels
 # Read current announcement config (open)
 curl http://localhost:8081/api/announce-config
 
+# Read user profile (open)
+curl http://localhost:8081/api/user/529168872696446988
+
+# Read bot stats (open)
+curl http://localhost:8081/api/bot/stats
+
+# Read level distribution (open)
+curl http://localhost:8081/api/economy/level-distribution
+
+# Read audit log (needs token)
+curl http://localhost:8081/api/audit?limit=50 \
+  -H "X-Auth-Token: YOUR_TOKEN"
+
 # Set announcement config (needs token)
 curl -X POST http://localhost:8081/api/announce-config \
   -H "Content-Type: application/json" \
   -H "X-Auth-Token: YOUR_TOKEN" \
   -d '{"market":"1332111384523309156","default":"","levelup":"","birthday":"","boss":"","booster":"","binomo":""}'
 
-# Without token -> 401
-curl -X POST http://localhost:8081/api/announce-config \
-  -H "Content-Type: application/json" -d '{}'
-# {"error": "unauthorized"}
+# Adjust coins (needs token)
+curl -X POST http://localhost:8081/api/user/123/coins \
+  -H "Content-Type: application/json" -H "X-Auth-Token: YOUR_TOKEN" \
+  -d '{"delta": 5000}'
+
+# Set persona (needs token)
+curl -X POST http://localhost:8081/api/user/123/persona \
+  -H "Content-Type: application/json" -H "X-Auth-Token: YOUR_TOKEN" \
+  -d '{"persona":"Gen-Z savage"}'
+
+# Set bounty (needs token)
+curl -X POST http://localhost:8081/api/user/123/bounty \
+  -H "Content-Type: application/json" -H "X-Auth-Token: YOUR_TOKEN" \
+  -d '{"amount":5000}'
+
+# Spawn boss (needs token)
+curl -X POST http://localhost:8081/api/boss/spawn \
+  -H "Content-Type: application/json" -H "X-Auth-Token: YOUR_TOKEN" \
+  -d '{}'
 
 # Broadcast a message (needs token)
 curl -X POST http://localhost:8081/api/broadcast \
   -H "Content-Type: application/json" -H "X-Auth-Token: YOUR_TOKEN" \
   -d '{"channel":"1332113600894079131","message":"Halo!"}'
+
+# Without token -> 401
+curl -X POST http://localhost:8081/api/announce-config \
+  -H "Content-Type: application/json" -d '{}'
+# {"error": "unauthorized"}
 ```

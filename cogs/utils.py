@@ -229,18 +229,12 @@ def setup(tree, client):
         msg = await interaction.followup.send(embed=embed, wait=True)
         await msg.add_reaction("🎉")
 
-        await asyncio.sleep(durasi_menit * 60)
-
-        # Fetch message again
-        new_msg = await interaction.channel.fetch_message(msg.id)
-        reaction = discord.utils.get(new_msg.reactions, emoji="🎉")
-        users = [user async for user in reaction.users() if not user.bot] if reaction else []
-
-        if not users:
-            await interaction.channel.send("Giveaway dibatalkan, tidak ada yang ikut.")
-        else:
-            winner = random.choice(users)
-            await interaction.channel.send(f"🎊 Selamat {winner.mention}! Kamu memenangkan **{hadiah}**!")
+        # Persist ke DB lalu jadwalkan; tahan banting terhadap restart bot.
+        from datetime import timedelta
+        end_at = datetime.utcnow() + timedelta(minutes=durasi_menit)
+        gid = await add_giveaway(interaction.channel.id, msg.id, hadiah, interaction.user.id, end_at)
+        if gid:
+            schedule_giveaway(gid, str(interaction.channel.id), str(msg.id), hadiah, end_at)
     
     @tree.command(name="birthday", description="Atur tanggal ulang tahun kamu")
     async def slash_birthday(interaction: discord.Interaction, tanggal_bulan: str):
@@ -275,11 +269,15 @@ def setup(tree, client):
         if menit <= 0 or menit > 1440:
             await send_embed(interaction, "❌ Durasi harus antara 1 sampai 1440 menit.")
             return
-            
+
         await send_embed(interaction, f"⏰ Siap! Aku akan mengingatkanmu tentang **'{pesan}'** dalam {menit} menit.")
-        
-        await asyncio.sleep(menit * 60)
-        await interaction.channel.send(f"🔔 {interaction.user.mention} **REMINDER:** {pesan}")
+
+        # Persist ke DB lalu jadwalkan; tahan banting terhadap restart bot.
+        from datetime import timedelta
+        fire_at = datetime.utcnow() + timedelta(minutes=menit)
+        rid = await add_reminder(interaction.user.id, interaction.channel.id, pesan, fire_at)
+        if rid:
+            schedule_reminder(rid, str(interaction.user.id), str(interaction.channel.id), pesan, fire_at)
     
     @tree.command(name="bg", description="Set URL background untuk profile card kamu")
     async def slash_bg(interaction: discord.Interaction, url: str):

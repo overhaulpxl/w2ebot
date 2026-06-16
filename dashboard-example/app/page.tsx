@@ -10,6 +10,8 @@ import {
   type BotStats,
   type Channel,
   type AnnounceConfig,
+  type MarketData,
+  type LevelDistribution,
 } from "@/lib/botApi";
 import { DashboardShell } from "@/components/DashboardShell";
 import { ToastProvider } from "@/components/Toast";
@@ -22,15 +24,19 @@ export default async function DashboardPage() {
   let botStats: BotStats | null = null;
   let channels: Channel[] = [];
   let announceConfig: AnnounceConfig | null = null;
+  let market: MarketData | null = null;
+  let levels: LevelDistribution | null = null;
   let loadError: string | null = null;
 
   try {
-    [summary, leaderboard, botStats, channels, announceConfig] = await Promise.all([
+    [summary, leaderboard, botStats, channels, announceConfig, market, levels] = await Promise.all([
       botGet<SummaryResponse>("/api/stats/summary"),
       botGet<LeaderboardResponse>("/api/leaderboard?sort=coins&limit=10"),
       botGet<BotStats>("/api/bot/stats"),
       botGet<Channel[]>("/api/channels"),
       botGet<AnnounceConfig>("/api/announce-config"),
+      botGet<MarketData>("/api/market"),
+      botGet<LevelDistribution>("/api/economy/level-distribution"),
     ]);
   } catch (e: any) {
     loadError = e.message;
@@ -51,6 +57,8 @@ export default async function DashboardPage() {
         botStats={botStats}
         channels={channels}
         announceConfig={announceConfig}
+        market={market}
+        levels={levels}
         loadError={loadError}
       />
     </ToastProvider>

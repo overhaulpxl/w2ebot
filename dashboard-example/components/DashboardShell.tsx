@@ -6,18 +6,23 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { Icon } from "./Icon";
 import { AdminPanel } from "./AdminPanel";
 import { AnnounceSettings } from "./AnnounceSettings";
+import { Analytics } from "./Analytics";
+import { AuditLog } from "./AuditLog";
 import type {
   SummaryResponse,
   LeaderboardResponse,
   BotStats,
   Channel,
   AnnounceConfig,
+  MarketData,
+  LevelDistribution,
 } from "@/lib/botApi";
 
-type SectionId = "overview" | "stats" | "players" | "economy" | "server";
+type SectionId = "overview" | "stats" | "analytics" | "players" | "economy" | "server" | "audit";
 
 const NAV: { group: string; items: { id: SectionId; label: string; icon: any }[] }[] = [
   {
@@ -25,13 +30,17 @@ const NAV: { group: string; items: { id: SectionId; label: string; icon: any }[]
     items: [
       { id: "overview", label: "Ringkasan", icon: "grid" },
       { id: "stats", label: "Statistik Bot", icon: "activity" },
+      { id: "analytics", label: "Analitik", icon: "signal" },
       { id: "players", label: "Pemain", icon: "users" },
       { id: "economy", label: "Ekonomi", icon: "coins" },
     ],
   },
   {
     group: "Kontrol",
-    items: [{ id: "server", label: "Server & Admin", icon: "dragon" }],
+    items: [
+      { id: "server", label: "Server & Admin", icon: "dragon" },
+      { id: "audit", label: "Audit Log", icon: "terminal" },
+    ],
   },
 ];
 
@@ -45,6 +54,8 @@ export function DashboardShell({
   botStats,
   channels,
   announceConfig,
+  market,
+  levels,
   loadError,
 }: {
   summary: SummaryResponse | null;
@@ -52,6 +63,8 @@ export function DashboardShell({
   botStats: BotStats | null;
   channels: Channel[];
   announceConfig: AnnounceConfig | null;
+  market: MarketData | null;
+  levels: LevelDistribution | null;
   loadError: string | null;
 }) {
   const [section, setSection] = useState<SectionId>("overview");
@@ -60,9 +73,11 @@ export function DashboardShell({
   const titles: Record<SectionId, string> = {
     overview: "Ringkasan",
     stats: "Statistik Bot",
+    analytics: "Analitik",
     players: "Pemain",
     economy: "Ekonomi",
     server: "Server & Admin",
+    audit: "Audit Log",
   };
 
   return (
@@ -159,11 +174,13 @@ export function DashboardShell({
           <div key={section} className="section-anim">
             {section === "overview" && <Overview summary={summary} />}
             {section === "stats" && <BotStatsView stats={botStats} loadError={loadError} />}
+            {section === "analytics" && <Analytics market={market} levels={levels} />}
             {section === "players" && <Players leaderboard={leaderboard} loadError={loadError} />}
             {section === "economy" && <Economy summary={summary} />}
             {section === "server" && (
               <ServerAdmin channels={channels} announceConfig={announceConfig} />
             )}
+            {section === "audit" && <AuditLog />}
           </div>
         </main>
       </div>
@@ -228,40 +245,78 @@ function Players({
   leaderboard: LeaderboardResponse | null;
   loadError: string | null;
 }) {
+  const [search, setSearch] = useState("");
+  const router = useRouter();
+
+  function go() {
+    const id = search.trim();
+    if (/^\d+$/.test(id)) router.push(`/user/${id}`);
+  }
+
   return (
-    <div className="card">
-      {leaderboard && leaderboard.entries.length > 0 ? (
-        <table className="lb">
-          <caption
-            className="faint"
-            style={{ textAlign: "left", padding: "12px 16px 0", fontSize: 12 }}
-          >
-            Top {leaderboard.entries.length} pemain berdasarkan koin
-          </caption>
-          <thead>
-            <tr>
-              <th style={{ width: 60 }}>#</th>
-              <th>Pemain</th>
-              <th className="num">Level</th>
-              <th className="num">Koin</th>
-            </tr>
-          </thead>
-          <tbody>
-            {leaderboard.entries.map((u) => (
-              <tr key={u.id}>
-                <td>
-                  <span className={`rank${u.rank <= 3 ? " rank-" + u.rank : ""}`}>{u.rank}</span>
-                </td>
-                <td>{u.displayName}</td>
-                <td className="num tnum">{u.level}</td>
-                <td className="num tnum">{nf(u.coins)}</td>
+    <div className="stack">
+      <section className="card card-pad">
+        <label className="label" htmlFor="player-search">
+          Cari pemain (Discord ID)
+        </label>
+        <div className="row" style={{ marginTop: 6 }}>
+          <div className="field" style={{ marginBottom: 0 }}>
+            <input
+              id="player-search"
+              className="input tnum"
+              inputMode="numeric"
+              placeholder="cth. 529168872696446988"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && go()}
+            />
+          </div>
+          <button className="btn btn-primary" onClick={go} disabled={!/^\d+$/.test(search.trim())}>
+            <Icon name="users" size={16} />
+            Lihat Profil
+          </button>
+        </div>
+        <span className="helper">Klik baris leaderboard atau masukkan ID untuk buka detail.</span>
+      </section>
+
+      <div className="card">
+        {leaderboard && leaderboard.entries.length > 0 ? (
+          <table className="lb">
+            <caption
+              className="faint"
+              style={{ textAlign: "left", padding: "12px 16px 0", fontSize: 12 }}
+            >
+              Top {leaderboard.entries.length} pemain berdasarkan koin
+            </caption>
+            <thead>
+              <tr>
+                <th style={{ width: 60 }}>#</th>
+                <th>Pemain</th>
+                <th className="num">Level</th>
+                <th className="num">Koin</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      ) : (
-        !loadError && <div className="card-pad faint">Belum ada data pemain.</div>
-      )}
+            </thead>
+            <tbody>
+              {leaderboard.entries.map((u) => (
+                <tr
+                  key={u.id}
+                  style={{ cursor: "pointer" }}
+                  onClick={() => router.push(`/user/${u.id}`)}
+                >
+                  <td>
+                    <span className={`rank${u.rank <= 3 ? " rank-" + u.rank : ""}`}>{u.rank}</span>
+                  </td>
+                  <td>{u.displayName}</td>
+                  <td className="num tnum">{u.level}</td>
+                  <td className="num tnum">{nf(u.coins)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          !loadError && <div className="card-pad faint">Belum ada data pemain.</div>
+        )}
+      </div>
     </div>
   );
 }

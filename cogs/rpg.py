@@ -194,6 +194,10 @@ def setup(tree, client):
 
         if payout:
             await add_coins(uid, payout, interaction.user.display_name)
+        # Track statistik minigame.
+        won = payout > bet if payout else False
+        draw = payout == bet
+        await record_game(uid, 'blackjack', True if won else (None if draw else False))
         from w2e_views import BlackjackView
         await send_embed(interaction, msg, view=BlackjackView(interaction.user, bet))
     
@@ -218,6 +222,7 @@ def setup(tree, client):
             bounties[tid] = 0
             await add_coins(uid, reward, interaction.user.display_name)
             await save_json('bounties.json', bounties)
+            await record_game(uid, 'hunt', True)
             msg = f"🔪 **HUNT BERHASIL!** Kamu membunuh {target.display_name} dan merampas **{reward} Koin**!"
             
             users = await load_json('users.json')
@@ -231,6 +236,7 @@ def setup(tree, client):
         else:
             denda = int(reward / 2)
             await adjust_coins(uid, -denda, interaction.user.display_name)
+            await record_game(uid, 'hunt', False)
             msg = f"❌ **HUNT GAGAL!** Kamu dikalahkan. Didenda hingga **{denda} Koin**."
             
         await send_embed(interaction, msg)
@@ -364,6 +370,7 @@ def setup(tree, client):
         if win:
             await add_coins(uid, win, interaction.user.display_name)
 
+        await record_game(uid, 'slot', win > 0)
         from w2e_views import SlotView
         await send_embed(interaction, msg, view=SlotView(interaction.user, bet))
     
@@ -529,8 +536,10 @@ def setup(tree, client):
         if tebakan == result:
             msg = f"🪙 Koin dilempar dan hasilnya: **{result.upper()}**\n🎉 Tebakanmu benar! Kamu menang **{bet} Koin**."
             await add_coins(uid, bet * 2, interaction.user.display_name)
+            await record_game(uid, 'cf', True)
         else:
             msg = f"🪙 Koin dilempar dan hasilnya: **{result.upper()}**\n💀 Tebakanmu salah! Kamu kalah **{bet} Koin**."
+            await record_game(uid, 'cf', False)
 
         await send_embed(interaction, msg)
     
@@ -563,13 +572,16 @@ def setup(tree, client):
             # Seri: kembalikan taruhan.
             await add_coins(uid, bet, interaction.user.display_name)
             msg = f"🤖 Bot memilih **{bot_choice.upper()}**.\nSERI! Koin dikembalikan."
+            await record_game(uid, 'rps', None)
         elif (pilihan == 'batu' and bot_choice == 'gunting') or \
              (pilihan == 'gunting' and bot_choice == 'kertas') or \
              (pilihan == 'kertas' and bot_choice == 'batu'):
             await add_coins(uid, bet * 2, interaction.user.display_name)
             msg = f"🤖 Bot memilih **{bot_choice.upper()}**.\n🎉 Kamu MENANG **{bet} Koin**!"
+            await record_game(uid, 'rps', True)
         else:
             msg = f"🤖 Bot memilih **{bot_choice.upper()}**.\n💀 Kamu KALAH **{bet} Koin**!"
+            await record_game(uid, 'rps', False)
             
         await send_embed(interaction, msg)
     
@@ -587,6 +599,7 @@ def setup(tree, client):
         pool = ["Ampas (Zonk)", "Nasi Bungkus", "Panci Bolong", "Kunci Jawaban UN", "Waifu Wangi", "Pedang Excalibur", "Gundam Bekas", "Sertifikat Rumah"]
         result = random.choice(pool)
 
+        await record_game(uid, 'gacha', result not in ("Ampas (Zonk)", "Nasi Bungkus", "Panci Bolong"))
         from w2e_views import GachaView
         await send_embed(interaction, f"🎰 Kamu memutar Gacha seharga {cost} Koin...\n✨ Kamu mendapatkan: **{result}**!", view=GachaView(interaction.user))
 
@@ -594,11 +607,13 @@ def setup(tree, client):
     async def slash_tebak(interaction: discord.Interaction, tebakan: int):
         await interaction.response.defer()
         jawaban = random.randint(1, 10)
+        uid = str(interaction.user.id)
         if tebakan == jawaban:
-            uid = str(interaction.user.id)
             await add_coins(uid, 100, interaction.user.display_name)
+            await record_game(uid, 'tebak', True)
             await send_embed(interaction, f"🎯 BENAR! Angkanya adalah {jawaban}. Kamu dapat 100 Koin!")
         else:
+            await record_game(uid, 'tebak', False)
             await send_embed(interaction, f"❌ SALAH! Angkanya adalah {jawaban}.")
     
     @tree.command(name="sell", description="Jual item dari inventory kamu")
@@ -662,8 +677,10 @@ def setup(tree, client):
         if multiplier > 1.2:
             msg = f"📈 Grafik Crash berhenti di **{multiplier}x**!\n🎉 Kamu MENANG dan saldo bertambah **{win_amount - bet} Koin**!"
             await add_coins(uid, win_amount, interaction.user.display_name)
+            await record_game(uid, 'crash', True)
         else:
             msg = f"📉 Grafik langsung CRASH di **{multiplier}x**!\n💀 Kamu KALAH dan kehilangan **{bet} Koin**!"
+            await record_game(uid, 'crash', False)
 
         await send_embed(interaction, msg)
     
@@ -695,6 +712,7 @@ def setup(tree, client):
 
         if reward:
             await add_coins(uid, reward, interaction.user.display_name)
+        await record_game(uid, 'box', reward > cost)
         from w2e_views import BoxView
         await send_embed(interaction, f"📦 Kamu membuka Loot Box...\nIsinya adalah: **{item}**!", view=BoxView(interaction.user))
     

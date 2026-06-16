@@ -113,6 +113,37 @@ def _init_db():
             content TEXT
         )
     ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS Reminder (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT,
+            channel_id TEXT,
+            message TEXT,
+            fire_at TEXT,
+            created_at TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS Giveaway (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            channel_id TEXT,
+            message_id TEXT,
+            prize TEXT,
+            host_id TEXT,
+            end_at TEXT,
+            ended INTEGER DEFAULT 0
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS AuditLog (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT,
+            action TEXT,
+            target_id TEXT,
+            detail TEXT,
+            source TEXT
+        )
+    ''')
     conn.commit()
     conn.close()
 
@@ -323,6 +354,25 @@ async def add_treasury(amount):
         logging.info(f"[TREASURY] +{int(amount)} koin (fee) -> kas {treasury['balance']}")
     except Exception as e:
         logging.error(f"Error add_treasury: {e}")
+
+
+async def record_game(uid, game, won):
+    # Catat statistik minigame per user. Disimpan di users.json[uid]['games'][game].
+    # game: 'slot','blackjack','cf','rps','crash','tebak','gacha','box','hunt'
+    # won: True/False/None (None = seri/netral, dihitung sebagai plays tapi bukan win/loss).
+    try:
+        users = await load_json('users.json')
+        u = users.setdefault(str(uid), {})
+        games = u.setdefault('games', {})
+        g = games.setdefault(game, {'plays': 0, 'wins': 0, 'losses': 0})
+        g['plays'] += 1
+        if won is True:
+            g['wins'] += 1
+        elif won is False:
+            g['losses'] += 1
+        await save_json('users.json', users)
+    except Exception as e:
+        logging.error(f"record_game error: {e}")
 
 
 
@@ -1431,6 +1481,7 @@ async def on_ready():
     client.loop.create_task(voice_salary_loop())
     client.loop.create_task(boss_raid_loop())
     client.loop.create_task(crypto_mining_loop())
+    client.loop.create_task(resume_scheduled_jobs())
     logging.info(f'We have logged in as {client.user}')
 
 @web.middleware
@@ -1607,6 +1658,7 @@ async def update_announce_config_api(request):
             cfg = {}
         cfg['announce_channels'] = announce
         _save_config(cfg)
+        await write_audit('announce-config', None, str(announce), source="api")
         return web.json_response({'status': 'success', 'announce_channels': announce})
     except Exception as e:
         logging.error(f"update_announce_config_api error: {e}")
@@ -1683,7 +1735,23 @@ async def api_user(request):
     u = users.get(uid, {})
     marriages = await load_json('marriages.json')
     partner = marriages.get(uid)
+    personas = await load_json(PERSONAS_FILE)
+    bounties = await load_json('bounties.json')
+    weekly_data = await load_json('weekly.json')
+    quests_data = await load_json(QUESTS_FILE)
+    items_data = await load_json(ITEMS_FILE)
+    bdays = await load_json('birthdays.json')
     now = datetime.now()
+
+    # Top 3 minigame berdasarkan jumlah main (plays).
+    games = u.get('games', {})
+    sorted_games = sorted(games.items(), key=lambda x: x[1].get('plays', 0), reverse=True)
+    top_games = []
+    for gname, gstats in sorted_games[:3]:
+        plays = gstats.get('plays', 0)
+        wins = gstats.get('wins', 0)
+        win_rate = round((wins / plays) * 100, 1) if plays > 0 else 0
+        top_games.append({'game': gname, 'plays': plays, 'wins': wins, 'win_rate': win_rate})
 
     data = {
         'id': uid,
@@ -1702,8 +1770,15 @@ async def api_user(request):
         'total_vc_minutes': u.get('total_vc_minutes', 0),
         'married_to': partner,
         'children': u.get('children', []),
-        'bg_url': u.get('bg_url'),
+        'bg_url': items_data.get(uid, {}).get('bg_url') or u.get('bg_url'),
         'cooldowns': _cooldown_info(users, uid, now),
+        'games': games,
+        'top_games': top_games,
+        'persona': personas.get(uid),
+        'birthday': bdays.get(uid),
+        'bounty': bounties.get(uid, 0),
+        'weekly_claimed': weekly_data.get(uid),
+        'quest': quests_data.get(uid),
     }
     return web.json_response(data)
 
@@ -1824,6 +1899,7 @@ async def api_user_coins(request):
     else:
         return web.json_response({'error': 'provide "delta" or "set"'}, status=400)
     stat = await get_discord_stat(uid)
+    await write_audit('coins', uid, f"{'delta' if 'delta' in body else 'set'}={body.get('delta', body.get('set'))} -> {stat['coins']}")
     return web.json_response({'status': 'success', 'id': uid, 'coins': stat['coins']})
 
 
@@ -1840,6 +1916,7 @@ async def api_user_xp(request):
         return web.json_response({'error': 'provide integer "delta"'}, status=400)
     await add_xp(uid, _resolve_name(uid), delta)
     stat = await get_discord_stat(uid)
+    await write_audit('xp', uid, f"delta={delta} -> xp {stat['xp']} lvl {stat['level']}")
     return web.json_response({'status': 'success', 'id': uid, 'xp': stat['xp'], 'level': stat['level']})
 
 
@@ -1867,6 +1944,7 @@ async def api_user_give_item(request):
     items[item_id] = items.get(item_id, 0) + qty
     await save_json('users.json', users)
     logging.info(f"[ITEM] (api) beri {qty}x {item_id} ke {uid}")
+    await write_audit('give-item', uid, f"{qty}x {item_id}")
     return web.json_response({'status': 'success', 'id': uid, 'items': items})
 
 
@@ -1894,6 +1972,7 @@ async def api_user_reset_cooldown(request):
     if ctype in ('daily', 'all'):
         await set_last_daily(uid, '', _resolve_name(uid))
     logging.info(f"[COOLDOWN] (api) reset '{ctype}' untuk {uid}")
+    await write_audit('reset-cooldown', uid, f"type={ctype}")
     return web.json_response({'status': 'success', 'id': uid, 'reset': ctype})
 
 
@@ -1906,6 +1985,7 @@ async def api_boss_spawn(request):
     boss_data = {'active': True, 'hp': 10000, 'max_hp': 10000, 'name': '🐉 Naga Emas Koruptor'}
     await save_json(BOSS_FILE, boss_data)
     logging.info("[BOSS] (api) Boss raid dipaksa spawn lewat dashboard")
+    await write_audit('boss-spawn', None, boss_data['name'])
     for guild in client.guilds:
         ch = get_announce_channel(guild, 'boss')
         if ch:
@@ -1934,7 +2014,206 @@ async def api_announce(request):
         if ch:
             await send_long_message(ch, str(message))
             sent += 1
+    await write_audit('announce', category, f"{sent} channel: {str(message)[:80]}")
     return web.json_response({'status': 'sent', 'channels': sent})
+
+
+async def api_user_persona(request):
+    if not require_token(request):
+        return web.json_response({'error': 'unauthorized'}, status=401)
+    uid = request.match_info.get('id', '')
+    if not uid.isdigit():
+        return web.json_response({'error': 'invalid user id'}, status=400)
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({'error': 'invalid JSON'}, status=400)
+    persona = body.get('persona', '')
+    personas = await load_json(PERSONAS_FILE)
+    if persona and persona.strip():
+        personas[uid] = persona.strip()
+    else:
+        personas.pop(uid, None)
+    await save_json(PERSONAS_FILE, personas)
+    await write_audit('persona', uid, persona[:80] if persona else 'reset')
+    logging.info(f"[SETTING] (api) persona uid={uid} -> {persona[:40] if persona else 'reset'}")
+    return web.json_response({'status': 'success', 'id': uid, 'persona': personas.get(uid)})
+
+
+async def api_user_birthday(request):
+    if not require_token(request):
+        return web.json_response({'error': 'unauthorized'}, status=401)
+    uid = request.match_info.get('id', '')
+    if not uid.isdigit():
+        return web.json_response({'error': 'invalid user id'}, status=400)
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({'error': 'invalid JSON'}, status=400)
+    date = body.get('date', '')
+    if date:
+        date = str(date).strip()
+        if len(date) != 5 or date[2] != '-':
+            return web.json_response({'error': 'format harus DD-MM (cth. 25-12)'}, status=400)
+        try:
+            int(date[:2]); int(date[3:])
+        except ValueError:
+            return web.json_response({'error': 'format harus DD-MM (cth. 25-12)'}, status=400)
+    users = await load_json('users.json')
+    bdays = await load_json('birthdays.json')
+    if date:
+        users.setdefault(uid, {})['birthday'] = date
+        bdays[uid] = date
+    else:
+        users.get(uid, {}).pop('birthday', None)
+        bdays.pop(uid, None)
+    await save_json('users.json', users)
+    await save_json('birthdays.json', bdays)
+    await write_audit('birthday', uid, date or 'hapus')
+    return web.json_response({'status': 'success', 'id': uid, 'birthday': date or None})
+
+
+async def api_user_bg(request):
+    if not require_token(request):
+        return web.json_response({'error': 'unauthorized'}, status=401)
+    uid = request.match_info.get('id', '')
+    if not uid.isdigit():
+        return web.json_response({'error': 'invalid user id'}, status=400)
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({'error': 'invalid JSON'}, status=400)
+    url = body.get('url', '')
+    if url:
+        url = str(url).strip()
+        if not url.lower().startswith(('http://', 'https://')):
+            return web.json_response({'error': 'URL harus http/https'}, status=400)
+        if not await asyncio.to_thread(is_safe_remote_url, url):
+            return web.json_response({'error': 'URL ditolak (host internal/privat)'}, status=400)
+        test = await fetch_remote_image(url)
+        if test is None:
+            return web.json_response({'error': 'URL tidak mengarah ke gambar valid'}, status=400)
+    items_data = await load_json(ITEMS_FILE)
+    if url:
+        items_data.setdefault(uid, {})['bg_url'] = url
+    else:
+        items_data.get(uid, {}).pop('bg_url', None)
+    await save_json(ITEMS_FILE, items_data)
+    await write_audit('bg', uid, url[:100] if url else 'hapus')
+    return web.json_response({'status': 'success', 'id': uid, 'bg_url': url or None})
+
+
+async def api_user_divorce(request):
+    if not require_token(request):
+        return web.json_response({'error': 'unauthorized'}, status=401)
+    uid = request.match_info.get('id', '')
+    if not uid.isdigit():
+        return web.json_response({'error': 'invalid user id'}, status=400)
+    marriages = await load_json('marriages.json')
+    partner = marriages.get(uid)
+    if not partner:
+        return web.json_response({'error': 'user tidak menikah'}, status=400)
+    marriages.pop(uid, None)
+    marriages.pop(partner, None)
+    await save_json('marriages.json', marriages)
+    await write_audit('divorce', uid, f'pasangan={partner}')
+    logging.info(f"[SETTING] (api) paksa cerai uid={uid} pasangan={partner}")
+    return web.json_response({'status': 'success', 'id': uid, 'divorced_from': partner})
+
+
+async def api_user_bounty(request):
+    if not require_token(request):
+        return web.json_response({'error': 'unauthorized'}, status=401)
+    uid = request.match_info.get('id', '')
+    if not uid.isdigit():
+        return web.json_response({'error': 'invalid user id'}, status=400)
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({'error': 'invalid JSON'}, status=400)
+    amount = body.get('amount')
+    if amount is None:
+        return web.json_response({'error': 'sediakan "amount" (0 = hapus)'}, status=400)
+    try:
+        amount = int(amount)
+    except (ValueError, TypeError):
+        return web.json_response({'error': 'amount harus integer'}, status=400)
+    bounties = await load_json('bounties.json')
+    if amount <= 0:
+        bounties.pop(uid, None)
+    else:
+        bounties[uid] = amount
+    await save_json('bounties.json', bounties)
+    await write_audit('bounty', uid, f'amount={amount}')
+    return web.json_response({'status': 'success', 'id': uid, 'bounty': bounties.get(uid, 0)})
+
+
+async def api_user_reset_weekly(request):
+    if not require_token(request):
+        return web.json_response({'error': 'unauthorized'}, status=401)
+    uid = request.match_info.get('id', '')
+    if not uid.isdigit():
+        return web.json_response({'error': 'invalid user id'}, status=400)
+    weekly = await load_json('weekly.json')
+    weekly.pop(uid, None)
+    await save_json('weekly.json', weekly)
+    await write_audit('reset-weekly', uid, 'weekly direset')
+    return web.json_response({'status': 'success', 'id': uid, 'weekly_claimed': None})
+
+
+async def api_user_reset_quest(request):
+    if not require_token(request):
+        return web.json_response({'error': 'unauthorized'}, status=401)
+    uid = request.match_info.get('id', '')
+    if not uid.isdigit():
+        return web.json_response({'error': 'invalid user id'}, status=400)
+    quests = await load_json(QUESTS_FILE)
+    quests.pop(uid, None)
+    await save_json(QUESTS_FILE, quests)
+    await write_audit('reset-quest', uid, 'quest direset')
+    return web.json_response({'status': 'success', 'id': uid, 'quest': None})
+
+
+async def api_audit(request):
+    # Audit log aksi admin. Token wajib (isinya jejak aksi sensitif).
+    if not require_token(request):
+        return web.json_response({'error': 'unauthorized'}, status=401)
+    try:
+        limit = int(request.query.get('limit', '100'))
+    except ValueError:
+        limit = 100
+    limit = max(1, min(limit, 500))
+    entries = []
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT id, ts, action, target_id, detail, source FROM AuditLog ORDER BY id DESC LIMIT ?",
+                (limit,)) as cur:
+                rows = await cur.fetchall()
+        for r in rows:
+            entries.append({
+                'id': r[0], 'ts': r[1], 'action': r[2],
+                'target_id': r[3], 'detail': r[4], 'source': r[5],
+            })
+    except Exception as e:
+        logging.error(f"api_audit error: {e}")
+        return web.json_response({'error': 'internal error'}, status=500)
+    return web.json_response({'limit': limit, 'entries': entries})
+
+
+async def api_level_distribution(request):
+    # Distribusi jumlah pemain per level (untuk bar chart).
+    buckets = []
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT level, COUNT(*) FROM DiscordStat GROUP BY level ORDER BY level") as cur:
+                rows = await cur.fetchall()
+        buckets = [{'level': r[0], 'count': r[1]} for r in rows]
+    except Exception as e:
+        logging.error(f"api_level_distribution error: {e}")
+        return web.json_response({'error': 'internal error'}, status=500)
+    return web.json_response({'buckets': buckets})
 
 
 async def api_bot_stats(request):
@@ -2034,12 +2313,21 @@ async def start_web_server():
     app.router.add_get('/api/marriages', api_marriages)
     app.router.add_get('/api/stats/summary', api_stats_summary)
     app.router.add_get('/api/bot/stats', api_bot_stats)
+    app.router.add_get('/api/economy/level-distribution', api_level_distribution)
+    app.router.add_get('/api/audit', api_audit)
 
     # WRITE tambahan (token wajib)
     app.router.add_post('/api/user/{id}/coins', api_user_coins)
     app.router.add_post('/api/user/{id}/xp', api_user_xp)
     app.router.add_post('/api/user/{id}/give-item', api_user_give_item)
     app.router.add_post('/api/user/{id}/reset-cooldown', api_user_reset_cooldown)
+    app.router.add_post('/api/user/{id}/persona', api_user_persona)
+    app.router.add_post('/api/user/{id}/birthday', api_user_birthday)
+    app.router.add_post('/api/user/{id}/bg', api_user_bg)
+    app.router.add_post('/api/user/{id}/divorce', api_user_divorce)
+    app.router.add_post('/api/user/{id}/bounty', api_user_bounty)
+    app.router.add_post('/api/user/{id}/reset-weekly', api_user_reset_weekly)
+    app.router.add_post('/api/user/{id}/reset-quest', api_user_reset_quest)
     app.router.add_post('/api/boss/spawn', api_boss_spawn)
     app.router.add_post('/api/announce', api_announce)
     
@@ -2129,6 +2417,139 @@ async def write_to_memory(content):
             await db.commit()
     except Exception as e:
         logging.error(f"Error saving chat memory to DB: {e}")
+
+
+# ── Audit log ────────────────────────────────────────────────────────────────
+async def write_audit(action, target_id=None, detail=None, source="api"):
+    # Catat aksi admin/write ke tabel AuditLog. Best-effort; jangan sampai gagal
+    # audit menggagalkan aksi utamanya.
+    try:
+        now = datetime.utcnow().isoformat() + "Z"
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT INTO AuditLog (ts, action, target_id, detail, source) VALUES (?, ?, ?, ?, ?)",
+                (now, action, str(target_id) if target_id is not None else None, detail, source))
+            # Batasi 1000 baris terbaru biar DB tidak membengkak.
+            await db.execute("DELETE FROM AuditLog WHERE id NOT IN (SELECT id FROM AuditLog ORDER BY id DESC LIMIT 1000)")
+            await db.commit()
+    except Exception as e:
+        logging.error(f"write_audit error: {e}")
+
+
+# ── Reminder persistence ──────────────────────────────────────────────────────
+async def add_reminder(user_id, channel_id, message, fire_at):
+    try:
+        now = datetime.utcnow().isoformat() + "Z"
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute(
+                "INSERT INTO Reminder (user_id, channel_id, message, fire_at, created_at) VALUES (?, ?, ?, ?, ?)",
+                (str(user_id), str(channel_id), message, fire_at.isoformat(), now))
+            await db.commit()
+            return cur.lastrowid
+    except Exception as e:
+        logging.error(f"add_reminder error: {e}")
+        return None
+
+
+async def delete_reminder(rid):
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("DELETE FROM Reminder WHERE id=?", (rid,))
+            await db.commit()
+    except Exception as e:
+        logging.error(f"delete_reminder error: {e}")
+
+
+async def _fire_reminder(rid, user_id, channel_id, message, delay):
+    # Tunggu `delay` detik (boleh 0 untuk yang sudah lewat), kirim, lalu hapus baris.
+    try:
+        if delay > 0:
+            await asyncio.sleep(delay)
+        channel = client.get_channel(int(channel_id))
+        if channel:
+            await channel.send(f"🔔 <@{user_id}> **REMINDER:** {message}")
+    except Exception as e:
+        logging.error(f"_fire_reminder error: {e}")
+    finally:
+        await delete_reminder(rid)
+
+
+def schedule_reminder(rid, user_id, channel_id, message, fire_at):
+    delay = (fire_at - datetime.utcnow()).total_seconds()
+    client.loop.create_task(_fire_reminder(rid, user_id, channel_id, message, max(0, delay)))
+
+
+# ── Giveaway persistence ──────────────────────────────────────────────────────
+async def add_giveaway(channel_id, message_id, prize, host_id, end_at):
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute(
+                "INSERT INTO Giveaway (channel_id, message_id, prize, host_id, end_at, ended) VALUES (?, ?, ?, ?, ?, 0)",
+                (str(channel_id), str(message_id), prize, str(host_id), end_at.isoformat()))
+            await db.commit()
+            return cur.lastrowid
+    except Exception as e:
+        logging.error(f"add_giveaway error: {e}")
+        return None
+
+
+async def _end_giveaway(gid, channel_id, message_id, prize, delay):
+    try:
+        if delay > 0:
+            await asyncio.sleep(delay)
+        channel = client.get_channel(int(channel_id))
+        if channel:
+            try:
+                msg = await channel.fetch_message(int(message_id))
+                reaction = discord.utils.get(msg.reactions, emoji="🎉")
+                entrants = [u async for u in reaction.users() if not u.bot] if reaction else []
+            except Exception:
+                entrants = []
+            if not entrants:
+                await channel.send(f"🎉 Giveaway **{prize}** selesai — tidak ada yang ikut.")
+            else:
+                winner = random.choice(entrants)
+                await channel.send(f"🎊 Selamat {winner.mention}! Kamu memenangkan **{prize}**!")
+    except Exception as e:
+        logging.error(f"_end_giveaway error: {e}")
+    finally:
+        try:
+            async with aiosqlite.connect(DB_PATH) as db:
+                await db.execute("UPDATE Giveaway SET ended=1 WHERE id=?", (gid,))
+                await db.commit()
+        except Exception as e:
+            logging.error(f"_end_giveaway cleanup error: {e}")
+
+
+def schedule_giveaway(gid, channel_id, message_id, prize, end_at):
+    delay = (end_at - datetime.utcnow()).total_seconds()
+    client.loop.create_task(_end_giveaway(gid, channel_id, message_id, prize, max(0, delay)))
+
+
+async def resume_scheduled_jobs():
+    # Dipanggil di on_ready: re-schedule reminder & giveaway yang tersimpan.
+    # Reminder/giveaway yang sudah lewat fire_at langsung dieksekusi (delay 0).
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT id, user_id, channel_id, message, fire_at FROM Reminder") as cur:
+                reminders = await cur.fetchall()
+            async with db.execute("SELECT id, channel_id, message_id, prize, end_at FROM Giveaway WHERE ended=0") as cur:
+                giveaways = await cur.fetchall()
+        for rid, uid, cid, msg, fire_at in reminders:
+            try:
+                schedule_reminder(rid, uid, cid, msg, datetime.fromisoformat(fire_at))
+            except Exception as e:
+                logging.error(f"resume reminder {rid} error: {e}")
+        for gid, cid, mid, prize, end_at in giveaways:
+            try:
+                schedule_giveaway(gid, cid, mid, prize, datetime.fromisoformat(end_at))
+            except Exception as e:
+                logging.error(f"resume giveaway {gid} error: {e}")
+        if reminders or giveaways:
+            logging.info(f"[RESUME] {len(reminders)} reminder & {len(giveaways)} giveaway dijadwalkan ulang")
+    except Exception as e:
+        logging.error(f"resume_scheduled_jobs error: {e}")
+
 
 async def finished_callback(sink, channel: discord.TextChannel, *args):
     recorded_users = [

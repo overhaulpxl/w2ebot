@@ -45,6 +45,25 @@ export async function botPost<T = unknown>(
   return data as T;
 }
 
+/**
+ * GET ke bot API dengan token (untuk endpoint read token-gated, mis. /api/audit).
+ * WAJIB dipanggil dari server saja.
+ */
+export async function botGetToken<T = unknown>(path: string): Promise<T> {
+  if (!TOKEN) {
+    throw new Error("DASHBOARD_TOKEN belum di-set di server Next.js");
+  }
+  const res = await fetch(`${SERVER_BASE}${path}`, {
+    headers: { "X-Auth-Token": TOKEN },
+    cache: "no-store",
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error((data as any).error || `GET ${path} -> ${res.status}`);
+  }
+  return data as T;
+}
+
 // ── Tipe ringkas (sesuaikan kalau perlu) ─────────────────────────────────────
 export interface SummaryResponse {
   member_count: number;
@@ -147,4 +166,41 @@ export interface UserProfile {
   children: string[];
   bg_url: string | null;
   cooldowns: { work: number; rob: number; pray: number; curse: number };
+  top_games?: { game: string; plays: number; wins: number; win_rate: number }[];
+  games?: Record<string, { plays: number; wins: number }>;
+}
+
+export interface MarketCoin {
+  name?: string;
+  price: number;
+  history: number[];
+  emoji?: string;
+}
+
+export interface MarketData {
+  last_updated?: string;
+  coins: Record<string, MarketCoin>;
+}
+
+export interface LevelBucket {
+  level: number;
+  count: number;
+}
+
+export interface LevelDistribution {
+  buckets: LevelBucket[];
+}
+
+export interface AuditEntry {
+  id: number;
+  ts: string;
+  action: string;
+  target_id: string | null;
+  detail: string | null;
+  source: string;
+}
+
+export interface AuditResponse {
+  limit: number;
+  entries: AuditEntry[];
 }

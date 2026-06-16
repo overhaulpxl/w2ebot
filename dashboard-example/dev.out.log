@@ -7,12 +7,48 @@
   - Environments: .env.local
 
  ✓ Starting...
- ✓ Ready in 2.7s
+ ✓ Ready in 2.5s
+ ○ Compiling /user/[id] ...
+ ✓ Compiled /user/[id] in 4.1s (506 modules)
+ GET /user/529168872696446988 200 in 5379ms
+ ✓ Compiled /api/admin/persona in 421ms (279 modules)
+ POST /api/admin/persona 200 in 577ms
+ ✓ Compiled /api/admin/bounty in 219ms (281 modules)
+ POST /api/admin/bounty 200 in 309ms
  ○ Compiling / ...
- ✓ Compiled / in 5.9s (473 modules)
- GET / 200 in 6206ms
- ✓ Compiled /api/admin/announce-config in 418ms (54 modules)
- POST /api/admin/announce-config 200 in 515ms
- POST /api/admin/announce-config 200 in 28ms
- ✓ Compiled / in 215ms (230 modules)
- GET / 200 in 470ms
+ ✓ Compiled / in 4.3s (1519 modules)
+ GET / 200 in 4706ms
+ ✓ Compiled /api/admin/audit in 209ms (781 modules)
+ GET /api/admin/audit 200 in 265ms
+ GET /api/admin/audit 200 in 269ms
+ GET /api/admin/audit 200 in 12ms
+ GET /api/admin/audit 200 in 14ms
+ POST /api/admin/persona 200 in 50ms
+ POST /api/admin/bounty 200 in 26ms
+ ✓ Compiled /api/admin/announce-config in 338ms (781 modules)
+ POST /api/admin/announce-config 200 in 416ms
+ ✓ Compiled /api/admin/announce in 263ms (779 modules)
+ POST /api/admin/announce 200 in 832ms
+ ✓ Compiled /api/admin/audit in 305ms (777 modules)
+ GET /api/admin/audit 200 in 352ms
+ GET /api/admin/audit 200 in 360ms
+ GET / 200 in 344ms
+ GET / 200 in 679ms
+ ✓ Compiled /api/admin/bg in 343ms (777 modules)
+ POST /api/admin/bg 200 in 421ms
+ ○ Compiling /api/admin/announce-config ...
+ ✓ Compiled /api/admin/announce-config in 650ms (777 modules)
+ POST /api/admin/announce-config 200 in 714ms
+ ✓ Compiled /api/admin/announce in 152ms (779 modules)
+ POST /api/admin/announce 200 in 637ms
+ ✓ Compiled /api/admin/boss-spawn in 232ms (781 modules)
+ POST /api/admin/boss-spawn 409 in 341ms
+ ✓ Compiled /api/admin/coins in 410ms (777 modules)
+ POST /api/admin/coins 200 in 475ms
+ GET / 200 in 385ms
+ POST /api/admin/coins 200 in 45ms
+ GET /user/529168872696446988 200 in 106ms
+ POST /api/admin/coins 200 in 29ms
+ GET /user/529168872696446988 200 in 88ms
+ POST /api/admin/coins 200 in 238ms
+ GET /user/529168872696446988 200 in 178ms
