@@ -25,6 +25,7 @@ const COOLDOWNS = ["work", "rob", "pray", "curse", "daily", "all"];
 export function UserAdminControls({ userId }: { userId: string }) {
   const toast = useToast();
   const [delta, setDelta] = useState("");
+  const [xpDelta, setXpDelta] = useState("");
   const [itemId, setItemId] = useState(ITEMS[0]);
   const [cdType, setCdType] = useState(COOLDOWNS[0]);
   const [persona, setPersona] = useState("");
@@ -77,6 +78,37 @@ export function UserAdminControls({ userId }: { userId: string }) {
         >
           {busy === "coins" ? <span className="spinner" /> : <Icon name="coins" />}
           Set Koin
+        </button>
+      </div>
+
+      <div className="row">
+        <div className="field">
+          <label className="label" htmlFor="u-xp">
+            Tambah XP (Δ)
+          </label>
+          <input
+            id="u-xp"
+            className="input tnum"
+            inputMode="numeric"
+            placeholder="cth. 500 atau -100"
+            value={xpDelta}
+            onChange={(e) => setXpDelta(e.target.value)}
+          />
+        </div>
+        <button
+          className="btn btn-primary"
+          disabled={busy === "xp"}
+          onClick={() => {
+            const n = Number(xpDelta);
+            if (!Number.isFinite(n) || n === 0) {
+              toast("error", "Δ XP harus angka bukan nol.");
+              return;
+            }
+            run("xp", () => callAdmin("/api/admin/xp", { userId, delta: n }), "XP diperbarui.");
+          }}
+        >
+          {busy === "xp" ? <span className="spinner" /> : <Icon name="activity" />}
+          Set XP
         </button>
       </div>
 

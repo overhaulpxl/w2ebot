@@ -34,7 +34,7 @@ def setup(tree, client):
         
         if achievements:
             ach_emojis = {
-                'gambler_king': '👑 Sang Raja Judi',
+                'gambler_king': '👑 High Roller',
                 'no_lifer': '🧟‍♂️ No-Lifer',
                 'hitman': '🔪 Hitman',
                 'boss_slayer': '🛡️ Boss Slayer'
@@ -112,7 +112,7 @@ def setup(tree, client):
         if boss_data['hp'] <= 0:
             boss_data['active'] = False
             await save_json(BOSS_FILE, boss_data)
-            reward = 5000
+            reward = await apply_soft_cap(uid, ECON_BOSS_REWARD)
             
             await add_coins(uid, reward, interaction.user.display_name)
             
@@ -171,7 +171,7 @@ def setup(tree, client):
 
         payout = 0  # taruhan sudah dipotong; cabang menang/seri mengembalikan di sini
         if player_score > 21:
-            msg = f"🃏 Nilai kamu {player_score}. **BUSTED!** Uang {bet} hangus."
+            msg = f"🃏 Nilai kamu {player_score}. **BUSTED!** Taruhan {bet} Koin hilang."
         elif dealer_score > 21 or player_score > dealer_score:
             win = bet * 2
             payout = win
@@ -185,12 +185,12 @@ def setup(tree, client):
                     if 'achievements' not in users[uid]: users[uid]['achievements'] = []
                     users[uid]['achievements'].append('gambler_king')
                     await save_json('users.json', users)
-                    msg += "\n🏆 **ACHIEVEMENT UNLOCKED: 👑 Sang Raja Judi!**"
+                    msg += "\n🏆 **ACHIEVEMENT UNLOCKED: 👑 High Roller!**"
         elif player_score == dealer_score:
             payout = bet
             msg = f"🃏 Sama-sama {player_score}. **DRAW!** Uang dikembalikan."
         else:
-            msg = f"🃏 Kamu {player_score}, Bandar {dealer_score}. **BANDAR MENANG!** Uang {bet} hangus."
+            msg = f"🃏 Kamu {player_score}, Bandar {dealer_score}. **BANDAR MENANG!** Taruhan {bet} Koin hilang."
 
         if payout:
             await add_coins(uid, payout, interaction.user.display_name)
@@ -243,12 +243,12 @@ def setup(tree, client):
     
     
     
-    @tree.command(name="shop", description="Lihat toko W2E Sultan Shop")
+    @tree.command(name="shop", description="Lihat toko W2E Shop")
     async def slash_shop(interaction: discord.Interaction):
         await interaction.response.defer()
         from w2e_views import ShopView
         booster_msg = " (👑 Diskon 20% khusus Server Booster!)" if interaction.user.premium_since else ""
-        res = f"🛒 **W2E SULTAN SHOP** 🛒{booster_msg}\n*Beli item langsung menggunakan tombol di bawah ini atau gunakan `/buy <item_id>`.*\n\n"
+        res = f"🛒 **W2E Shop** 🛒{booster_msg}\n*Beli item langsung menggunakan tombol di bawah ini atau gunakan `/buy <item_id>`.*\n\n"
         for i_id, i_data in SHOP_ITEMS.items():
             price = i_data['price']
             if interaction.user.premium_since:
@@ -292,7 +292,7 @@ def setup(tree, client):
         items = users.get(uid, {}).get('items', {})
         
         if not items:
-            await send_embed(interaction, "🎒 Tas kamu kosong melompong.")
+            await send_embed(interaction, "🎒 Tas kamu kosong.")
             return
             
         res = f"🎒 **Inventory {interaction.user.display_name}** 🎒\n\n"
@@ -365,7 +365,7 @@ def setup(tree, client):
             win = int(bet * 1.5)
             msg += f"👍 **MINI WIN!** Kamu menang **{win} Koin** (1.5x lipat)!"
         else:
-            msg += f"😢 Zonk! Uang taruhan **{bet} Koin** hangus dimakan mesin."
+            msg += f"😢 Tidak beruntung. Taruhan **{bet} Koin** hilang."
 
         if win:
             await add_coins(uid, win, interaction.user.display_name)
@@ -380,7 +380,7 @@ def setup(tree, client):
     async def slash_kas(interaction: discord.Interaction):
         await interaction.response.defer()
         if not interaction.user.guild_permissions.administrator:
-            await send_embed(interaction, "❌ Hati-hati! Brankas Kas hanya bisa dibuka oleh Admin/Sultan server ini.")
+            await send_embed(interaction, "❌ Brankas Kas hanya bisa dibuka oleh Admin server ini.")
             return
             
         treasury = await load_json(TREASURY_FILE)
@@ -401,17 +401,18 @@ def setup(tree, client):
             last = datetime.fromisoformat(last_work)
             delta = (now - last).total_seconds()
             if delta < 3600:
-                await send_embed(interaction, f"⏳ Bosmu menyuruhmu istirahat. Kerja lagi dalam {int((3600-delta)//60)} menit.")
+                await send_embed(interaction, f"⏳ Kamu masih cooldown. Kerja lagi dalam {int((3600-delta)//60)} menit.")
                 return
     
-        reward = random.randint(50, 200)
+        reward = random.randint(ECON_WORK_MIN, ECON_WORK_MAX)
+        reward = await apply_soft_cap(uid, reward)
         users.setdefault(uid, {})['lastWork'] = now.isoformat()
         await save_json('users.json', users)
         
         await add_coins(uid, reward, interaction.user.display_name)
-        await add_xp(uid, interaction.user.display_name, 10)
+        await add_xp(uid, interaction.user.display_name, ECON_WORK_XP)
         
-        jobs = ["nguli bangunan", "jaga lilin babi ngepet", "jadi admin slot", "joki ML", "jualan seblak", "nambal ban", "driver gojek", "ngetik captcha"]
+        jobs = ["kerja shift gudang", "jaga parkir", "nganter paket", "jadi barista", "data entry", "freelance desain", "jaga kasir", "cuci mobil"]
         job = random.choice(jobs)
         await send_embed(interaction, f"💼 Kamu {job} dan mendapatkan **{reward} Koin RPG**! (+10 XP)")
     
@@ -422,14 +423,14 @@ def setup(tree, client):
         tid = str(target.id)
         
         if uid == tid:
-            await send_embed(interaction, "❌ Masa merampok diri sendiri?")
+            await send_embed(interaction, "❌ Gak bisa ngerampok diri sendiri.")
             return
             
         stat_robber = await get_discord_stat(uid)
         stat_target = await get_discord_stat(tid)
         
         if stat_target['coins'] < 100:
-            await send_embed(interaction, f"❌ {target.display_name} terlalu miskin untuk dirampok.")
+            await send_embed(interaction, f"❌ Saldo {target.display_name} terlalu kecil buat dirampok.")
             return
             
         users = await load_json('users.json')
@@ -440,7 +441,7 @@ def setup(tree, client):
             last = datetime.fromisoformat(last_rob)
             delta = (now - last).total_seconds()
             if delta < 7200: # 2 hours
-                await send_embed(interaction, f"⏳ Polisi masih patroli! Tunggu {int((7200-delta)//60)} menit lagi sebelum merampok.")
+                await send_embed(interaction, f"⏳ Masih cooldown. Tunggu {int((7200-delta)//60)} menit lagi sebelum merampok.")
                 return
     
         users.setdefault(uid, {})['lastRob'] = now.isoformat()
@@ -449,9 +450,14 @@ def setup(tree, client):
         success = random.choice([True, False, False]) # 33% win rate
         if success:
             stolen = random.randint(10, int(stat_target['coins'] * 0.2)) # Max 20%
-            await adjust_coins(uid, stolen, interaction.user.display_name)
+            # Tax 5% masuk treasury, perampok dapat 95%.
+            tax = int(stolen * ECON_TRANSFER_TAX)
+            net_stolen = stolen - tax
+            await adjust_coins(uid, net_stolen, interaction.user.display_name)
             await adjust_coins(tid, -stolen, target.display_name)
-            await send_embed(interaction, f"🥷 **BERHASIL!** Kamu merampok **{stolen} Koin** dari {target.mention}!")
+            if tax > 0:
+                await add_treasury(tax)
+            await send_embed(interaction, f"🥷 **BERHASIL!** Kamu merampok **{stolen} Koin** dari {target.mention}!\n(Pajak 5% = {tax} masuk kas, kamu dapat {net_stolen}.)")
         else:
             fine = random.randint(10, 100)
             actual_fine = min(fine, stat_robber['coins'])
@@ -483,7 +489,7 @@ def setup(tree, client):
             last_weekly = datetime.strptime(last_weekly_str, '%Y-%m-%d')
             if (today - last_weekly).days < 7:
                 days_left = 7 - (today - last_weekly).days
-                await send_embed(interaction, f"⏳ Sabar ya! Kamu baru bisa ambil weekly lagi dalam {days_left} hari.")
+                await send_embed(interaction, f"⏳ Tunggu {days_left} hari lagi untuk klaim weekly.")
                 return
     
         reward = 5000
@@ -511,9 +517,14 @@ def setup(tree, client):
             await send_embed(interaction, "❌ Koin kamu tidak cukup!")
             return
 
-        await add_coins(tid, amount, target.display_name)
+        # Tax 5% masuk treasury, penerima dapat 95%.
+        tax = int(amount * ECON_TRANSFER_TAX)
+        net = amount - tax
+        await add_coins(tid, net, target.display_name)
+        if tax > 0:
+            await add_treasury(tax)
 
-        await send_embed(interaction, f"💸 **Transfer Berhasil!**\nKamu telah mengirim **{amount} Koin** ke {target.mention}.")
+        await send_embed(interaction, f"💸 **Transfer Berhasil!**\nKamu mengirim **{amount} Koin** ke {target.mention}.\nPenerima dapat: **{net}** (pajak 5% = {tax} masuk kas).")
     
     @tree.command(name="cf", description="Main Coinflip (Judi tebak koin)")
     async def slash_cf(interaction: discord.Interaction, tebakan: str, bet: int):
@@ -737,7 +748,9 @@ def setup(tree, client):
                 value = amount * coins_data[coin]['price']
                 total_value += value
                 emoji = coins_data[coin].get('emoji', '🪙')
-                embed.add_field(name=f"{emoji} {coin}", value=f"Jumlah: {amount}\nNilai: {value:.2f} Koin", inline=False)
+                # Format: desimal kalau < 1, integer kalau bulat besar.
+                amt_str = f"{amount:.6f}".rstrip('0').rstrip('.') if amount < 1 else f"{amount:,.4f}".rstrip('0').rstrip('.')
+                embed.add_field(name=f"{emoji} {coin}", value=f"Jumlah: {amt_str}\nNilai: {value:,.2f} Koin", inline=False)
                 
         embed.add_field(name="Total Estimasi Nilai", value=f"**{total_value:.2f} Koin RPG**", inline=False)
         await interaction.followup.send(embed=embed)
@@ -848,31 +861,44 @@ def setup(tree, client):
         sisa = crypto.get(symbol, 0)
         await send_embed(interaction, f"📤 **JUAL BERHASIL!**\nKamu menjual **{qty} {symbol}** @ {price} Koin.\nDapat: **{net} Koin** (harga {gross} - fee 2% = {fee}).\nSisa {symbol}: **{sisa}**")
     
-    @tree.command(name="buyrig", description="Beli mesin Miner Kripto (Harga bervariasi)")
-    async def slash_buyrig(interaction: discord.Interaction, tier: int):
+    @tree.command(name="buyrig", description="Beli mesin Miner Kripto untuk koin tertentu")
+    async def slash_buyrig(interaction: discord.Interaction, tier: int, koin: str = "ETHR"):
         if not interaction.response.is_done():
             await interaction.response.defer()
         uid = str(interaction.user.id)
         users = await load_json('users.json')
-        
-        prices = {1: 10000, 2: 30000, 3: 80000}
-        if tier not in prices:
+        koin = koin.upper()
+
+        if tier not in RIG_PRICES:
             await send_embed(interaction, "❌ Pilihan tier: 1 (Basic), 2 (Pro), 3 (Quantum).")
             return
-            
-        cost = prices[tier]
+
+        if koin not in MINING_RATES:
+            tersedia = ", ".join(MINING_RATES.keys())
+            await send_embed(interaction, f"❌ Koin **{koin}** tidak bisa ditambang. Tersedia: {tersedia}")
+            return
+
+        cost = RIG_PRICES[tier]
         # Debit atomik dulu, baru daftarkan rig.
         if not await try_spend(uid, cost, interaction.user.display_name):
             await send_embed(interaction, f"❌ Koin tidak cukup! Harga Rig Tier {tier} adalah {cost} Koin.")
             return
 
+        # Format rigs baru: {symbol: {tier: count}}
         rigs = users.setdefault(uid, {}).setdefault('rigs', {})
-        rigs[str(tier)] = rigs.get(str(tier), 0) + 1
-        
+        # Migrasi format lama kalau ada
+        if rigs and isinstance(next(iter(rigs.values()), None), int):
+            rigs_old = dict(rigs)
+            rigs.clear()
+            rigs['ETHR'] = rigs_old
+        coin_rigs = rigs.setdefault(koin, {})
+        coin_rigs[str(tier)] = coin_rigs.get(str(tier), 0) + 1
+
         await save_json('users.json', users)
-        
-        await send_embed(interaction, f"🖥️ Berhasil membeli **Mining Rig Tier {tier}** seharga {cost} Koin!\nRig akan otomatis menambang kripto setiap jam.")
-    
+
+        lo, hi = MINING_RATES[koin][str(tier)]
+        await send_embed(interaction, f"🖥️ Berhasil membeli **Mining Rig Tier {tier}** untuk **{koin}** seharga {cost} Koin!\nEst. yield: {lo}-{hi} {koin}/jam per unit. Rig otomatis menambang setiap jam.")
+
     @tree.command(name="miner", description="Cek status mesin Miner kamu")
     async def slash_miner(interaction: discord.Interaction):
         if not interaction.response.is_done():
@@ -880,23 +906,85 @@ def setup(tree, client):
         uid = str(interaction.user.id)
         users = await load_json('users.json')
         rigs = users.get(uid, {}).get('rigs', {})
-        
+
         from w2e_views import MinerView
         view = MinerView(interaction.user)
-        
+
         if not rigs:
-            await send_embed(interaction, "🖥️ Kamu belum memiliki Mining Rig. Beli menggunakan tombol di bawah ini atau ketik `/buyrig <tier>`.", view=view)
+            await send_embed(interaction, "🖥️ Kamu belum memiliki Mining Rig. Beli dengan `/buyrig <tier> <koin>` (cth: `/buyrig 1 ETHR`).", view=view)
             return
-            
-        rates = {'1': '1-5 Koin/jam', '2': '10-20 Koin/jam', '3': '50-100 Koin/jam'}
+
+        # Migrasi format lama kalau masih {tier: count}
+        if rigs and isinstance(next(iter(rigs.values()), None), int):
+            rigs = {'ETHR': rigs}
+
         embed = discord.Embed(title=f"⛏️ Mining Farm: {interaction.user.display_name}", color=discord.Color.dark_grey())
-        
-        for tier, count in rigs.items():
-            embed.add_field(name=f"Rig Tier {tier}", value=f"Jumlah: {count} Unit\nEst. Hashrate: {rates.get(tier)}", inline=False)
-            
+
+        for symbol, tier_map in rigs.items():
+            if not isinstance(tier_map, dict):
+                continue
+            rates = MINING_RATES.get(symbol, {})
+            lines = []
+            for tier, count in tier_map.items():
+                lo, hi = rates.get(str(tier), (0, 0))
+                lines.append(f"Tier {tier}: **{count}** unit ({lo}-{hi} {symbol}/jam per unit)")
+            embed.add_field(name=f"⛏️ {symbol}", value="\n".join(lines), inline=False)
+
+        embed.set_footer(text="Rig menambang otomatis tiap jam. Beli: /buyrig <tier> <koin> | Pindah: /moverig <tier> <dari> <ke>")
         await interaction.followup.send(embed=embed, view=view)
+
+    @tree.command(name="moverig", description="Pindahkan rig ke koin lain (gratis)")
+    async def slash_moverig(interaction: discord.Interaction, tier: int, dari: str, ke: str):
+        await interaction.response.defer()
+        uid = str(interaction.user.id)
+        dari = dari.upper()
+        ke = ke.upper()
+
+        if tier not in (1, 2, 3):
+            await send_embed(interaction, "❌ Tier harus 1, 2, atau 3.")
+            return
+        if dari not in MINING_RATES:
+            await send_embed(interaction, f"❌ Koin **{dari}** tidak valid.")
+            return
+        if ke not in MINING_RATES:
+            await send_embed(interaction, f"❌ Koin **{ke}** tidak valid.")
+            return
+        if dari == ke:
+            await send_embed(interaction, "❌ Koin asal dan tujuan sama.")
+            return
+
+        users = await load_json('users.json')
+        rigs = users.get(uid, {}).get('rigs', {})
+
+        # Migrasi format lama kalau masih {tier: count}
+        if rigs and isinstance(next(iter(rigs.values()), None), int):
+            rigs_old = dict(rigs)
+            rigs = {'ETHR': rigs_old}
+            users.setdefault(uid, {})['rigs'] = rigs
+
+        # Cek punya rig di koin asal
+        dari_rigs = rigs.get(dari, {})
+        count = dari_rigs.get(str(tier), 0)
+        if count <= 0:
+            await send_embed(interaction, f"❌ Kamu tidak punya Rig Tier {tier} yang mining **{dari}**.")
+            return
+
+        # Pindahkan 1 unit
+        dari_rigs[str(tier)] = count - 1
+        if dari_rigs[str(tier)] <= 0:
+            del dari_rigs[str(tier)]
+        if not dari_rigs:
+            del rigs[dari]
+
+        ke_rigs = rigs.setdefault(ke, {})
+        ke_rigs[str(tier)] = ke_rigs.get(str(tier), 0) + 1
+
+        await save_json('users.json', users)
+
+        lo, hi = MINING_RATES[ke][str(tier)]
+        await send_embed(interaction, f"🔄 **Rig dipindahkan!**\nRig Tier {tier} sekarang menambang **{ke}** (est. {lo}-{hi} {ke}/jam).\nGratis — rig kamu, kamu yang tentuin mau mining apa.")
     
-    @tree.command(name="pray", description="Berdoa agar mendapatkan berkah Koin")
+    @tree.command(name="pray", description="Berdoa untuk mendapatkan Koin")
     async def slash_pray(interaction: discord.Interaction):
         await interaction.response.defer()
         uid = str(interaction.user.id)
@@ -908,7 +996,7 @@ def setup(tree, client):
             last = datetime.fromisoformat(last_pray)
             delta = (now - last).total_seconds()
             if delta < 3600:
-                await send_embed(interaction, f"⏳ Tuhan menyuruhmu bersabar. Berdoa lagi dalam {int((3600-delta)//60)} menit.")
+                await send_embed(interaction, f"⏳ Masih cooldown. Berdoa lagi dalam {int((3600-delta)//60)} menit.")
                 return
     
         users.setdefault(uid, {})['lastPray'] = now.isoformat()
@@ -916,13 +1004,15 @@ def setup(tree, client):
         
         rand = random.random()
         if rand < 0.1:
-            await add_coins(uid, 1000, interaction.user.display_name)
-            msg = "✨ **MUKJIZAT!** Doamu didengar! Kamu mendapatkan **1000 Koin** dari langit!"
+            reward = await apply_soft_cap(uid, ECON_PRAY_JACKPOT)
+            await add_coins(uid, reward, interaction.user.display_name)
+            msg = f"✨ **Jackpot!** Kamu mendapatkan **{reward} Koin**!"
         elif rand < 0.6:
-            await add_coins(uid, 50, interaction.user.display_name)
-            msg = "🙏 Doamu dikabulkan. Kamu mendapatkan berkah **50 Koin**."
+            reward = await apply_soft_cap(uid, ECON_PRAY_NORMAL)
+            await add_coins(uid, reward, interaction.user.display_name)
+            msg = f"🙏 Doa dikabulkan. Kamu mendapatkan **{reward} Koin**."
         else:
-            msg = "💨 Doamu kurang khusyuk. Coba lagi nanti."
+            msg = "💨 Tidak beruntung. Coba lagi nanti."
             
         await send_embed(interaction, msg)
     
@@ -933,7 +1023,7 @@ def setup(tree, client):
         tid = str(target.id)
         
         if uid == tid:
-            await send_embed(interaction, "❌ Masa mengutuk diri sendiri?")
+            await send_embed(interaction, "❌ Gak bisa mengutuk diri sendiri.")
             return
 
         users = await load_json('users.json')
@@ -944,12 +1034,12 @@ def setup(tree, client):
             last = datetime.fromisoformat(last_curse)
             delta = (now - last).total_seconds()
             if delta < 14400: # 4 hours
-                await send_embed(interaction, f"⏳ Energi gelapmu habis. Tunggu {int((14400-delta)//3600)} jam lagi.")
+                await send_embed(interaction, f"⏳ Masih cooldown. Tunggu {int((14400-delta)//3600)} jam lagi.")
                 return
 
         # Bayar persembahan 100 Koin secara atomik (sekalian cek saldo).
         if not await try_spend(uid, 100, interaction.user.display_name):
-            await send_embed(interaction, "❌ Mengutuk butuh persembahan 100 Koin. Kamu terlalu miskin.")
+            await send_embed(interaction, "❌ Butuh 100 Koin buat ngutuk. Saldo kamu kurang.")
             return
 
         users.setdefault(uid, {})['lastCurse'] = now.isoformat()
@@ -962,11 +1052,11 @@ def setup(tree, client):
             loss = random.randint(50, 500)
             actual_loss = min(loss, target_stat['coins'])
             await adjust_coins(tid, -actual_loss, target.display_name)
-            msg = f"😈 **Kutukan Berhasil!** {target.mention} terkena santet dan kehilangan **{actual_loss} Koin**!"
+            msg = f"😈 **Kutukan Berhasil!** {target.mention} kehilangan **{actual_loss} Koin**!"
         else:
             # Karma
             await adjust_coins(uid, -200, interaction.user.display_name)
-            msg = f"🛡️ **KUTUKAN BERBALIK!** {target.display_name} dilindungi kekuatan suci. Kamu terkena karma dan kehilangan ekstra **200 Koin**!"
+            msg = f"🛡️ **KUTUKAN GAGAL!** {target.display_name} terlindungi. Kamu kena efek balik dan kehilangan ekstra **200 Koin**!"
 
         await send_embed(interaction, msg)
     

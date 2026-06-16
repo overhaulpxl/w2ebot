@@ -338,6 +338,35 @@ async def set_last_daily(uid, value, display_name=None):
 # Fee transaksi kripto (2% dua arah). Dipakai /buycoin & /sellcoin.
 CRYPTO_FEE_RATE = 0.02
 
+# ── Konstanta Ekonomi (terpusat, gampang di-tweak) ────────────────────────────
+ECON_WORK_MIN = 30
+ECON_WORK_MAX = 120
+ECON_WORK_XP = 10
+ECON_VC_COINS_PER_10MIN = 30
+ECON_VC_XP_PER_10MIN = 15
+ECON_PRAY_NORMAL = 30
+ECON_PRAY_JACKPOT = 500
+ECON_BOSS_REWARD = 3000
+ECON_SOFT_CAP = 500000          # Wallet di atas ini, reward non-gambling di-halve.
+ECON_TRANSFER_TAX = 0.05        # 5% transfer/rob masuk treasury.
+ECON_CHAT_XP = 5
+ECON_CHAT_XP_COOLDOWN = 30      # detik
+
+# Hashrate mining per koin per tier (unit/jam per rig). FLOAT — koin mahal yield kecil.
+# Format: {symbol: {tier: (min, max)}}
+MINING_RATES = {
+    'ETHR': {'1': (0.005, 0.01), '2': (0.02, 0.06), '3': (0.08, 0.2)},
+    'ORCL': {'1': (0.01, 0.04), '2': (0.05, 0.15), '3': (0.2, 0.5)},
+    'MTR':  {'1': (0.1, 0.4), '2': (0.5, 1.5), '3': (2.0, 5.0)},
+    'ECLP': {'1': (1.0, 3.0), '2': (4.0, 10.0), '3': (12.0, 30.0)},
+    'ORBT': {'1': (1.0, 3.0), '2': (4.0, 10.0), '3': (12.0, 30.0)},
+    'TRST': {'1': (1.0, 3.0), '2': (4.0, 10.0), '3': (12.0, 30.0)},
+    'LUNA': {'1': (0.001, 0.003), '2': (0.005, 0.015), '3': (0.02, 0.05)},
+}
+
+# Harga rig per tier (sama untuk semua koin).
+RIG_PRICES = {1: 10000, 2: 30000, 3: 80000}
+
 
 async def add_treasury(amount):
     # Tambah saldo kas komunitas (treasury.json). Dipakai untuk menampung fee
@@ -375,6 +404,22 @@ async def record_game(uid, game, won):
         logging.error(f"record_game error: {e}")
 
 
+async def apply_soft_cap(uid, base_amount):
+    # Soft cap: kalau wallet user > ECON_SOFT_CAP (500k), reward di-halve.
+    # Dipakai untuk work/VC/pray/boss — BUKAN daily/weekly/gambling/crypto/transfer.
+    try:
+        stat = await get_discord_stat(str(uid))
+        if stat['coins'] > ECON_SOFT_CAP:
+            return max(1, base_amount // 2)
+    except Exception:
+        pass
+    return base_amount
+
+
+# Cooldown chat XP per user (in-memory, reset saat restart — acceptable).
+chat_xp_cooldowns = {}  # uid -> datetime
+
+
 
 
 
@@ -410,7 +455,7 @@ async def check_level_up(channel, user, xp_gained):
     await add_xp(uid, user.display_name, xp_gained)
     stat_after = await get_discord_stat(uid)
     if stat_after['level'] > level_before:
-        await channel.send(f"GG {user.mention}, kamu baru saja naik ke **Level {stat_after['level']}**!")
+        await channel.send(f"Selamat {user.mention}, kamu naik ke **Level {stat_after['level']}**!")
 
 async def check_toxicity(text):
     prompt = f"Evaluasi pesan berikut. Jika mengandung ujaran kebencian parah, rasisme, atau NSFW ekstrim, balas HANYA dengan kata 'TOXIC'. Jika aman, balas 'SAFE'.\nPesan: {text}"
@@ -1396,16 +1441,17 @@ async def voice_salary_loop():
                         if not m.voice.self_deaf and not m.voice.deaf:
                             uid = str(m.id)
                             # Kredit koin + XP secara atomik (hindari race read-modify-write).
-                            await add_coins(uid, 50, m.display_name)
+                            reward = await apply_soft_cap(uid, ECON_VC_COINS_PER_10MIN)
+                            await add_coins(uid, reward, m.display_name)
 
                             stat_before = await get_discord_stat(uid)
                             level_before = stat_before['level']
-                            await add_xp(uid, m.display_name, 15)
+                            await add_xp(uid, m.display_name, ECON_VC_XP_PER_10MIN)
                             stat_after = await get_discord_stat(uid)
 
                             if stat_after['level'] > level_before and announce_channel:
                                 client.loop.create_task(
-                                    announce_channel.send(f"GG {m.mention}, kamu baru saja naik ke **Level {stat_after['level']}** dari Voice Channel!")
+                                    announce_channel.send(f"Selamat {m.mention}, kamu naik ke **Level {stat_after['level']}** dari Voice Channel!")
                                 )
 
 async def boss_raid_loop():
@@ -1437,31 +1483,45 @@ async def crypto_mining_loop():
         await asyncio.sleep(3600) # Every 1 hour
         users = await load_json('users.json')
 
-        # Hashrate per tier (ETHR per jam per unit rig).
-        TIER_RATES = {'1': (1, 5), '2': (10, 20), '3': (50, 100)}
-
         has_mined = False
-        total_mined = 0
         miner_count = 0
+        mined_summary = {}  # {symbol: total_mined}
         for uid, udata in users.items():
             rigs = udata.get('rigs', {}) if isinstance(udata, dict) else {}
             if not rigs:
                 continue
-            mined_ethr = 0
-            for tier, count in rigs.items():
-                lo, hi = TIER_RATES.get(str(tier), (1, 5))
-                mined_ethr += random.randint(lo, hi) * count
-            if mined_ethr <= 0:
-                continue
-            has_mined = True
-            miner_count += 1
-            total_mined += mined_ethr
+            # Format rigs baru: {symbol: {tier: count}}
+            # Format lama (migrasi): {tier: count} → dianggap ETHR
+            if rigs and isinstance(next(iter(rigs.values())), int):
+                # Migrasi format lama → semua rig dianggap mining ETHR
+                rigs = {'ETHR': rigs}
+                udata['rigs'] = rigs
+            user_mined = False
             crypto = udata.setdefault('crypto', {})
-            crypto['ETHR'] = crypto.get('ETHR', 0) + mined_ethr
+            for symbol, tier_map in rigs.items():
+                if not isinstance(tier_map, dict):
+                    continue
+                rates = MINING_RATES.get(symbol)
+                if not rates:
+                    continue
+                mined = 0.0
+                for tier, count in tier_map.items():
+                    lo, hi = rates.get(str(tier), (0, 0))
+                    if hi <= 0:
+                        continue
+                    mined += random.uniform(lo, hi) * count
+                if mined > 0:
+                    crypto[symbol] = crypto.get(symbol, 0) + round(mined, 6)
+                    mined_summary[symbol] = mined_summary.get(symbol, 0) + mined
+                    user_mined = True
+            if user_mined:
+                has_mined = True
+                miner_count += 1
 
         if has_mined:
             await save_json('users.json', users)
-            logging.info(f"[MINING] {miner_count} penambang dapat total {total_mined} ETHR")
+            summary_str = ", ".join(f"{s}={n}" for s, n in mined_summary.items())
+            logging.info(f"[MINING] {miner_count} penambang: {summary_str}")
 
 @client.event
 async def on_ready():
@@ -2174,6 +2234,192 @@ async def api_user_reset_quest(request):
     return web.json_response({'status': 'success', 'id': uid, 'quest': None})
 
 
+async def api_user_reset_player(request):
+    # Reset pemain — bisa full atau parsial berdasarkan field "targets" di body.
+    # Body: {} atau {"targets": ["all"]} = reset semua.
+    # Body: {"targets": ["coins","xp","items","crypto","rigs","pet","achievements",
+    #         "games","marriage","bounty","persona","birthday","bg","weekly","quest","cooldowns"]}
+    # Hanya reset field yang dipilih. DESTRUKTIF, hanya admin.
+    if not require_token(request):
+        return web.json_response({'error': 'unauthorized'}, status=401)
+    uid = request.match_info.get('id', '')
+    if not uid.isdigit():
+        return web.json_response({'error': 'invalid user id'}, status=400)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    ALL_TARGETS = ['coins', 'xp', 'items', 'crypto', 'rigs', 'pet', 'achievements',
+                   'games', 'marriage', 'bounty', 'persona', 'birthday', 'bg',
+                   'weekly', 'quest', 'cooldowns']
+    targets = body.get('targets', ['all'])
+    if 'all' in targets:
+        targets = ALL_TARGETS
+
+    # Validasi
+    invalid = [t for t in targets if t not in ALL_TARGETS]
+    if invalid:
+        return web.json_response({'error': f'invalid targets: {invalid}. Valid: {ALL_TARGETS}'}, status=400)
+
+    name = _resolve_name(uid)
+    reset_done = []
+
+    # DB: coins, xp, level
+    if 'coins' in targets or 'xp' in targets:
+        try:
+            async with aiosqlite.connect(DB_PATH) as db:
+                sets = []
+                if 'coins' in targets:
+                    sets.append("coins=0")
+                if 'xp' in targets:
+                    sets.append("xp=0, level=1, lastDaily=''")
+                await db.execute(f"UPDATE DiscordStat SET {', '.join(sets)} WHERE id=?", (uid,))
+                await db.commit()
+        except Exception as e:
+            logging.error(f"api_user_reset_player DB error: {e}")
+        if 'coins' in targets:
+            reset_done.append('coins')
+        if 'xp' in targets:
+            reset_done.append('xp/level')
+
+    # users.json fields
+    users = await load_json('users.json')
+    u = users.get(uid, {})
+    json_fields = {
+        'items': 'items', 'crypto': 'crypto', 'rigs': 'rigs',
+        'pet': 'pet', 'achievements': 'achievements', 'games': 'games',
+    }
+    cooldown_keys = ['lastWork', 'lastRob', 'lastPray', 'lastCurse']
+    changed_users = False
+    for target, key in json_fields.items():
+        if target in targets and key in u:
+            if isinstance(u[key], dict):
+                u[key] = {}
+            elif isinstance(u[key], list):
+                u[key] = []
+            else:
+                u[key] = None
+            reset_done.append(target)
+            changed_users = True
+    if 'cooldowns' in targets:
+        for ck in cooldown_keys:
+            u.pop(ck, None)
+        reset_done.append('cooldowns')
+        changed_users = True
+    if changed_users:
+        users[uid] = u
+        await save_json('users.json', users)
+
+    # Marriage
+    if 'marriage' in targets:
+        marriages = await load_json('marriages.json')
+        partner = marriages.pop(uid, None)
+        if partner:
+            marriages.pop(partner, None)
+        await save_json('marriages.json', marriages)
+        reset_done.append('marriage')
+
+    # Bounty
+    if 'bounty' in targets:
+        bounties = await load_json('bounties.json')
+        bounties.pop(uid, None)
+        await save_json('bounties.json', bounties)
+        reset_done.append('bounty')
+
+    # Persona
+    if 'persona' in targets:
+        personas = await load_json(PERSONAS_FILE)
+        personas.pop(uid, None)
+        await save_json(PERSONAS_FILE, personas)
+        reset_done.append('persona')
+
+    # Birthday
+    if 'birthday' in targets:
+        bdays = await load_json('birthdays.json')
+        bdays.pop(uid, None)
+        await save_json('birthdays.json', bdays)
+        reset_done.append('birthday')
+
+    # Background
+    if 'bg' in targets:
+        items_data = await load_json(ITEMS_FILE)
+        items_data.get(uid, {}).pop('bg_url', None)
+        await save_json(ITEMS_FILE, items_data)
+        reset_done.append('bg')
+
+    # Weekly
+    if 'weekly' in targets:
+        weekly = await load_json('weekly.json')
+        weekly.pop(uid, None)
+        await save_json('weekly.json', weekly)
+        reset_done.append('weekly')
+
+    # Quest
+    if 'quest' in targets:
+        quests = await load_json(QUESTS_FILE)
+        quests.pop(uid, None)
+        await save_json(QUESTS_FILE, quests)
+        reset_done.append('quest')
+
+    await write_audit('reset-player', uid, f'reset: {", ".join(reset_done)}')
+    logging.info(f"[ADMIN] RESET pemain {name} ({uid}): {', '.join(reset_done)}")
+
+    return web.json_response({'status': 'success', 'id': uid, 'reset': reset_done})
+
+
+async def api_reset_all_players(request):
+    # Reset SEMUA pemain sekaligus (koin, xp, level, items, crypto, dll).
+    # TIDAK menghapus config bot (announce channels, config.json).
+    # Ini operasi DESTRUKTIF tingkat server — admin darurat only.
+    if not require_token(request):
+        return web.json_response({'error': 'unauthorized'}, status=401)
+
+    player_count = 0
+    try:
+        # Reset semua DiscordStat
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute("SELECT COUNT(*) FROM DiscordStat")
+            row = await cur.fetchone()
+            player_count = row[0] if row else 0
+            await db.execute("UPDATE DiscordStat SET coins=0, xp=0, level=1, lastDaily=''")
+            await db.commit()
+    except Exception as e:
+        logging.error(f"api_reset_all_players DB error: {e}")
+
+    # Reset semua users.json (hapus data game semua orang)
+    await save_json('users.json', {})
+
+    # Reset marriages
+    await save_json('marriages.json', {})
+
+    # Reset bounties
+    await save_json('bounties.json', {})
+
+    # Reset personas
+    await save_json(PERSONAS_FILE, {})
+
+    # Reset birthdays
+    await save_json('birthdays.json', {})
+
+    # Reset items/bg
+    await save_json(ITEMS_FILE, {})
+
+    # Reset weekly
+    await save_json('weekly.json', {})
+
+    # Reset quests
+    await save_json(QUESTS_FILE, {})
+
+    # TIDAK reset: config.json, announce_channels, treasury, market, boss
+
+    await write_audit('reset-all-players', None, f'{player_count} pemain direset')
+    logging.info(f"[ADMIN] RESET ALL PLAYERS: {player_count} pemain direset total")
+
+    return web.json_response({'status': 'success', 'players_reset': player_count})
+
+
 async def api_audit(request):
     # Audit log aksi admin. Token wajib (isinya jejak aksi sensitif).
     if not require_token(request):
@@ -2328,6 +2574,8 @@ async def start_web_server():
     app.router.add_post('/api/user/{id}/bounty', api_user_bounty)
     app.router.add_post('/api/user/{id}/reset-weekly', api_user_reset_weekly)
     app.router.add_post('/api/user/{id}/reset-quest', api_user_reset_quest)
+    app.router.add_post('/api/user/{id}/reset', api_user_reset_player)
+    app.router.add_post('/api/reset-all-players', api_reset_all_players)
     app.router.add_post('/api/boss/spawn', api_boss_spawn)
     app.router.add_post('/api/announce', api_announce)
     
@@ -2389,7 +2637,7 @@ async def on_voice_state_update(member, before, after):
                     guild = member.guild
                     for ch in guild.text_channels:
                         if ch.permissions_for(guild.me).send_messages:
-                            asyncio.create_task(ch.send(f"🏆 **ACHIEVEMENT UNLOCKED!** {member.mention} baru saja mendapatkan gelar **🧟‍♂️ No-Lifer** karena telah menghabiskan total 24 jam di Voice Channel!"))
+                            asyncio.create_task(ch.send(f"🏆 **ACHIEVEMENT UNLOCKED!** {member.mention} mendapatkan gelar **🧟‍♂️ No-Lifer** karena sudah menghabiskan total 24 jam di Voice Channel!"))
                             break
 
                 await save_json('users.json', users)
@@ -2569,7 +2817,7 @@ async def finished_callback(sink, channel: discord.TextChannel, *args):
 
         try:
             uploaded_file = client.files.upload(file=file_path)
-            prompt = "Ini adalah rekaman suara dari percakapan discord. Tuliskan transkripnya, lalu berikan balasan yang santai dan lucu (dalam bahasa gaul tongkrongan Indonesia, JANGAN formal, JANGAN ada basa-basi AI) berdasarkan ucapan tersebut."
+            prompt = "Ini adalah rekaman suara dari percakapan Discord. Tuliskan transkripnya, lalu berikan balasan singkat dalam bahasa Indonesia kasual berdasarkan ucapan tersebut."
             response = await asyncio.to_thread(gemini_client.models.generate_content, model='gemini-2.5-flash', contents=[uploaded_file, prompt])
             await channel.send(f"🎙️ **AI Merespons Suara <@{user_id}>:**\n{response.text}")
             uploaded_file.delete()
@@ -2584,11 +2832,11 @@ async def get_gemini_response(query, user_id=None, user_name=None):
     try:
         final_query = query
         system_prefix = (
-            "[SYSTEM INSTRUCTION: Kamu adalah W2E Bot, teman tongkrongan Discord yang asik, gaul, santai, kocak, dan kadang agak sarkas/savage. "
-            "Gunakan bahasa gaul Indonesia Gen-Z (seperti lo, gue, bro, cuy, wkwk, anjir, dll.). "
-            "Jawablah dengan singkat, padat, dan sangat santai (maksimal 2-3 kalimat saja). JANGAN PERNAH ada basa-basi khas AI "
-            "seperti 'Tentu, ini dia', 'Mari kita...', 'Sebagai AI...', dll. JANGAN berbicara formal layaknya robot customer service. "
-            "Langsung jawab dengan natural seperti chat discord dari temen tongkrongan biasa.]\n"
+            "[SYSTEM INSTRUCTION: Kamu W2E Bot. Balas dalam bahasa Indonesia kasual — singkat, natural, dan to-the-point. "
+            "Boleh lucu atau sarkastik kalau cocok konteksnya, tapi jangan dipaksain. "
+            "Jangan formal, tapi jangan juga lebay. Bayangkan kamu ngobrol di Discord sama temen biasa. "
+            "Maksimal 2-3 kalimat. Jangan pakai pembuka khas AI seperti 'Tentu!', 'Mari kita...', 'Sebagai AI...'. "
+            "Langsung jawab inti pertanyaannya.]\n"
         )
         
         # Inject user's server nickname/display name so AI recognizes them
@@ -2609,7 +2857,7 @@ async def get_gemini_response(query, user_id=None, user_name=None):
             final_query = f"{system_prefix}\nPesan User: {query}"
             chat_session = gemini_client.chats.create(model='gemini-2.5-flash')
             response = await asyncio.to_thread(chat_session.send_message, final_query)
-        return response.text or "Hmm, gue lagi nggak bisa jawab itu. Coba tanya yang lain deh."
+        return response.text or "Hmm, aku gak bisa jawab itu sekarang. Coba tanya yang lain."
     except Exception as e:
         logging.error(f"Error getting Gemini response: {str(e)}")
         return "Error getting response from Gemini."
@@ -2853,6 +3101,14 @@ async def on_message(message):
 
     # ── Update Quest Progress ────────────────────────────────────────────────
     await update_quest_progress(str(message.author.id), 'send_msg', 1)
+
+    # ── Chat XP reward (5 XP / 30s cooldown) ─────────────────────────────────
+    uid_chat = str(message.author.id)
+    now_chat = datetime.now()
+    last_chat_xp = chat_xp_cooldowns.get(uid_chat)
+    if last_chat_xp is None or (now_chat - last_chat_xp).total_seconds() >= ECON_CHAT_XP_COOLDOWN:
+        chat_xp_cooldowns[uid_chat] = now_chat
+        await add_xp(uid_chat, message.author.display_name, ECON_CHAT_XP)
 
     # ── AI auto-reply in the dedicated channel ───────────────────────────────
     if message.channel.id == AI_AUTO_REPLY_CHANNEL_ID:

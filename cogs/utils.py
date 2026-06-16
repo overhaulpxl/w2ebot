@@ -65,7 +65,7 @@ def setup(tree, client):
         tid = str(target.id)
         
         if uid == tid:
-            await send_embed(interaction, "❌ Jomblo ngenes banget sampai nikah sama diri sendiri?")
+            await send_embed(interaction, "❌ Gak bisa nikah sama diri sendiri.")
             return
             
         marriages = await load_json('marriages.json')
@@ -105,9 +105,9 @@ def setup(tree, client):
             marriages[uid] = tid
             marriages[tid] = uid
             await save_json('marriages.json', marriages)
-            await msg.edit(embed=discord.Embed(description=f"🎉 **SAAAAH!** 🎉\n{interaction.user.mention} dan {target.mention} resmi menikah! Selamat menempuh hidup baru!", color=discord.Color.blurple()).set_footer(text="W2E Official Bot"), view=None)
+            await msg.edit(embed=discord.Embed(description=f"🎉 **Resmi!** 🎉\n{interaction.user.mention} dan {target.mention} sekarang menikah! Selamat!", color=discord.Color.blurple()).set_footer(text="W2E Official Bot"), view=None)
         else:
-            await msg.edit(embed=discord.Embed(description=f"💔 **DITOLAK!**\n{target.display_name} menolak lamaran dari {interaction.user.display_name}. Sabar ya, masih banyak ikan di laut.", color=discord.Color.blurple()).set_footer(text="W2E Official Bot"), view=None)
+            await msg.edit(embed=discord.Embed(description=f"💔 {target.display_name} menolak lamaran dari {interaction.user.display_name}.", color=discord.Color.blurple()).set_footer(text="W2E Official Bot"), view=None)
     
     @tree.command(name="divorce", description="Ceraikan pasanganmu")
     async def slash_divorce(interaction: discord.Interaction):
@@ -125,7 +125,7 @@ def setup(tree, client):
             del marriages[tid]
             
         await save_json('marriages.json', marriages)
-        await send_embed(interaction, f"💔 Kamu telah resmi **Bercerai** dengan <@{tid}>. Harta gono-gini hangus.")
+        await send_embed(interaction, f"💔 Kamu telah resmi **Bercerai** dengan <@{tid}>.")
     
     @tree.command(name="family", description="Lihat status keluarga kamu")
     async def slash_family(interaction: discord.Interaction, target: discord.Member = None):
@@ -138,7 +138,7 @@ def setup(tree, client):
         if uid in marriages:
             embed.add_field(name="💍 Pasangan", value=f"<@{marriages[uid]}>", inline=False)
         else:
-            embed.add_field(name="💍 Pasangan", value="Jomblo abadi", inline=False)
+            embed.add_field(name="💍 Pasangan", value="Belum menikah", inline=False)
             
         await interaction.followup.send(embed=embed)
     
@@ -149,7 +149,7 @@ def setup(tree, client):
         tid = str(target.id)
         
         if uid == tid:
-            await send_embed(interaction, "❌ Masa mengadopsi diri sendiri?")
+            await send_embed(interaction, "❌ Gak bisa mengadopsi diri sendiri.")
             return
             
         class ConfirmAdopt(discord.ui.View):
@@ -261,7 +261,7 @@ def setup(tree, client):
     async def slash_valo(interaction: discord.Interaction, target: discord.Role = None):
         await interaction.response.defer()
         mention = target.mention if target else "@here"
-        await send_embed(interaction, f"🎮 {mention} **Waktunya VALORANT!**\nAda yang mau login nggak nih? Dicariin sama {interaction.user.mention}!")
+        await send_embed(interaction, f"🎮 {mention} **Main Valorant yuk!**\nAda yang mau join? Ping dari {interaction.user.mention}.")
     
     @tree.command(name="remindme", description="Buat pengingat/alarm")
     async def slash_remindme(interaction: discord.Interaction, menit: int, pesan: str):

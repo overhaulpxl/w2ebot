@@ -6,12 +6,13 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { Icon } from "./Icon";
 import { AdminPanel } from "./AdminPanel";
 import { AnnounceSettings } from "./AnnounceSettings";
 import { Analytics } from "./Analytics";
 import { AuditLog } from "./AuditLog";
+import { UserModal } from "./UserModal";
+import { useToast } from "./Toast";
 import type {
   SummaryResponse,
   LeaderboardResponse,
@@ -69,6 +70,7 @@ export function DashboardShell({
 }) {
   const [section, setSection] = useState<SectionId>("overview");
   const [navOpen, setNavOpen] = useState(false);
+  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
 
   const titles: Record<SectionId, string> = {
     overview: "Ringkasan",
@@ -175,7 +177,7 @@ export function DashboardShell({
             {section === "overview" && <Overview summary={summary} />}
             {section === "stats" && <BotStatsView stats={botStats} loadError={loadError} />}
             {section === "analytics" && <Analytics market={market} levels={levels} />}
-            {section === "players" && <Players leaderboard={leaderboard} loadError={loadError} />}
+            {section === "players" && <Players leaderboard={leaderboard} loadError={loadError} onSelectUser={setSelectedUserId} />}
             {section === "economy" && <Economy summary={summary} />}
             {section === "server" && (
               <ServerAdmin channels={channels} announceConfig={announceConfig} />
@@ -184,6 +186,11 @@ export function DashboardShell({
           </div>
         </main>
       </div>
+
+      {/* User profile modal */}
+      {selectedUserId && (
+        <UserModal userId={selectedUserId} onClose={() => setSelectedUserId(null)} />
+      )}
     </div>
   );
 }
@@ -241,16 +248,17 @@ function Overview({ summary }: { summary: SummaryResponse | null }) {
 function Players({
   leaderboard,
   loadError,
+  onSelectUser,
 }: {
   leaderboard: LeaderboardResponse | null;
   loadError: string | null;
+  onSelectUser: (id: string) => void;
 }) {
   const [search, setSearch] = useState("");
-  const router = useRouter();
 
   function go() {
     const id = search.trim();
-    if (/^\d+$/.test(id)) router.push(`/user/${id}`);
+    if (/^\d+$/.test(id)) onSelectUser(id);
   }
 
   return (
@@ -276,7 +284,7 @@ function Players({
             Lihat Profil
           </button>
         </div>
-        <span className="helper">Klik baris leaderboard atau masukkan ID untuk buka detail.</span>
+        <span className="helper">Klik baris leaderboard atau masukkan ID untuk buka profil.</span>
       </section>
 
       <div className="card">
@@ -301,7 +309,7 @@ function Players({
                 <tr
                   key={u.id}
                   style={{ cursor: "pointer" }}
-                  onClick={() => router.push(`/user/${u.id}`)}
+                  onClick={() => onSelectUser(u.id)}
                 >
                   <td>
                     <span className={`rank${u.rank <= 3 ? " rank-" + u.rank : ""}`}>{u.rank}</span>
@@ -350,7 +358,56 @@ function ServerAdmin({
     <div className="stack">
       <AnnounceSettings channels={channels} config={announceConfig} />
       <AdminPanel only="server" />
+      <ResetAllPlayers />
     </div>
+  );
+}
+
+function ResetAllPlayers() {
+  const toast = useToast();
+  const [confirm, setConfirm] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  async function doReset() {
+    setBusy(true);
+    try {
+      const res = await fetch("/api/admin/reset-all-players", { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Gagal (${res.status})`);
+      toast("success", `Reset berhasil: ${data.players_reset} pemain direset.`);
+      setConfirm(false);
+    } catch (e: any) {
+      toast("error", e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="card card-pad stack" aria-labelledby="reset-all">
+      <h3 id="reset-all">Reset All Players</h3>
+      <p className="helper" style={{ margin: 0 }}>
+        Reset semua data pemain (koin, XP, level, items, crypto, rigs, achievements, marriage, dll)
+        ke kondisi awal. Settingan bot (announce channels, config, treasury, market) TIDAK terpengaruh.
+      </p>
+      {!confirm ? (
+        <button className="btn btn-danger" onClick={() => setConfirm(true)}>
+          <Icon name="close" size={14} />
+          Reset Semua Pemain
+        </button>
+      ) : (
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <button className="btn btn-danger" disabled={busy} onClick={doReset}>
+            {busy ? <span className="spinner" /> : <Icon name="close" size={14} />}
+            Konfirmasi Reset All
+          </button>
+          <button className="btn btn-ghost" onClick={() => setConfirm(false)}>
+            Batal
+          </button>
+          <span className="error-text" style={{ fontSize: 12 }}>DESTRUKTIF — tidak bisa di-undo!</span>
+        </div>
+      )}
+    </section>
   );
 }
 

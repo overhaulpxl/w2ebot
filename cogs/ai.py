@@ -42,7 +42,7 @@ def setup(tree, client):
     async def slash_roast(interaction: discord.Interaction, target: discord.Member = None):
         await interaction.response.defer()
         t = target.display_name if target else interaction.user.display_name
-        query = f"Roast (hina dengan lucu dan savage tapi jangan terlalu kasar) orang yang bernama {t}. Gunakan bahasa gaul tongkrongan Indonesia (lo-gue), pedas tapi lucu. JANGAN ada basa-basi pembuka/penutup khas AI. Langsung tembak dengan kalimat roasting-nya."
+        query = f"Roast orang yang bernama {t}. Hina dengan lucu tapi jangan kelewatan kasar. Pakai bahasa Indonesia kasual. Langsung tembak, jangan bertele-tele."
         response = await get_gemini_response(query, interaction.user.id)
         await send_embed(interaction, response)
     
@@ -50,7 +50,7 @@ def setup(tree, client):
     async def slash_rate(interaction: discord.Interaction, target: discord.Member = None):
         await interaction.response.defer()
         t = target.display_name if target else interaction.user.display_name
-        query = f"Berikan rating 1 sampai 10 seberapa keren/cantik/ganteng orang yang bernama {t}, lalu berikan alasan kocak/absurd kenapa kamu memberi nilai tersebut. Gunakan bahasa gaul santai, JANGAN formal, JANGAN ada basa-basi khas AI. Langsung sebut nilainya di awal."
+        query = f"Berikan rating 1 sampai 10 seberapa keren/cantik/ganteng orang yang bernama {t}, lalu kasih alasan lucu kenapa kamu memberi nilai tersebut. Bahasa Indonesia kasual, langsung sebut nilainya di awal."
         response = await get_gemini_response(query, interaction.user.id)
         await send_embed(interaction, response)
     
@@ -59,7 +59,7 @@ def setup(tree, client):
         await interaction.response.defer()
         
         if orang1 == orang2:
-            await send_embed(interaction, "❌ Jomblo ngenes banget nge-ship diri sendiri...")
+            await send_embed(interaction, "❌ Gak bisa nge-ship diri sendiri.")
             return
             
         # Consistent random based on ID (pakai instance lokal, JANGAN reseed PRNG
@@ -67,7 +67,7 @@ def setup(tree, client):
         seed = int(orang1.id) + int(orang2.id)
         match_pct = random.Random(seed).randint(0, 100)
         
-        prompt = f"Buatkan ramalan cinta super singkat dan lucu (bisa sarkas atau romantis) untuk dua orang dengan tingkat kecocokan {match_pct}%. Gunakan bahasa gaul anak discord Indonesia (lo-gue, santai, kocak). JANGAN ada basa-basi khas AI seperti 'Ini dia...' atau 'Semoga...'. Langsung ke ramalannya secara natural."
+        prompt = f"Buatkan ramalan cinta singkat dan lucu untuk dua orang dengan tingkat kecocokan {match_pct}%. Bahasa Indonesia kasual, langsung ke ramalannya."
         try:
             response = await asyncio.to_thread(gemini_client.models.generate_content, model='gemini-2.5-flash', contents=prompt)
             desc = response.text.strip()

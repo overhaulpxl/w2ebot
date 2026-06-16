@@ -36,33 +36,34 @@ def get_help_embed(category: str, guild=None) -> discord.Embed:
 
     elif category == "rpg":
         embed = discord.Embed(
-            title="🎮 Kategori: RPG & Ekonomi Sultan",
-            description="Yuk kumpulkan koin harian, bangun rig tambang kripto fiktif, adopsi pet pembantu, sampai bertarung mengalahkan Raid Boss bersama-sama!",
+            title="🎮 Kategori: RPG & Ekonomi",
+            description="Kumpulkan koin, bangun mining rig, beli pet, dan lawan Raid Boss bareng.",
             color=discord.Color.gold()
         )
         commands = [
-            (f"`{BOT_PREFIX}daily`", "Ambil jatah koin harian gratis (Server Booster mendapatkan koin 2x lipat!)."),
-            (f"`{BOT_PREFIX}weekly`", "Ambil jatah koin mingguan gratis."),
-            (f"`{BOT_PREFIX}work`", "Bekerja di server untuk menghasilkan pundi-pundi koin."),
-            (f"`{BOT_PREFIX}rob @user`", "Mencuri koin dari member lain (Hati-hati, awas tertangkap polisi server!)."),
-            (f"`{BOT_PREFIX}transfer @user <jumlah>`", "Kirim koin secara aman ke member lain."),
-            (f"`{BOT_PREFIX}shop`", "Buka menu toko Sultan Shop untuk membeli item menggunakan tombol interaktif."),
-            (f"`{BOT_PREFIX}buy <item>`", "Beli item incaranmu langsung dari toko."),
-            (f"`{BOT_PREFIX}inventory`", "Cek isi tas inventory milikmu saat ini."),
-            (f"`{BOT_PREFIX}sell <item>`", "Jual kembali item milikmu ke pasar dengan harga setengah koin."),
-            (f"`{BOT_PREFIX}buyrig <tier>`", "Beli mesin mining rig pasif untuk mendapatkan koin ETHR otomatis."),
-            (f"`{BOT_PREFIX}miner`", "Pantau status farm mining rig pasif milikmu."),
-            (f"`{BOT_PREFIX}market`", "Pantau tren naik-turun bursa kripto fiktif terupdate."),
-            (f"`{BOT_PREFIX}portfolio`", "Cek kepemilikan dan nilai aset kripto fiktif milikmu."),
-            (f"`{BOT_PREFIX}buycoin <symbol> <jumlah>`", "Beli kripto pakai Koin (fee 2%, dukung `all`)."),
-            (f"`{BOT_PREFIX}sellcoin <symbol> <jumlah>`", "Jual kripto jadi Koin (fee 2%, dukung `all`)."),
-            (f"`{BOT_PREFIX}tebak <1-10>`", "Bermain tebak angka berhadiah 100 koin."),
-            (f"`{BOT_PREFIX}cf <head/tail> <bet>`", "Judi lempar koin (Coinflip) menggunakan taruhan koin."),
-            (f"`{BOT_PREFIX}blackjack <bet>`", "Bermain blackjack melawan bandar dealer AI."),
-            (f"`{BOT_PREFIX}crash <bet>`", "Judi grafik crash untuk melipatgandakan taruhan koinmu."),
-            (f"`{BOT_PREFIX}attack`", "Ikut menyerang Boss Raid aktif di server secara ramai-ramai."),
-            (f"`{BOT_PREFIX}buypet <slime/wolf/dragon>`", "Adopsi pet agar damage serangan Raid Boss semakin besar."),
-            (f"`{BOT_PREFIX}gacha` & `{BOT_PREFIX}box`", "Lakukan gacha waifu impianmu atau buka Box misterius.")
+            (f"`{BOT_PREFIX}daily`", "Klaim koin harian (Booster dapat bonus +50%)."),
+            (f"`{BOT_PREFIX}weekly`", "Klaim koin mingguan."),
+            (f"`{BOT_PREFIX}work`", "Kerja untuk dapat koin."),
+            (f"`{BOT_PREFIX}rob @user`", "Coba merampok koin member lain (33% peluang berhasil)."),
+            (f"`{BOT_PREFIX}transfer @user <jumlah>`", "Kirim koin ke member lain (pajak 5%)."),
+            (f"`{BOT_PREFIX}shop`", "Buka toko item."),
+            (f"`{BOT_PREFIX}buy <item>`", "Beli item dari toko."),
+            (f"`{BOT_PREFIX}inventory`", "Lihat isi inventory kamu."),
+            (f"`{BOT_PREFIX}sell <item>`", "Jual item dengan harga 50%."),
+            (f"`{BOT_PREFIX}buyrig <tier> <koin>`", "Beli mining rig untuk koin tertentu (cth: `/buyrig 1 ETHR`)."),
+            (f"`{BOT_PREFIX}moverig <tier> <dari> <ke>`", "Pindahkan rig ke koin lain, gratis (cth: `/moverig 2 ETHR LUNA`)."),
+            (f"`{BOT_PREFIX}miner`", "Lihat status mining rig kamu."),
+            (f"`{BOT_PREFIX}market`", "Lihat harga kripto saat ini."),
+            (f"`{BOT_PREFIX}portfolio`", "Lihat kepemilikan dan nilai kripto kamu."),
+            (f"`{BOT_PREFIX}buycoin <symbol> <jumlah>`", "Beli kripto pakai koin (fee 2%, dukung `all`)."),
+            (f"`{BOT_PREFIX}sellcoin <symbol> <jumlah>`", "Jual kripto jadi koin (fee 2%, dukung `all`)."),
+            (f"`{BOT_PREFIX}tebak <1-10>`", "Tebak angka, benar dapat 100 koin."),
+            (f"`{BOT_PREFIX}cf <head/tail> <bet>`", "Coinflip — tebak sisi koin."),
+            (f"`{BOT_PREFIX}blackjack <bet>`", "Main blackjack lawan bandar."),
+            (f"`{BOT_PREFIX}crash <bet>`", "Judi grafik crash."),
+            (f"`{BOT_PREFIX}attack`", "Serang Boss Raid yang sedang aktif."),
+            (f"`{BOT_PREFIX}buypet <slime/wolf/dragon>`", "Beli pet untuk bonus damage Boss Raid."),
+            (f"`{BOT_PREFIX}gacha` & `{BOT_PREFIX}box`", "Gacha item acak atau buka loot box.")
         ]
         for cmd, desc in commands:
             embed.add_field(name=cmd, value=desc, inline=False)
@@ -71,23 +72,23 @@ def get_help_embed(category: str, guild=None) -> discord.Embed:
 
     elif category == "ai":
         embed = discord.Embed(
-            title="🤖 Kategori: Gemini AI & Sosial",
-            description="Tempat mengobrol bareng Gemini AI, bermain kuis trivia, menikah virtual, hingga membuat silsilah keluarga digital.",
+            title="🤖 Kategori: AI & Sosial",
+            description="Chat sama AI, kuis, nikah virtual, dan bikin family tree.",
             color=discord.Color.green()
         )
         commands = [
-            (f"`{BOT_PREFIX}ai <pesan>`", "Tanya apa saja atau mengobrol santai bareng Gemini AI secara instan."),
-            (f"`{BOT_PREFIX}listen`", "Panggil bot ke voice channel untuk mengobrol langsung menggunakan suara."),
-            (f"`{BOT_PREFIX}setpersona <sifat>`", "Ubah kepribadian / sifat bot AI agar gaya responsnya berbeda."),
-            (f"`{BOT_PREFIX}chat <pesan>`", "Aktifkan fitur mengobrol santai tanpa perlu menggunakan prefix."),
-            (f"`{BOT_PREFIX}roast @user`", "Minta AI me-roast member lain secara kocak."),
-            (f"`{BOT_PREFIX}rate @user`", "Minta AI memberikan rating pesona seseorang (skala 1-10) beserta alasan kocak."),
-            (f"`{BOT_PREFIX}shipper @user1 @user2`", "Cek persentase kecocokan jodoh antara dua orang."),
-            (f"`{BOT_PREFIX}marry @user`", "Ajak member idamanmu untuk menikah secara resmi di server."),
-            (f"`{BOT_PREFIX}divorce`", "Ceraikan pasangan nikah virtualmu saat ini."),
-            (f"`{BOT_PREFIX}adopt @user`", "Adopsi member lain untuk dijadikan sebagai anak angkat di silsilah keluarga."),
-            (f"`{BOT_PREFIX}family`", "Membuat gambar bagan silsilah keluarga digitalmu berformat PNG."),
-            (f"`{BOT_PREFIX}quiz`", "Main kuis trivia interaktif dari AI berhadiah koin.")
+            (f"`{BOT_PREFIX}ai <pesan>`", "Chat dengan AI."),
+            (f"`{BOT_PREFIX}listen`", "Panggil bot ke voice channel untuk transkripsi suara."),
+            (f"`{BOT_PREFIX}setpersona <sifat>`", "Ubah kepribadian bot AI."),
+            (f"`{BOT_PREFIX}chat <pesan>`", "Chat tanpa prefix (mode percakapan)."),
+            (f"`{BOT_PREFIX}roast @user`", "Minta AI nge-roast member lain."),
+            (f"`{BOT_PREFIX}rate @user`", "Minta AI kasih rating 1-10 buat seseorang beserta alasannya."),
+            (f"`{BOT_PREFIX}shipper @user1 @user2`", "Cek persentase kecocokan dua orang."),
+            (f"`{BOT_PREFIX}marry @user`", "Ajak member untuk menikah virtual."),
+            (f"`{BOT_PREFIX}divorce`", "Ceraikan pasangan virtual kamu."),
+            (f"`{BOT_PREFIX}adopt @user`", "Adopsi member sebagai anak."),
+            (f"`{BOT_PREFIX}family`", "Lihat family tree kamu (gambar PNG)."),
+            (f"`{BOT_PREFIX}quiz`", "Kuis trivia dari AI.")
         ]
         for cmd, desc in commands:
             embed.add_field(name=cmd, value=desc, inline=False)
@@ -96,19 +97,22 @@ def get_help_embed(category: str, guild=None) -> discord.Embed:
 
     elif category == "utils":
         embed = discord.Embed(
-            title="⚙️ Kategori: Utilitas & Keamanan",
-            description="Pantau status bot, voice radar, serta fitur khusus server booster.",
+            title="⚙️ Kategori: Utilitas",
+            description="Tools dan fitur tambahan server.",
             color=discord.Color.light_grey()
         )
         commands = [
-            (f"`{BOT_PREFIX}checkbots`", "Pantau bot yang sedang aktif atau idle di server."),
-            (f"`{BOT_PREFIX}find @user` atau `{BOT_PREFIX}radar`", "Lacak durasi member lain nongkrong di Voice Channel secara real-time."),
-            (f"`{BOT_PREFIX}ping`", "Periksa latensi kecepatan respons bot saat ini."),
-            (f"`{BOT_PREFIX}poll`", "Buat voting/polling interaktif untuk komunitas."),
-            (f"`{BOT_PREFIX}giveaway`", "Selenggarakan giveaway koin dengan penarikan otomatis (Khusus Admin)."),
-            (f"`{BOT_PREFIX}birthday`", "Daftarkan tanggal lahirmu untuk mendapatkan hadiah 1000 Koin saat hari H."),
-            (f"`{BOT_PREFIX}kas`", "Cek saldo brankas pajak server (Khusus Admin/Owner)."),
-            ("👑 **Booster Perks**", "Kirim gambar ke channel `#custom-role` dengan menyertakan teks Nama Role: [Nama] dan Role Color: [Hex] untuk membuat Custom Role otomatis.")
+            (f"`{BOT_PREFIX}checkbots`", "Lihat bot yang aktif atau idle di server."),
+            (f"`{BOT_PREFIX}find @user`", "Cari member di voice channel mana + berapa lama."),
+            (f"`{BOT_PREFIX}ping`", "Cek latency bot."),
+            (f"`{BOT_PREFIX}poll`", "Buat voting untuk komunitas."),
+            (f"`{BOT_PREFIX}giveaway`", "Buat giveaway dengan timer (Admin only)."),
+            (f"`{BOT_PREFIX}remindme <menit> <pesan>`", "Set reminder/alarm."),
+            (f"`{BOT_PREFIX}birthday <DD-MM>`", "Daftarkan ulang tahun kamu (dapat 1000 Koin saat hari H)."),
+            (f"`{BOT_PREFIX}bg <url>`", "Ganti background profile card kamu."),
+            (f"`{BOT_PREFIX}kas`", "Cek saldo treasury server (Admin only)."),
+            (f"`{BOT_PREFIX}valo`", "Ajak orang main Valorant."),
+            ("👑 **Booster Perks**", "Custom role otomatis via channel #custom-role.")
         ]
         for cmd, desc in commands:
             embed.add_field(name=cmd, value=desc, inline=False)

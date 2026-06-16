@@ -174,23 +174,23 @@ class MinerView(discord.ui.View):
         super().__init__(timeout=90)
         self.user = user
 
-    @discord.ui.button(label="Beli Rig Tier 1 (10k)", style=discord.ButtonStyle.primary, custom_id="buy_rig_1")
+    @discord.ui.button(label="Beli Rig T1 ETHR (10k)", style=discord.ButtonStyle.primary, custom_id="buy_rig_1")
     async def buy_rig_1(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user.id:
             await interaction.response.send_message("❌ Ini bukan miner Anda.", ephemeral=True)
             return
-        await _dispatch(interaction, "buyrig", 1)
+        await _dispatch(interaction, "buyrig", 1, "ETHR")
 
-    @discord.ui.button(label="Beli Rig Tier 2 (30k)", style=discord.ButtonStyle.success, custom_id="buy_rig_2")
+    @discord.ui.button(label="Beli Rig T2 ETHR (30k)", style=discord.ButtonStyle.success, custom_id="buy_rig_2")
     async def buy_rig_2(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user.id:
             await interaction.response.send_message("❌ Ini bukan miner Anda.", ephemeral=True)
             return
-        await _dispatch(interaction, "buyrig", 2)
+        await _dispatch(interaction, "buyrig", 2, "ETHR")
 
-    @discord.ui.button(label="Beli Rig Tier 3 (80k)", style=discord.ButtonStyle.danger, custom_id="buy_rig_3")
+    @discord.ui.button(label="Beli Rig T3 ETHR (80k)", style=discord.ButtonStyle.danger, custom_id="buy_rig_3")
     async def buy_rig_3(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user.id:
             await interaction.response.send_message("❌ Ini bukan miner Anda.", ephemeral=True)
             return
-        await _dispatch(interaction, "buyrig", 3)
+        await _dispatch(interaction, "buyrig", 3, "ETHR")
