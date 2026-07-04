@@ -54,12 +54,13 @@ AI_AUTO_REPLY_CHANNEL_ID=0    # Channel where bot auto-replies without prefix. 0
 | `cogs/rpg.py` | RPG/economy/gambling/mining/boss/crypto commands. |
 | `cogs/ai.py` | Gemini AI chat, persona, roast/rate/shipper. |
 | `cogs/utils.py` | Utilities: ping, poll, giveaway, remindme, birthday, marriage, bg. |
+| `cogs/deal.py` | Middleman transaction system, trust profiles, vouches, and admin panels. |
 | `w2e_help.py` | Interactive help menu (dropdown + buttons). |
 | `w2e_views.py` | Shared UI views (shop/slot/market button callbacks). |
 
 ---
 
-## Features (56 commands)
+## Features (59 commands)
 
 Every command works as both **Slash** (`/daily`) and **Prefix** (`w!daily`).
 
@@ -82,6 +83,14 @@ All bets use atomic `try_spend` (no double-spend via concurrent commands). Minig
 `attack`, `buypet <slime/wolf/dragon>`
 
 Boss spawns hourly (20% chance) or via admin API. Pets add bonus damage.
+
+### Middleman & Trust System
+`deal`, `vouches`, `trust_leaderboard`
+
+- **Secure Transactions**: Full-featured middleman system to securely handle deals between buyer and seller.
+- **Workflow & Proofs**: Integrated fee calculation, proof of payment/transfer upload, and step-by-step confirmation.
+- **Trust Profile**: Earn verified vouches from successful deals, increase Trust Score, and climb the Trust Rank ladder.
+- **Admin & Safety**: Review manual vouches, resolve disputes, and monitor active deals.
 
 ### AI & Social
 `ai`, `chat`, `setpersona`, `roast`, `rate`, `shipper`, `image`, `quiz`, `listen`
