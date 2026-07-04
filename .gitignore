@@ -39,3 +39,8 @@ fonts/
 *.swp
 .DS_Store
 Thumbs.db
+
+# ── Logs & Backups ─────────────────────────────────────────────────────
+logs/
+*.log
+backups/

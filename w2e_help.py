@@ -2,43 +2,55 @@ import discord
 import logging
 import os
 
-BOT_PREFIX = os.getenv('BOT_PREFIX', 'w!')
+BOT_PREFIX = os.getenv("BOT_PREFIX", "w!")
+
 
 def get_help_embed(category: str, guild=None) -> discord.Embed:
     guild_name = guild.name if guild else "W2E Server"
-    
+
     if category == "main":
         embed = discord.Embed(
-            title="📚 Panduan Utama W2E Bot Ecosystem",
+            title="Panduan Utama W2E Bot Ecosystem",
             description=(
-                "Selamat datang di **Way 2 Eternal (W2E)**! Di sini kamu bisa bermain RPG seru, "
-                "mengumpulkan koin, membangun mining rig tambang kripto fiktif, memelihara pet, menikah virtual, "
-                "hingga mengobrol santai bareng Gemini AI.\n\n"
-                "**Pilih kategori di menu dropdown di bawah untuk melihat daftar command lengkapnya!**"
+                "Selamat datang di **Way 2 Eternal (W2E)**. Di sini kamu bisa bermain RPG, "
+                "mengumpulkan koin, membangun mining rig kripto fiktif, memakai fitur sosial, "
+                "dan menjalankan sistem middleman deal.\n\n"
+                "**Pilih kategori di menu dropdown di bawah untuk melihat daftar command.**"
             ),
-            color=discord.Color.blurple()
+            color=discord.Color.blurple(),
         )
         embed.add_field(
-            name="🤖 W2E Bot (Utama & RPG)",
-            value=f"Gunakan prefix `{BOT_PREFIX}` (contoh: `{BOT_PREFIX}daily`, `{BOT_PREFIX}shop`, `{BOT_PREFIX}work`).",
-            inline=False
+            name="W2E Bot (Utama & RPG)",
+            value=f"Gunakan prefix `{BOT_PREFIX}`. Contoh: `{BOT_PREFIX}daily`, `{BOT_PREFIX}shop`, `{BOT_PREFIX}work`.",
+            inline=False,
         )
         embed.add_field(
-            name="🔗 Link Cepat",
+            name="Link Cepat",
             value=(
-                "• **Web Dashboard:** [Klik di sini](http://localhost:8081)\n"
-                "• **Support Server:** [Discord Support](https://discord.gg/way2eternal)"
+                "- **Web Dashboard:** [Klik di sini](http://localhost:8081)\n"
+                "- **Support Server:** [Discord Support](https://discord.gg/way2eternal)"
             ),
-            inline=False
+            inline=False,
         )
-        embed.set_footer(text=f"Panduan W2E • Server: {guild_name}")
+        embed.add_field(
+            name="Kategori Panduan",
+            value=(
+                "**Halaman Utama** - Menu utama & panduan ekosistem W2E\n"
+                "**RPG & Ekonomi** - Mining, blackjack, market, pet, raid boss, dsb\n"
+                "**Gemini AI & Sosial** - Chatbot, voice listener, quiz, jodoh, persona\n"
+                "🛡️ **Middleman & Vouch** - Deal, payment proof, dispute, vouch, trust profile, reports, panels\n"
+                "**Utilitas & Admin** - Booster custom role, bot tracker, radar"
+            ),
+            inline=False,
+        )
+        embed.set_footer(text=f"Panduan W2E - Server: {guild_name}")
         return embed
 
-    elif category == "rpg":
+    if category == "rpg":
         embed = discord.Embed(
-            title="🎮 Kategori: RPG & Ekonomi",
+            title="Kategori: RPG & Ekonomi",
             description="Kumpulkan koin, bangun mining rig, beli pet, dan lawan Raid Boss bareng.",
-            color=discord.Color.gold()
+            color=discord.Color.gold(),
         )
         commands = [
             (f"`{BOT_PREFIX}daily`", "Klaim koin harian (Booster dapat bonus +50%)."),
@@ -50,31 +62,31 @@ def get_help_embed(category: str, guild=None) -> discord.Embed:
             (f"`{BOT_PREFIX}buy <item>`", "Beli item dari toko."),
             (f"`{BOT_PREFIX}inventory`", "Lihat isi inventory kamu."),
             (f"`{BOT_PREFIX}sell <item>`", "Jual item dengan harga 50%."),
-            (f"`{BOT_PREFIX}buyrig <tier> <koin>`", "Beli mining rig untuk koin tertentu (cth: `/buyrig 1 ETHR`)."),
-            (f"`{BOT_PREFIX}moverig <tier> <dari> <ke>`", "Pindahkan rig ke koin lain, gratis (cth: `/moverig 2 ETHR LUNA`)."),
+            (f"`{BOT_PREFIX}buyrig <tier> <koin>`", "Beli mining rig untuk koin tertentu."),
+            (f"`{BOT_PREFIX}moverig <tier> <dari> <ke>`", "Pindahkan rig ke koin lain."),
             (f"`{BOT_PREFIX}miner`", "Lihat status mining rig kamu."),
             (f"`{BOT_PREFIX}market`", "Lihat harga kripto saat ini."),
             (f"`{BOT_PREFIX}portfolio`", "Lihat kepemilikan dan nilai kripto kamu."),
             (f"`{BOT_PREFIX}buycoin <symbol> <jumlah>`", "Beli kripto pakai koin (fee 2%, dukung `all`)."),
             (f"`{BOT_PREFIX}sellcoin <symbol> <jumlah>`", "Jual kripto jadi koin (fee 2%, dukung `all`)."),
             (f"`{BOT_PREFIX}tebak <1-10>`", "Tebak angka, benar dapat 100 koin."),
-            (f"`{BOT_PREFIX}cf <head/tail> <bet>`", "Coinflip — tebak sisi koin."),
+            (f"`{BOT_PREFIX}cf <head/tail> <bet>`", "Coinflip - tebak sisi koin."),
             (f"`{BOT_PREFIX}blackjack <bet>`", "Main blackjack lawan bandar."),
             (f"`{BOT_PREFIX}crash <bet>`", "Judi grafik crash."),
             (f"`{BOT_PREFIX}attack`", "Serang Boss Raid yang sedang aktif."),
             (f"`{BOT_PREFIX}buypet <slime/wolf/dragon>`", "Beli pet untuk bonus damage Boss Raid."),
-            (f"`{BOT_PREFIX}gacha` & `{BOT_PREFIX}box`", "Gacha item acak atau buka loot box.")
+            (f"`{BOT_PREFIX}gacha` & `{BOT_PREFIX}box`", "Gacha item acak atau buka loot box."),
         ]
         for cmd, desc in commands:
             embed.add_field(name=cmd, value=desc, inline=False)
-        embed.set_footer(text=f"Gunakan prefix '{BOT_PREFIX}' sebelum menulis command.")
+        embed.set_footer(text=f"Gunakan prefix `{BOT_PREFIX}` sebelum menulis command.")
         return embed
 
-    elif category == "ai":
+    if category == "ai":
         embed = discord.Embed(
-            title="🤖 Kategori: AI & Sosial",
+            title="Kategori: AI & Sosial",
             description="Chat sama AI, kuis, nikah virtual, dan bikin family tree.",
-            color=discord.Color.green()
+            color=discord.Color.green(),
         )
         commands = [
             (f"`{BOT_PREFIX}ai <pesan>`", "Chat dengan AI."),
@@ -88,18 +100,153 @@ def get_help_embed(category: str, guild=None) -> discord.Embed:
             (f"`{BOT_PREFIX}divorce`", "Ceraikan pasangan virtual kamu."),
             (f"`{BOT_PREFIX}adopt @user`", "Adopsi member sebagai anak."),
             (f"`{BOT_PREFIX}family`", "Lihat family tree kamu (gambar PNG)."),
-            (f"`{BOT_PREFIX}quiz`", "Kuis trivia dari AI.")
+            (f"`{BOT_PREFIX}quiz`", "Kuis trivia dari AI."),
         ]
         for cmd, desc in commands:
             embed.add_field(name=cmd, value=desc, inline=False)
         embed.set_footer(text="Ditenagai oleh Google Gemini AI.")
         return embed
 
-    elif category == "utils":
+    if category == "middleman":
         embed = discord.Embed(
-            title="⚙️ Kategori: Utilitas",
+            title="🛡️ Middleman & Vouch",
+            description="Deal, payment proof, dispute, vouch, trust profile, reports, dan panels.",
+            color=discord.Color.blurple(),
+        )
+        embed.add_field(
+            name="Deal Basics",
+            value=(
+                "`/deal start buyer:@buyer seller:@seller`\n"
+                f"`{BOT_PREFIX}deal start @buyer @seller`\n"
+                "`/deal info deal_id:<id>`\n"
+                f"`{BOT_PREFIX}deal info <deal_id>`\n\n"
+                "Start middleman deal di channel saat ini. Executor menjadi middleman."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Deal Flow",
+            value=(
+                "Form -> Kirim Bukti Payment -> Dana Masuk -> Item Sent -> Buyer Confirm -> "
+                "Kirim Data Pencairan -> Done & Transfer Sukses"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Dispute",
+            value=(
+                "`/deal dispute deal_id:<id> reason:<reason>`\n"
+                "`/deal resolve-dispute`\n"
+                f"`{BOT_PREFIX}deal resolve-dispute <deal_id> <resolution>`\n\n"
+                "Dispute hanya dibuka oleh middleman/staff. Buyer/seller jelaskan kendala di ticket."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Verified Deal Vouch",
+            value=(
+                "`/vouch`\n"
+                f"`{BOT_PREFIX}deal vouch <deal_id> @user <rating> <review>`\n\n"
+                "Verified vouch berasal dari deal yang sudah Completed."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Manual Vouch",
+            value=(
+                "`/deal vouch-panel setup channel:#channel`\n"
+                "`/deal vouch-review-channel set channel:#channel`\n"
+                f"`{BOT_PREFIX}deal vouch-panel setup #channel`\n"
+                f"`{BOT_PREFIX}deal vouch-review-channel set #channel`\n\n"
+                "Member pakai tombol Submit Vouch. Staff approve/reject dari review channel."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Reputation",
+            value=(
+                "`/vouchleaderboard`\n"
+                f"`{BOT_PREFIX}deal leaderboard`\n"
+                f"`{BOT_PREFIX}deal rep @user`\n"
+                f"`{BOT_PREFIX}deal rank @user`\n"
+                f"`{BOT_PREFIX}deal vouches @user`\n\n"
+                "Lihat leaderboard trusted vouch, trust profile, rank, dan riwayat vouch."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Scammer Report & Trust",
+            value=(
+                "`/deal scam-report-panel setup channel:#channel`\n"
+                "`/deal scam-report-review-channel set channel:#channel`\n"
+                "`/deal trust-status view user:@user`\n"
+                "`/deal trust-status set user:@user status:<clear|under_review|blacklisted> reason:<reason>`\n"
+                "`/deal trust-status clear user:@user reason:<reason>`\n\n"
+                "Member pakai tombol Report Scammer. Staff review dan update status trust."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Audit & Archive",
+            value=(
+                "`/deal audit-log set channel:#channel` | `/deal audit-log status` | `/deal audit-log disable`\n"
+                "`/deal archive info deal_id:<id>` | `/deal archive search user:@user`\n"
+                "`/deal archive recent` | `/deal archive backfill`"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Public Trust Panels",
+            value=(
+                "`/deal panel leaderboard-set channel:#channel` | `/deal panel leaderboard-status`\n"
+                "`/deal panel stats-set channel:#channel` | `/deal panel stats-status`\n"
+                "`/deal panel recent-vouches-set channel:#channel` | `/deal panel recent-vouches-status`\n"
+                "`/deal panel completed-deals-set channel:#channel` | `/deal panel completed-deals-status`\n"
+                "`/deal panel refresh panel:<panel>` | `/deal panel disable panel:<panel>`"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Staff Operation Panels",
+            value=(
+                "`/deal panel middleman-status-set channel:#channel` | `/deal panel middleman-status-status`\n"
+                "`/deal panel active-deals-set channel:#channel` | `/deal panel active-deals-status`\n"
+                "`/deal panel dispute-board-set channel:#channel` | `/deal panel dispute-board-status`\n"
+                "`/deal panel trust-warning-set channel:#channel` | `/deal panel trust-warning-status`\n"
+                "`/deal panel refresh panel:<panel>` | `/deal panel disable panel:<panel>`\n"
+                "`/deal mm-status set status:<available|busy|offline|unavailable> note:<opsional>`\n"
+                "`/deal mm-status clear`"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Command Ownership",
+            value=(
+                "`/leaderboard` dan "
+                f"`{BOT_PREFIX}leaderboard` = RPG leaderboard\n"
+                "`/vouchleaderboard` dan "
+                f"`{BOT_PREFIX}deal leaderboard` = Trusted Vouch leaderboard\n"
+                f"`{BOT_PREFIX}rank` = RPG rank\n"
+                f"`{BOT_PREFIX}deal rank` = Trust/Vouch rank"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Prefix Reminder",
+            value=(
+                f"Sebagian besar command staff juga mendukung format `{BOT_PREFIX}deal ...`. "
+                "Gunakan slash command untuk melihat nama opsi yang lengkap."
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="Data sensitif seperti proof, payout, dan evidence tidak ditampilkan di panel publik.")
+        return embed
+
+    if category == "utils":
+        embed = discord.Embed(
+            title="Kategori: Utilitas",
             description="Tools dan fitur tambahan server.",
-            color=discord.Color.light_grey()
+            color=discord.Color.light_grey(),
         )
         commands = [
             (f"`{BOT_PREFIX}checkbots`", "Lihat bot yang aktif atau idle di server."),
@@ -108,35 +255,40 @@ def get_help_embed(category: str, guild=None) -> discord.Embed:
             (f"`{BOT_PREFIX}poll`", "Buat voting untuk komunitas."),
             (f"`{BOT_PREFIX}giveaway`", "Buat giveaway dengan timer (Admin only)."),
             (f"`{BOT_PREFIX}remindme <menit> <pesan>`", "Set reminder/alarm."),
-            (f"`{BOT_PREFIX}birthday <DD-MM>`", "Daftarkan ulang tahun kamu (dapat 1000 Koin saat hari H)."),
+            (f"`{BOT_PREFIX}birthday <DD-MM>`", "Daftarkan ulang tahun kamu."),
             (f"`{BOT_PREFIX}bg <url>`", "Ganti background profile card kamu."),
             (f"`{BOT_PREFIX}kas`", "Cek saldo treasury server (Admin only)."),
             (f"`{BOT_PREFIX}valo`", "Ajak orang main Valorant."),
-            ("👑 **Booster Perks**", "Custom role otomatis via channel #custom-role.")
+            ("**Booster Perks**", "Custom role otomatis via channel #custom-role."),
         ]
         for cmd, desc in commands:
             embed.add_field(name=cmd, value=desc, inline=False)
         return embed
 
+    return get_help_embed("main", guild)
+
+
 class HelpSelect(discord.ui.Select):
     def __init__(self, current_user_id=None):
         self.current_user_id = current_user_id
         options = [
-            discord.SelectOption(label="Halaman Utama", description="Menu utama & panduan ekosistem W2E", emoji="🏠", value="main"),
-            discord.SelectOption(label="RPG & Ekonomi", description="Mining, blackjack, market, pet, raid boss, dsb", emoji="🎮", value="rpg"),
-            discord.SelectOption(label="Gemini AI & Sosial", description="Chatbot, voice listener, quiz, jodoh, persona", emoji="🤖", value="ai"),
-            discord.SelectOption(label="Utilitas & Admin", description="Booster custom role, bot tracker, radar", emoji="⚙️", value="utils")
+            discord.SelectOption(label="Halaman Utama", description="Menu utama & panduan ekosistem W2E", value="main"),
+            discord.SelectOption(label="RPG & Ekonomi", description="Mining, blackjack, market, pet, raid boss, dsb", value="rpg"),
+            discord.SelectOption(label="Gemini AI & Sosial", description="Chatbot, voice listener, quiz, jodoh, persona", value="ai"),
+            discord.SelectOption(label="Middleman & Vouch", description="Deal, vouch, trust profile, reports, panels", emoji="🛡️", value="middleman"),
+            discord.SelectOption(label="Utilitas & Admin", description="Booster custom role, bot tracker, radar", value="utils"),
         ]
         super().__init__(placeholder="Pilih kategori panduan...", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: discord.Interaction):
         if self.current_user_id and interaction.user.id != self.current_user_id:
-            await interaction.response.send_message("❌ Hanya pengirim command awal yang bisa berinteraksi dengan menu ini.", ephemeral=True)
+            await interaction.response.send_message("Hanya pengirim command awal yang bisa berinteraksi dengan menu ini.", ephemeral=True)
             return
 
         value = self.values[0]
         embed = get_help_embed(value, interaction.guild)
         await interaction.response.edit_message(embed=embed, view=self.view)
+
 
 class W2EHelpView(discord.ui.View):
     def __init__(self, current_user_id=None):
@@ -144,15 +296,11 @@ class W2EHelpView(discord.ui.View):
         self.current_user_id = current_user_id
         self.message = None
 
-        # Add the dropdown select menu
         self.add_item(HelpSelect(current_user_id))
-
-        # Add quick link buttons
-        self.add_item(discord.ui.Button(label="Support Server", url="https://discord.gg/way2eternal", style=discord.ButtonStyle.link, emoji="💬"))
-        self.add_item(discord.ui.Button(label="Dashboard", url="http://localhost:8081", style=discord.ButtonStyle.link, emoji="📊"))
+        self.add_item(discord.ui.Button(label="Support Server", url="https://discord.gg/way2eternal", style=discord.ButtonStyle.link))
+        self.add_item(discord.ui.Button(label="Dashboard", url="http://localhost:8081", style=discord.ButtonStyle.link))
 
     async def on_timeout(self):
-        # Disable select menu on timeout and push the change to Discord
         for child in self.children:
             if isinstance(child, discord.ui.Select):
                 child.disabled = True
@@ -162,36 +310,34 @@ class W2EHelpView(discord.ui.View):
             except discord.HTTPException:
                 pass
 
+
 async def send_w2e_help(target, current_user_id=None):
     """
-    Kirim menu bantuan W2E interaktif menggunakan Dropdown dan Button.
-    Mendukung target berupa:
-      - discord.Interaction (Slash Command)
-      - discord.ext.commands.Context (Prefix Command di commands.Bot)
-      - discord.Message (on_message di discord.Client)
+    Kirim menu bantuan W2E interaktif menggunakan dropdown dan button.
+    Mendukung discord.Interaction, Context/channel-like target, dan discord.Message.
     """
     guild = None
     user_id = current_user_id
-    
+
     if isinstance(target, discord.Interaction):
         guild = target.guild
         if not user_id:
             user_id = target.user.id
-    elif hasattr(target, 'guild'):
+    elif hasattr(target, "guild"):
         guild = target.guild
-        if not user_id and hasattr(target, 'author'):
+        if not user_id and hasattr(target, "author"):
             user_id = target.author.id
 
     embed = get_help_embed("main", guild)
     view = W2EHelpView(user_id)
-    
+
     if isinstance(target, discord.Interaction):
         if target.response.is_done():
             view.message = await target.followup.send(embed=embed, view=view, wait=True)
         else:
             await target.response.send_message(embed=embed, view=view)
             view.message = await target.original_response()
-    elif hasattr(target, 'send'): # commands.Context or channel
+    elif hasattr(target, "send"):
         view.message = await target.send(embed=embed, view=view)
     elif isinstance(target, discord.Message):
         view.message = await target.channel.send(embed=embed, view=view)

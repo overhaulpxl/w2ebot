@@ -14,6 +14,7 @@ import io
 import json
 import re
 import hmac
+import hashlib
 
 import math
 
@@ -144,6 +145,468 @@ def _init_db():
             source TEXT
         )
     ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS dealAuditLogConfig (
+            guildId TEXT PRIMARY KEY,
+            channelId TEXT,
+            enabled INTEGER DEFAULT 0,
+            createdAt TEXT,
+            updatedAt TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS DealConfig (
+            guildId TEXT PRIMARY KEY,
+            middlemanRoleId TEXT,
+            ownerRoleId TEXT,
+            dealLogChannelId TEXT,
+            vouchChannelId TEXT,
+            dealStaffRoleIds TEXT DEFAULT '[]',
+            allowedTicketCategoryIds TEXT DEFAULT '[]',
+            dealIdPrefix TEXT DEFAULT 'MM',
+            pingCooldownSeconds INTEGER DEFAULT 3600,
+            reminderEnabled INTEGER DEFAULT 0,
+            reminderIntervals TEXT DEFAULT '{}',
+            requirePaymentProof INTEGER DEFAULT 0,
+            requireTransferProof INTEGER DEFAULT 0,
+            allowUserCancelRequest INTEGER DEFAULT 1,
+            autoTimeoutEnabled INTEGER DEFAULT 0,
+            trustedRoleThreshold INTEGER DEFAULT 0,
+            createdAt TEXT,
+            updatedAt TEXT
+        )
+    ''')
+    existing_config_cols = {row[1] for row in conn.execute("PRAGMA table_info(DealConfig)").fetchall()}
+    if "ownerRoleId" not in existing_config_cols:
+        conn.execute("ALTER TABLE DealConfig ADD COLUMN ownerRoleId TEXT")
+    if "vouchChannelId" not in existing_config_cols:
+        conn.execute("ALTER TABLE DealConfig ADD COLUMN vouchChannelId TEXT")
+    config_columns_to_add = {
+        "dealStaffRoleIds": "TEXT DEFAULT '[]'",
+        "pingCooldownSeconds": "INTEGER DEFAULT 3600",
+        "reminderEnabled": "INTEGER DEFAULT 0",
+        "reminderIntervals": "TEXT DEFAULT '{}'",
+        "requirePaymentProof": "INTEGER DEFAULT 0",
+        "requireTransferProof": "INTEGER DEFAULT 0",
+        "allowUserCancelRequest": "INTEGER DEFAULT 1",
+        "autoTimeoutEnabled": "INTEGER DEFAULT 0",
+        "trustedRoleThreshold": "INTEGER DEFAULT 0",
+    }
+    for col, ddl in config_columns_to_add.items():
+        if col not in existing_config_cols:
+            conn.execute(f"ALTER TABLE DealConfig ADD COLUMN {col} {ddl}")
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS Deal (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            dealId TEXT,
+            guildId TEXT NOT NULL,
+            ticketChannelId TEXT NOT NULL,
+            createdById TEXT NOT NULL,
+            buyerId TEXT NOT NULL,
+            sellerId TEXT NOT NULL,
+            middlemanId TEXT NOT NULL,
+            paymentPenjual TEXT,
+            paymentPembeli TEXT,
+            nominalItem INTEGER,
+            feeType TEXT,
+            mmFee INTEGER,
+            buyerPays INTEGER,
+            sellerReceives INTEGER,
+            description TEXT,
+            status TEXT NOT NULL DEFAULT 'Menunggu Form',
+            warningMessageId TEXT,
+            summaryMessageId TEXT,
+            vouchProgressMessageId TEXT,
+            cancelledById TEXT,
+            cancelledAt TEXT,
+            cancelReason TEXT,
+            disputedById TEXT,
+            disputedAt TEXT,
+            disputeReason TEXT,
+            disputeProofUrl TEXT,
+            disputePreviousStatus TEXT,
+            statusBeforeDispute TEXT,
+            disputeResolvedById TEXT,
+            disputeResolvedAt TEXT,
+            disputeResolution TEXT,
+            paymentProofUrl TEXT,
+            paymentProofNotes TEXT,
+            paymentProofMessageId TEXT,
+            paymentProofChannelId TEXT,
+            paymentProofSubmittedById TEXT,
+            paymentProofSubmittedAt TEXT,
+            transferProofUrl TEXT,
+            transferProofNotes TEXT,
+            transferProofMessageId TEXT,
+            transferProofChannelId TEXT,
+            transferProofSubmittedById TEXT,
+            transferProofSubmittedAt TEXT,
+            sellerPayoutPlatform TEXT,
+            sellerPayoutAccount TEXT,
+            sellerPayoutName TEXT,
+            sellerPayoutSubmittedById TEXT,
+            sellerPayoutSubmittedAt TEXT,
+            formSubmittedById TEXT,
+            formSubmittedAt TEXT,
+            fundsReceivedNotes TEXT,
+            fundsReceivedById TEXT,
+            fundsReceivedAt TEXT,
+            itemSentById TEXT,
+            itemSentAt TEXT,
+            buyerConfirmedById TEXT,
+            buyerConfirmedAt TEXT,
+            completedById TEXT,
+            completedAt TEXT,
+            isVouchEligible INTEGER DEFAULT 0,
+            createdAt TEXT,
+            updatedAt TEXT,
+            UNIQUE(guildId, dealId)
+        )
+    ''')
+    existing_deal_cols = {row[1] for row in conn.execute("PRAGMA table_info(Deal)").fetchall()}
+    deal_columns_to_add = {
+        "paymentProofUrl": "TEXT",
+        "paymentProofNotes": "TEXT",
+        "paymentProofMessageId": "TEXT",
+        "paymentProofChannelId": "TEXT",
+        "paymentProofSubmittedById": "TEXT",
+        "paymentProofSubmittedAt": "TEXT",
+        "transferProofUrl": "TEXT",
+        "transferProofNotes": "TEXT",
+        "transferProofMessageId": "TEXT",
+        "transferProofChannelId": "TEXT",
+        "transferProofSubmittedById": "TEXT",
+        "transferProofSubmittedAt": "TEXT",
+        "sellerPayoutPlatform": "TEXT",
+        "sellerPayoutAccount": "TEXT",
+        "sellerPayoutName": "TEXT",
+        "sellerPayoutSubmittedById": "TEXT",
+        "sellerPayoutSubmittedAt": "TEXT",
+        "formSubmittedById": "TEXT",
+        "formSubmittedAt": "TEXT",
+        "fundsReceivedNotes": "TEXT",
+        "fundsReceivedById": "TEXT",
+        "fundsReceivedAt": "TEXT",
+        "itemSentById": "TEXT",
+        "itemSentAt": "TEXT",
+        "buyerConfirmedById": "TEXT",
+        "buyerConfirmedAt": "TEXT",
+        "completedById": "TEXT",
+        "completedAt": "TEXT",
+        "isVouchEligible": "INTEGER DEFAULT 0",
+        "vouchProgressMessageId": "TEXT",
+        "disputedById": "TEXT",
+        "disputedAt": "TEXT",
+        "disputeReason": "TEXT",
+        "disputeProofUrl": "TEXT",
+        "disputePreviousStatus": "TEXT",
+        "statusBeforeDispute": "TEXT",
+        "disputeResolvedById": "TEXT",
+        "disputeResolvedAt": "TEXT",
+        "disputeResolution": "TEXT",
+    }
+    for col, ddl in deal_columns_to_add.items():
+        if col not in existing_deal_cols:
+            conn.execute(f"ALTER TABLE Deal ADD COLUMN {col} {ddl}")
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS DealLog (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guildId TEXT,
+            dealId TEXT,
+            action TEXT,
+            actorId TEXT,
+            oldValue TEXT,
+            newValue TEXT,
+            reason TEXT,
+            createdAt TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS Vouch (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guildId TEXT,
+            dealId TEXT,
+            reviewerId TEXT,
+            targetId TEXT,
+            reviewerRole TEXT,
+            targetRole TEXT,
+            rating INTEGER,
+            review TEXT,
+            proofUrl TEXT,
+            verifiedDeal INTEGER DEFAULT 1,
+            status TEXT DEFAULT 'active',
+            removedBy TEXT,
+            removeReason TEXT,
+            createdAt TEXT,
+            updatedAt TEXT,
+            UNIQUE(guildId, dealId, reviewerId, targetId)
+        )
+    ''')
+    existing_vouch_cols = {row[1] for row in conn.execute("PRAGMA table_info(Vouch)").fetchall()}
+    vouch_columns_to_add = {
+        "vouchType": "TEXT",
+        "approvalStatus": "TEXT",
+        "proofCount": "INTEGER DEFAULT 0",
+        "proofData": "TEXT",
+        "proofSubmittedAt": "TEXT",
+        "approvedById": "TEXT",
+        "approvedAt": "TEXT",
+        "rejectedById": "TEXT",
+        "rejectedAt": "TEXT",
+        "rejectionReason": "TEXT",
+        "context": "TEXT",
+        "staffNotes": "TEXT",
+        "targetRaw": "TEXT",
+        "targetResolved": "INTEGER DEFAULT 1",
+    }
+    for col, ddl in vouch_columns_to_add.items():
+        if col not in existing_vouch_cols:
+            conn.execute(f"ALTER TABLE Vouch ADD COLUMN {col} {ddl}")
+    conn.execute("UPDATE Vouch SET vouchType='verified_deal' WHERE vouchType IS NULL")
+    conn.execute("UPDATE Vouch SET approvalStatus=CASE WHEN status='removed' THEN 'removed' ELSE 'verified' END WHERE approvalStatus IS NULL")
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS DealNote (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guildId TEXT,
+            dealId TEXT,
+            actorId TEXT,
+            note TEXT,
+            createdAt TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS DealReminderLog (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guildId TEXT,
+            dealId TEXT,
+            reminderType TEXT,
+            sentAt TEXT,
+            UNIQUE(guildId, dealId, reminderType)
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS dealArchives (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guildId TEXT,
+            dealId TEXT,
+            channelId TEXT,
+            buyerId TEXT,
+            sellerId TEXT,
+            middlemanId TEXT,
+            finalStatus TEXT,
+            paymentProofSubmitted INTEGER DEFAULT 0,
+            transferProofSubmitted INTEGER DEFAULT 0,
+            vouchEligible INTEGER DEFAULT 0,
+            disputeOpened INTEGER DEFAULT 0,
+            disputeResolved INTEGER DEFAULT 0,
+            cancelled INTEGER DEFAULT 0,
+            completed INTEGER DEFAULT 0,
+            finalActionById TEXT,
+            cancelledById TEXT,
+            completedById TEXT,
+            disputeOpenedById TEXT,
+            disputeResolvedById TEXT,
+            safeReason TEXT,
+            safeResolution TEXT,
+            createdAt TEXT,
+            finalizedAt TEXT,
+            archivedAt TEXT,
+            UNIQUE(guildId, dealId)
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS dealPanels (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guildId TEXT,
+            panelType TEXT,
+            channelId TEXT,
+            messageId TEXT,
+            enabled INTEGER DEFAULT 0,
+            lastPayloadHash TEXT,
+            createdAt TEXT,
+            updatedAt TEXT,
+            UNIQUE(guildId, panelType)
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS dealPanelEvents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guildId TEXT,
+            panelType TEXT,
+            eventType TEXT,
+            eventKey TEXT,
+            messageId TEXT,
+            channelId TEXT,
+            createdAt TEXT,
+            UNIQUE(guildId, panelType, eventKey)
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS middlemanStatus (
+            guildId TEXT,
+            userId TEXT,
+            status TEXT DEFAULT 'offline',
+            note TEXT,
+            updatedAt TEXT,
+            updatedById TEXT,
+            createdAt TEXT,
+            PRIMARY KEY (guildId, userId)
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS rateLimitEvents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guildId TEXT,
+            userId TEXT,
+            actionType TEXT,
+            targetId TEXT,
+            eventKey TEXT,
+            createdAt TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS VouchReport (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guildId TEXT,
+            vouchId INTEGER,
+            reporterId TEXT,
+            reason TEXT,
+            proofUrl TEXT,
+            status TEXT DEFAULT 'open',
+            handledBy TEXT,
+            handledAt TEXT,
+            createdAt TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS manualVouchReviewConfig (
+            guildId TEXT PRIMARY KEY,
+            reviewChannelId TEXT,
+            enabled INTEGER DEFAULT 0,
+            createdAt TEXT,
+            updatedAt TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS manualVouchPanelConfig (
+            guildId TEXT PRIMARY KEY,
+            channelId TEXT,
+            messageId TEXT,
+            enabled INTEGER DEFAULT 0,
+            createdAt TEXT,
+            updatedAt TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS scammerReports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guildId TEXT,
+            reporterId TEXT,
+            reportedUserId TEXT,
+            reportedRaw TEXT,
+            reportedResolved INTEGER DEFAULT 0,
+            reason TEXT,
+            chronology TEXT,
+            nominalItem TEXT,
+            notes TEXT,
+            proofCount INTEGER DEFAULT 0,
+            proofData TEXT,
+            proofSubmittedAt TEXT,
+            status TEXT DEFAULT 'pending',
+            reviewMessageId TEXT,
+            reviewChannelId TEXT,
+            evidenceThreadId TEXT,
+            reviewedById TEXT,
+            rejectedById TEXT,
+            rejectedAt TEXT,
+            rejectionReason TEXT,
+            resolvedById TEXT,
+            resolvedAt TEXT,
+            resolution TEXT,
+            staffNotes TEXT,
+            createdAt TEXT,
+            updatedAt TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS scamReportReviewConfig (
+            guildId TEXT PRIMARY KEY,
+            reviewChannelId TEXT,
+            enabled INTEGER DEFAULT 0,
+            createdAt TEXT,
+            updatedAt TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS scamReportPanelConfig (
+            guildId TEXT PRIMARY KEY,
+            channelId TEXT,
+            messageId TEXT,
+            enabled INTEGER DEFAULT 0,
+            createdAt TEXT,
+            updatedAt TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS trustModerationStatus (
+            guildId TEXT,
+            userId TEXT,
+            status TEXT DEFAULT 'clear',
+            reason TEXT,
+            sourceType TEXT,
+            sourceId TEXT,
+            updatedById TEXT,
+            updatedAt TEXT,
+            createdAt TEXT,
+            PRIMARY KEY (guildId, userId)
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS UserReputation (
+            guildId TEXT,
+            userId TEXT,
+            totalVouches INTEGER DEFAULT 0,
+            verifiedVouches INTEGER DEFAULT 0,
+            verifiedDealVouches INTEGER DEFAULT 0,
+            manualApprovedVouches INTEGER DEFAULT 0,
+            averageRating REAL DEFAULT 0,
+            trustScore REAL DEFAULT 0,
+            buyerVouches INTEGER DEFAULT 0,
+            sellerVouches INTEGER DEFAULT 0,
+            middlemanVouches INTEGER DEFAULT 0,
+            removedVouches INTEGER DEFAULT 0,
+            reports INTEGER DEFAULT 0,
+            trustLevel TEXT DEFAULT 'New User',
+            updatedAt TEXT,
+            PRIMARY KEY (guildId, userId)
+        )
+    ''')
+    existing_rep_cols = {row[1] for row in conn.execute("PRAGMA table_info(UserReputation)").fetchall()}
+    if "verifiedDealVouches" not in existing_rep_cols:
+        conn.execute("ALTER TABLE UserReputation ADD COLUMN verifiedDealVouches INTEGER DEFAULT 0")
+    if "manualApprovedVouches" not in existing_rep_cols:
+        conn.execute("ALTER TABLE UserReputation ADD COLUMN manualApprovedVouches INTEGER DEFAULT 0")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_deal_channel_status ON Deal(ticketChannelId, status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_deal_log_deal ON DealLog(guildId, dealId)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_vouch_deal ON Vouch(guildId, dealId)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_deal_note_deal ON DealNote(guildId, dealId)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_deal_reminder_due ON DealReminderLog(guildId, dealId, reminderType)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_deal_archive_status ON dealArchives(guildId, finalStatus)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_deal_archive_buyer ON dealArchives(guildId, buyerId)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_deal_archive_seller ON dealArchives(guildId, sellerId)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_deal_archive_middleman ON dealArchives(guildId, middlemanId)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_deal_archive_archived ON dealArchives(guildId, archivedAt)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_deal_panels_type ON dealPanels(guildId, panelType)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_deal_panel_events_type ON dealPanelEvents(guildId, panelType)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_deal_panel_events_created ON dealPanelEvents(createdAt)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_middleman_status_status ON middlemanStatus(guildId, status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_rate_limit_events_lookup ON rateLimitEvents(guildId, userId, actionType, createdAt)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_rate_limit_events_key ON rateLimitEvents(guildId, eventKey, createdAt)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_vouch_target ON Vouch(guildId, targetId, status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_vouch_approval ON Vouch(guildId, approvalStatus, vouchType)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_vouch_report_vouch ON VouchReport(guildId, vouchId, status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_scam_report_status ON scammerReports(guildId, status, reportedUserId)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_trust_moderation_status ON trustModerationStatus(guildId, status)")
     conn.commit()
     conn.close()
 
@@ -1527,6 +1990,12 @@ async def crypto_mining_loop():
 async def on_ready():
     if not clean_caches.is_running():
         clean_caches.start()
+    if deal_phase_at_least(5) and not deal_reminder_loop.is_running():
+        deal_reminder_loop.start()
+    if not public_trust_panel_loop.is_running():
+        public_trust_panel_loop.start()
+    if not staff_operation_panel_loop.is_running():
+        staff_operation_panel_loop.start()
     # Single Server Lock
     for guild in client.guilds:
         if guild.id != ALLOWED_SERVER_ID:
@@ -1542,6 +2011,8 @@ async def on_ready():
     client.loop.create_task(boss_raid_loop())
     client.loop.create_task(crypto_mining_loop())
     client.loop.create_task(resume_scheduled_jobs())
+    client.loop.create_task(refresh_all_public_trust_panels())
+    client.loop.create_task(refresh_all_staff_operation_panels())
     logging.info(f'We have logged in as {client.user}')
 
 @web.middleware
@@ -2684,6 +3155,3334 @@ async def write_audit(action, target_id=None, detail=None, source="api"):
         logging.error(f"write_audit error: {e}")
 
 
+def _audit_now():
+    return datetime.utcnow().isoformat() + "Z"
+
+
+def _audit_safe_text(value, max_length=180):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    text = re.sub(r"\s+", " ", text)
+    if len(text) > max_length:
+        return text[: max_length - 1].rstrip() + "…"
+    return text
+
+
+def _audit_display(value):
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple, set)):
+        parts = [_audit_display(item) for item in value]
+        return "\n".join(part for part in parts if part) or None
+    mention = getattr(value, "mention", None)
+    if mention:
+        return mention
+    display_name = getattr(value, "display_name", None) or getattr(value, "global_name", None) or getattr(value, "name", None)
+    if display_name:
+        return f"@{display_name}" if isinstance(value, (discord.Member, discord.User)) else str(display_name)
+    text = str(value).strip()
+    return text or None
+
+
+async def get_deal_audit_log_config(guild_id):
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT guildId, channelId, enabled, createdAt, updatedAt FROM dealAuditLogConfig WHERE guildId=?",
+                (str(guild_id),),
+            ) as cursor:
+                row = await cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "guildId": row[0],
+            "channelId": row[1],
+            "enabled": bool(row[2]),
+            "createdAt": row[3],
+            "updatedAt": row[4],
+        }
+    except Exception as e:
+        logging.error(f"get_deal_audit_log_config error: {e}")
+        return None
+
+
+async def set_deal_audit_log_config(guild_id, channel_id, enabled=True):
+    now = _audit_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO dealAuditLogConfig (guildId, channelId, enabled, createdAt, updatedAt)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(guildId) DO UPDATE SET
+                channelId=excluded.channelId,
+                enabled=excluded.enabled,
+                updatedAt=excluded.updatedAt
+            """,
+            (str(guild_id), str(channel_id) if channel_id is not None else None, int(bool(enabled)), now, now),
+        )
+        await db.commit()
+    return await get_deal_audit_log_config(guild_id)
+
+
+async def disable_deal_audit_log(guild_id):
+    now = _audit_now()
+    current = await get_deal_audit_log_config(guild_id)
+    channel_id = current.get("channelId") if current else None
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO dealAuditLogConfig (guildId, channelId, enabled, createdAt, updatedAt)
+            VALUES (?, ?, 0, ?, ?)
+            ON CONFLICT(guildId) DO UPDATE SET
+                enabled=0,
+                updatedAt=excluded.updatedAt
+            """,
+            (str(guild_id), str(channel_id) if channel_id is not None else None, now, now),
+        )
+        await db.commit()
+    return await get_deal_audit_log_config(guild_id)
+
+
+async def send_deal_audit_log(
+    guild,
+    action,
+    actor=None,
+    target=None,
+    deal_id=None,
+    vouch_id=None,
+    report_id=None,
+    reason=None,
+    note=None,
+    metadata=None,
+):
+    try:
+        if not guild:
+            return
+        config = await get_deal_audit_log_config(guild.id)
+        if not config or not config.get("enabled") or not config.get("channelId"):
+            return
+        channel = guild.get_channel(int(config["channelId"]))
+        if not channel:
+            try:
+                channel = await guild.fetch_channel(int(config["channelId"]))
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError, TypeError):
+                return
+        embed = discord.Embed(title="🛡️ Staff Audit Log", color=0x5865F2)
+        embed.timestamp = datetime.utcnow()
+        fields = [
+            ("Action", _audit_safe_text(action, 100)),
+            ("Actor", _audit_display(actor)),
+            ("Target", _audit_display(target)),
+            ("Deal ID", _audit_safe_text(deal_id, 80)),
+            ("Vouch ID", _audit_safe_text(vouch_id, 40)),
+            ("Report ID", _audit_safe_text(report_id, 40)),
+            ("Reason", _audit_safe_text(reason)),
+            ("Note", _audit_safe_text(note)),
+        ]
+        safe_metadata_keys = {"status", "old_status", "new_status", "final_status"}
+        if isinstance(metadata, dict):
+            safe_lines = []
+            for key, value in metadata.items():
+                key_text = str(key).strip().lower()
+                if key_text in safe_metadata_keys:
+                    safe_value = _audit_safe_text(value, 80)
+                    if safe_value:
+                        safe_lines.append(f"{key}: {safe_value}")
+            if safe_lines:
+                fields.append(("Metadata", "\n".join(safe_lines)))
+        for name, value in fields:
+            if value:
+                embed.add_field(name=name, value=str(value), inline=False)
+        embed.set_footer(text="W2E Deal Audit")
+        await channel.send(embed=embed)
+    except Exception as e:
+        logging.error(f"send_deal_audit_log error: {e}")
+
+
+DEAL_STATUS_PENDING_FORM = "Menunggu Form"
+DEAL_STATUS_WAITING_FUNDS = "Menunggu Dana Masuk"
+DEAL_STATUS_FUNDS_RECEIVED = "Dana Masuk"
+DEAL_STATUS_ITEM_SENT = "Item Sent"
+DEAL_STATUS_BUYER_CONFIRMED = "Buyer Confirmed"
+DEAL_STATUS_COMPLETED = "Completed"
+DEAL_STATUS_DISPUTED = "Disputed"
+DEAL_ACTIVE_STATUSES = (
+    DEAL_STATUS_PENDING_FORM,
+    DEAL_STATUS_WAITING_FUNDS,
+    DEAL_STATUS_FUNDS_RECEIVED,
+    DEAL_STATUS_ITEM_SENT,
+    DEAL_STATUS_BUYER_CONFIRMED,
+    DEAL_STATUS_DISPUTED,
+)
+DEAL_CLOSED_STATUSES = ("Completed", "Cancelled", "Expired", "Voided/Duplicate")
+DEAL_REQUIRED_PERMISSION_NAMES = (
+    "view_channel",
+    "send_messages",
+    "read_message_history",
+    "attach_files",
+    "embed_links",
+    "use_application_commands",
+)
+DEAL_SETUP_INCOMPLETE_MESSAGE = "Setup belum lengkap. Admin harus mengatur role staff deal terlebih dahulu."
+
+
+def _load_deal_system_phase():
+    try:
+        phase = int(os.getenv("DEAL_SYSTEM_PHASE", "6"))
+    except (TypeError, ValueError):
+        phase = 6
+    return min(6, max(1, phase))
+
+
+DEAL_SYSTEM_PHASE = _load_deal_system_phase()
+logging.info(f"[Deal System] DEAL_SYSTEM_PHASE = {DEAL_SYSTEM_PHASE}")
+
+
+def deal_phase_at_least(phase):
+    return DEAL_SYSTEM_PHASE >= int(phase)
+
+
+DEAL_DEFAULT_REMINDER_INTERVALS = {
+    "form_not_submitted_seconds": 2 * 60 * 60,
+    "waiting_funds_seconds": 6 * 60 * 60,
+    "funds_no_confirm_seconds": 24 * 60 * 60,
+    "disputed_seconds": 24 * 60 * 60,
+    "timeout_seconds": 7 * 24 * 60 * 60,
+}
+DEAL_COLUMNS = (
+    "id", "dealId", "guildId", "ticketChannelId", "createdById", "buyerId",
+    "sellerId", "middlemanId", "paymentPenjual", "paymentPembeli",
+    "nominalItem", "feeType", "mmFee", "buyerPays", "sellerReceives",
+    "description", "status", "warningMessageId", "summaryMessageId",
+    "vouchProgressMessageId", "cancelledById", "cancelledAt", "cancelReason",
+    "disputedById", "disputedAt", "disputeReason", "disputeProofUrl",
+    "disputePreviousStatus", "statusBeforeDispute", "disputeResolvedById", "disputeResolvedAt",
+    "disputeResolution", "paymentProofUrl",
+    "paymentProofNotes", "paymentProofMessageId", "paymentProofChannelId",
+    "paymentProofSubmittedById", "paymentProofSubmittedAt", "transferProofUrl",
+    "transferProofNotes", "transferProofMessageId", "transferProofChannelId",
+    "transferProofSubmittedById", "transferProofSubmittedAt", "sellerPayoutPlatform",
+    "sellerPayoutAccount", "sellerPayoutName", "sellerPayoutSubmittedById",
+    "sellerPayoutSubmittedAt", "formSubmittedById", "formSubmittedAt", "fundsReceivedNotes",
+    "fundsReceivedById", "fundsReceivedAt", "itemSentById", "itemSentAt",
+    "buyerConfirmedById", "buyerConfirmedAt", "completedById", "completedAt",
+    "isVouchEligible", "createdAt", "updatedAt",
+)
+DEAL_SELECT = ", ".join(DEAL_COLUMNS)
+DEAL_ARCHIVE_COLUMNS = (
+    "id", "guildId", "dealId", "channelId", "buyerId", "sellerId", "middlemanId",
+    "finalStatus", "paymentProofSubmitted", "transferProofSubmitted", "vouchEligible",
+    "disputeOpened", "disputeResolved", "cancelled", "completed", "finalActionById",
+    "cancelledById", "completedById", "disputeOpenedById", "disputeResolvedById",
+    "safeReason", "safeResolution", "createdAt", "finalizedAt", "archivedAt",
+)
+DEAL_ARCHIVE_SELECT = ", ".join(DEAL_ARCHIVE_COLUMNS)
+VOUCH_COLUMNS = (
+    "id", "guildId", "dealId", "reviewerId", "targetId", "reviewerRole",
+    "targetRole", "rating", "review", "proofUrl", "verifiedDeal", "status",
+    "removedBy", "removeReason", "createdAt", "updatedAt", "vouchType",
+    "approvalStatus", "proofCount", "proofData", "proofSubmittedAt",
+    "approvedById", "approvedAt", "rejectedById", "rejectedAt",
+    "rejectionReason", "context", "staffNotes", "targetRaw", "targetResolved",
+)
+VOUCH_SELECT = ", ".join(VOUCH_COLUMNS)
+
+
+def _deal_now():
+    return datetime.utcnow().isoformat() + "Z"
+
+
+def _json_id_list(raw):
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    return [str(x) for x in data if str(x).strip()]
+
+
+def _deal_reminder_intervals(raw):
+    data = {}
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                data = parsed
+        except Exception:
+            data = {}
+    merged = dict(DEAL_DEFAULT_REMINDER_INTERVALS)
+    for key, value in data.items():
+        try:
+            merged[key] = max(60, int(value))
+        except (TypeError, ValueError):
+            pass
+    return merged
+
+
+def _deal_row_to_dict(row):
+    if not row:
+        return None
+    return dict(zip(DEAL_COLUMNS, row))
+
+
+def _deal_archive_row_to_dict(row):
+    if not row:
+        return None
+    data = dict(zip(DEAL_ARCHIVE_COLUMNS, row))
+    for key in (
+        "paymentProofSubmitted", "transferProofSubmitted", "vouchEligible",
+        "disputeOpened", "disputeResolved", "cancelled", "completed",
+    ):
+        data[key] = bool(data.get(key))
+    return data
+
+
+def _safe_archive_text(value, max_length=300):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    text = re.sub(r"https?://\S+", "[link hidden]", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b", "[email hidden]", text)
+    text = re.sub(r"\b(?:\d[\s-]?){6,}\d\b", "[number hidden]", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > max_length:
+        text = text[: max_length - 1].rstrip() + "…"
+    return text or None
+
+
+def _deal_archive_identifier(deal):
+    if not deal:
+        return None
+    return str(deal.get("dealId") or f"ROW-{deal.get('id')}").strip()
+
+
+def _deal_is_archivable_final_status(status):
+    return str(status or "").strip() in DEAL_CLOSED_STATUSES
+
+
+def _deal_finalized_at(deal):
+    status = str(deal.get("status") or "")
+    if status == DEAL_STATUS_COMPLETED:
+        return deal.get("completedAt") or deal.get("updatedAt")
+    if status == "Cancelled":
+        return deal.get("cancelledAt") or deal.get("updatedAt")
+    if status == DEAL_STATUS_DISPUTED and deal.get("disputeResolvedAt"):
+        return deal.get("disputeResolvedAt")
+    return deal.get("updatedAt") or deal.get("createdAt")
+
+
+def _deal_final_action_by(deal, final_action_by=None):
+    if final_action_by is not None:
+        return str(final_action_by)
+    return (
+        deal.get("completedById")
+        or deal.get("cancelledById")
+        or deal.get("disputeResolvedById")
+        or deal.get("middlemanId")
+    )
+
+
+async def get_deal_archive(guild_id, deal_id):
+    token = str(deal_id or "").strip()
+    if not token:
+        return None
+    candidates = [token]
+    if token.upper() != token:
+        candidates.append(token.upper())
+    async with aiosqlite.connect(DB_PATH) as db:
+        for candidate in candidates:
+            async with db.execute(
+                f"SELECT {DEAL_ARCHIVE_SELECT} FROM dealArchives WHERE guildId=? AND dealId=?",
+                (str(guild_id), candidate),
+            ) as cursor:
+                archive = _deal_archive_row_to_dict(await cursor.fetchone())
+                if archive:
+                    return archive
+        async with db.execute(
+            f"SELECT {DEAL_ARCHIVE_SELECT} FROM dealArchives WHERE guildId=? AND id=?",
+            (str(guild_id), token if token.isdigit() else -1),
+        ) as cursor:
+            return _deal_archive_row_to_dict(await cursor.fetchone())
+
+
+async def list_recent_deal_archives(guild_id, limit=10):
+    limit = max(1, min(10, int(limit or 10)))
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            f"""
+            SELECT {DEAL_ARCHIVE_SELECT}
+            FROM dealArchives
+            WHERE guildId=?
+            ORDER BY archivedAt DESC, id DESC
+            LIMIT ?
+            """,
+            (str(guild_id), limit),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return [_deal_archive_row_to_dict(row) for row in rows]
+
+
+async def search_deal_archives_for_user(guild_id, user_id, limit=10):
+    limit = max(1, min(10, int(limit or 10)))
+    uid = str(user_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            f"""
+            SELECT {DEAL_ARCHIVE_SELECT}
+            FROM dealArchives
+            WHERE guildId=? AND (buyerId=? OR sellerId=? OR middlemanId=?)
+            ORDER BY archivedAt DESC, id DESC
+            LIMIT ?
+            """,
+            (str(guild_id), uid, uid, uid, limit),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return [_deal_archive_row_to_dict(row) for row in rows]
+
+
+async def archive_deal_if_final(deal_row_id, final_status=None, final_action_by=None, reason=None, resolution=None, *, audit=True):
+    try:
+        deal = await get_deal_by_id(deal_row_id)
+        if not deal:
+            return None, "not_found"
+        final_status = str(final_status or deal.get("status") or "").strip()
+        if not _deal_is_archivable_final_status(final_status):
+            return None, "not_final"
+
+        archive_deal_id = _deal_archive_identifier(deal)
+        if not archive_deal_id:
+            return None, "missing_deal_id"
+
+        now = _deal_now()
+        safe_reason = _safe_archive_text(reason or deal.get("cancelReason") or deal.get("disputeReason"))
+        safe_resolution = _safe_archive_text(resolution or deal.get("disputeResolution"))
+        final_action = _deal_final_action_by(deal, final_action_by)
+        values = {
+            "guildId": str(deal["guildId"]),
+            "dealId": archive_deal_id,
+            "channelId": str(deal.get("ticketChannelId") or ""),
+            "buyerId": str(deal.get("buyerId") or ""),
+            "sellerId": str(deal.get("sellerId") or ""),
+            "middlemanId": str(deal.get("middlemanId") or ""),
+            "finalStatus": final_status,
+            "paymentProofSubmitted": int(bool(deal.get("paymentProofSubmittedAt") or deal.get("paymentProofMessageId") or deal.get("paymentProofUrl"))),
+            "transferProofSubmitted": int(bool(deal.get("transferProofSubmittedAt") or deal.get("transferProofMessageId") or deal.get("transferProofUrl"))),
+            "vouchEligible": int(bool(deal.get("isVouchEligible"))),
+            "disputeOpened": int(bool(deal.get("disputedAt") or deal.get("disputedById"))),
+            "disputeResolved": int(bool(deal.get("disputeResolvedAt") or deal.get("disputeResolvedById"))),
+            "cancelled": int(final_status == "Cancelled"),
+            "completed": int(final_status == DEAL_STATUS_COMPLETED),
+            "finalActionById": str(final_action) if final_action is not None else None,
+            "cancelledById": str(deal.get("cancelledById")) if deal.get("cancelledById") else None,
+            "completedById": str(deal.get("completedById")) if deal.get("completedById") else None,
+            "disputeOpenedById": str(deal.get("disputedById")) if deal.get("disputedById") else None,
+            "disputeResolvedById": str(deal.get("disputeResolvedById")) if deal.get("disputeResolvedById") else None,
+            "safeReason": safe_reason,
+            "safeResolution": safe_resolution,
+            "createdAt": deal.get("createdAt"),
+            "finalizedAt": _deal_finalized_at(deal),
+            "archivedAt": now,
+        }
+        insert_cols = [col for col in DEAL_ARCHIVE_COLUMNS if col != "id"]
+        placeholders = ", ".join("?" for _ in insert_cols)
+        update_clause = ", ".join(f"{col}=excluded.{col}" for col in insert_cols if col not in ("guildId", "dealId", "createdAt"))
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                f"""
+                INSERT INTO dealArchives ({", ".join(insert_cols)})
+                VALUES ({placeholders})
+                ON CONFLICT(guildId, dealId) DO UPDATE SET {update_clause}
+                """,
+                tuple(values.get(col) for col in insert_cols),
+            )
+            await db.commit()
+        archive = await get_deal_archive(deal["guildId"], archive_deal_id)
+        await write_audit("deal_archived", archive_deal_id, final_status, source="deal")
+        await on_public_trust_stats_changed(deal["guildId"])
+        await refresh_staff_operation_panels(deal["guildId"], {"active_deals", "middleman_status", "dispute_board"})
+        if final_status == DEAL_STATUS_COMPLETED:
+            await send_public_completed_deal_feed(deal["guildId"], deal["id"])
+            if audit:
+                guild = None
+                try:
+                    guild = client.get_guild(int(deal["guildId"]))
+                except (TypeError, ValueError):
+                    guild = None
+                if guild:
+                    await send_deal_audit_log(
+                        guild,
+                        "Deal Archived",
+                        actor=final_action,
+                        deal_id=archive_deal_id,
+                        note="Safe archive record created",
+                        metadata={"status": final_status},
+                    )
+        return archive, None
+    except Exception as e:
+        logging.error(f"archive_deal_if_final error: {e}")
+        return None, "error"
+
+
+async def backfill_deal_archives(guild_id, actor_id=None):
+    placeholders = ",".join("?" for _ in DEAL_CLOSED_STATUSES)
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            f"SELECT id FROM Deal WHERE guildId=? AND status IN ({placeholders})",
+            (str(guild_id), *DEAL_CLOSED_STATUSES),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    created = 0
+    skipped = 0
+    for (deal_row_id,) in rows:
+        deal = await get_deal_by_id(deal_row_id)
+        if not deal:
+            skipped += 1
+            continue
+        existing = await get_deal_archive(guild_id, _deal_archive_identifier(deal))
+        if existing:
+            skipped += 1
+            continue
+        archive, error = await archive_deal_if_final(deal_row_id, final_action_by=actor_id, audit=False)
+        if archive and not error:
+            created += 1
+        else:
+            skipped += 1
+    return created, skipped
+
+
+STAFF_OPERATION_PANEL_TYPES = {"middleman_status", "active_deals", "dispute_board", "trust_warning"}
+REFRESHABLE_DEAL_PANEL_TYPES = {"vouch_leaderboard", "trust_stats", *STAFF_OPERATION_PANEL_TYPES}
+DEAL_PANEL_TYPES = {"vouch_leaderboard", "trust_stats", "recent_vouches", "completed_deals", *STAFF_OPERATION_PANEL_TYPES}
+DEAL_PANEL_LABELS = {
+    "vouch_leaderboard": "Trusted Vouch Leaderboard",
+    "trust_stats": "Server Trust Stats",
+    "recent_vouches": "Recent Vouches Feed",
+    "completed_deals": "Completed Deals Feed",
+    "middleman_status": "Middleman Status Panel",
+    "active_deals": "Active Deal Queue",
+    "dispute_board": "Dispute Board",
+    "trust_warning": "Trust Warning / Report Panel",
+}
+MIDDLEMAN_STATUS_VALUES = {"available", "busy", "offline", "unavailable"}
+
+
+def _deal_panel_row_to_dict(row):
+    if not row:
+        return None
+    return {
+        "id": row[0],
+        "guildId": row[1],
+        "panelType": row[2],
+        "channelId": row[3],
+        "messageId": row[4],
+        "enabled": bool(row[5]),
+        "lastPayloadHash": row[6],
+        "createdAt": row[7],
+        "updatedAt": row[8],
+    }
+
+
+def _deal_panel_hash(embed):
+    payload = json.dumps(embed.to_dict(), sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+async def get_deal_panel_config(guild_id, panel_type):
+    if panel_type not in DEAL_PANEL_TYPES:
+        return None
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT id, guildId, panelType, channelId, messageId, enabled, lastPayloadHash, createdAt, updatedAt FROM dealPanels WHERE guildId=? AND panelType=?",
+            (str(guild_id), panel_type),
+        ) as cursor:
+            return _deal_panel_row_to_dict(await cursor.fetchone())
+
+
+async def set_deal_panel_config(guild_id, panel_type, channel_id, message_id=None, enabled=True, last_payload_hash=None):
+    if panel_type not in DEAL_PANEL_TYPES:
+        return None
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO dealPanels (guildId, panelType, channelId, messageId, enabled, lastPayloadHash, createdAt, updatedAt)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(guildId, panelType) DO UPDATE SET
+                channelId=excluded.channelId,
+                messageId=COALESCE(excluded.messageId, dealPanels.messageId),
+                enabled=excluded.enabled,
+                lastPayloadHash=COALESCE(excluded.lastPayloadHash, dealPanels.lastPayloadHash),
+                updatedAt=excluded.updatedAt
+            """,
+            (
+                str(guild_id), panel_type, str(channel_id) if channel_id is not None else None,
+                str(message_id) if message_id is not None else None, int(bool(enabled)),
+                last_payload_hash, now, now,
+            ),
+        )
+        await db.commit()
+    return await get_deal_panel_config(guild_id, panel_type)
+
+
+async def disable_deal_panel_config(guild_id, panel_type):
+    current = await get_deal_panel_config(guild_id, panel_type)
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO dealPanels (guildId, panelType, channelId, messageId, enabled, lastPayloadHash, createdAt, updatedAt)
+            VALUES (?, ?, ?, ?, 0, NULL, ?, ?)
+            ON CONFLICT(guildId, panelType) DO UPDATE SET
+                enabled=0,
+                updatedAt=excluded.updatedAt
+            """,
+            (
+                str(guild_id), panel_type, current.get("channelId") if current else None,
+                current.get("messageId") if current else None, now, now,
+            ),
+        )
+        await db.commit()
+    return await get_deal_panel_config(guild_id, panel_type)
+
+
+async def list_enabled_deal_panel_configs(guild_id=None):
+    query = "SELECT id, guildId, panelType, channelId, messageId, enabled, lastPayloadHash, createdAt, updatedAt FROM dealPanels WHERE enabled=1"
+    params = []
+    if guild_id is not None:
+        query += " AND guildId=?"
+        params.append(str(guild_id))
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(query, tuple(params)) as cursor:
+            rows = await cursor.fetchall()
+    return [_deal_panel_row_to_dict(row) for row in rows]
+
+
+async def _public_user_display(guild, user_id):
+    uid = str(user_id or "").strip()
+    if not uid:
+        return "@Unknown"
+    member = None
+    if guild:
+        try:
+            member = guild.get_member(int(uid))
+            if not member:
+                member = await guild.fetch_member(int(uid))
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException, TypeError, ValueError):
+            member = None
+    user = member
+    if not user:
+        try:
+            user = client.get_user(int(uid)) or await client.fetch_user(int(uid))
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException, TypeError, ValueError):
+            user = None
+    name = getattr(user, "display_name", None) or getattr(user, "global_name", None) or getattr(user, "name", None)
+    if not name:
+        return "@Unknown"
+    return "@" + discord.utils.escape_markdown(str(name))[:80]
+
+
+def _panel_rating(value):
+    try:
+        return f"{float(value):.1f}/5"
+    except (TypeError, ValueError):
+        return "0.0/5"
+
+
+def _panel_age(value):
+    dt = _parse_deal_datetime(value)
+    if not dt:
+        return "N/A"
+    seconds = max(0, int((datetime.utcnow() - dt).total_seconds()))
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
+
+
+def _deal_next_step(status):
+    return {
+        DEAL_STATUS_PENDING_FORM: "Isi form deal",
+        DEAL_STATUS_WAITING_FUNDS: "Menunggu payment / dana masuk",
+        DEAL_STATUS_FUNDS_RECEIVED: "Seller kirim item",
+        DEAL_STATUS_ITEM_SENT: "Buyer confirm",
+        DEAL_STATUS_BUYER_CONFIRMED: "Data pencairan / transfer final",
+        DEAL_STATUS_DISPUTED: "Staff review dispute",
+    }.get(status, "Review status deal")
+
+
+def _middleman_status_row(row):
+    if not row:
+        return None
+    return {
+        "guildId": row[0],
+        "userId": row[1],
+        "status": row[2] or "offline",
+        "note": row[3],
+        "updatedAt": row[4],
+        "updatedById": row[5],
+        "createdAt": row[6],
+    }
+
+
+async def get_middleman_status(guild_id, user_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT guildId, userId, status, note, updatedAt, updatedById, createdAt FROM middlemanStatus WHERE guildId=? AND userId=?",
+            (str(guild_id), str(user_id)),
+        ) as cursor:
+            return _middleman_status_row(await cursor.fetchone())
+
+
+async def set_middleman_status(guild_id, user_id, status, note, updated_by_id):
+    status = str(status or "").strip().lower()
+    if status not in MIDDLEMAN_STATUS_VALUES:
+        return None, "invalid_status"
+    safe_note = _safe_archive_text(note, 120)
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO middlemanStatus (guildId, userId, status, note, updatedAt, updatedById, createdAt)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(guildId, userId) DO UPDATE SET
+                status=excluded.status,
+                note=excluded.note,
+                updatedAt=excluded.updatedAt,
+                updatedById=excluded.updatedById
+            """,
+            (str(guild_id), str(user_id), status, safe_note, now, str(updated_by_id), now),
+        )
+        await db.commit()
+    await write_audit("middleman_status_updated", user_id, f"{status}: {safe_note or '-'}", source="deal")
+    await refresh_staff_operation_panels(guild_id, {"middleman_status"})
+    return await get_middleman_status(guild_id, user_id), None
+
+
+async def clear_middleman_status(guild_id, user_id, updated_by_id):
+    return await set_middleman_status(guild_id, user_id, "offline", None, updated_by_id)
+
+
+async def _guild_middleman_member_ids(guild):
+    config = await get_deal_config(guild.id)
+    role_ids = []
+    if config and config.get("middlemanRoleId"):
+        role_ids.append(str(config["middlemanRoleId"]))
+    members = {}
+    for rid in role_ids:
+        try:
+            role = guild.get_role(int(rid))
+        except (TypeError, ValueError):
+            role = None
+        if role:
+            for member in role.members:
+                members[str(member.id)] = member
+    if not members and config:
+        for rid in config.get("dealStaffRoleIds", []):
+            try:
+                role = guild.get_role(int(rid))
+            except (TypeError, ValueError):
+                role = None
+            if role:
+                for member in role.members:
+                    members[str(member.id)] = member
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT DISTINCT middlemanId FROM Deal WHERE guildId=? AND middlemanId IS NOT NULL", (str(guild.id),)) as cursor:
+            rows = await cursor.fetchall()
+    for (uid,) in rows:
+        if uid and uid not in members:
+            try:
+                member = guild.get_member(int(uid))
+                if member:
+                    members[str(uid)] = member
+            except (TypeError, ValueError):
+                pass
+    return list(members.keys())
+
+
+async def build_middleman_status_embed(guild):
+    embed = discord.Embed(title="🛡️ Middleman Status Panel", color=0x5865F2)
+    member_ids = await _guild_middleman_member_ids(guild)
+    if not member_ids:
+        embed.add_field(name="Belum ada middleman", value="Role middleman belum memiliki member atau belum ada data deal.", inline=False)
+    for uid in member_ids[:15]:
+        status_row = await get_middleman_status(guild.id, uid)
+        status = (status_row or {}).get("status") or "offline"
+        note = _safe_archive_text((status_row or {}).get("note"), 100) or "-"
+        updated_at = (status_row or {}).get("updatedAt")
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                f"SELECT COUNT(*) FROM Deal WHERE guildId=? AND middlemanId=? AND status IN ({','.join('?' for _ in DEAL_ACTIVE_STATUSES)})",
+                (str(guild.id), str(uid), *DEAL_ACTIVE_STATUSES),
+            ) as cursor:
+                active = (await cursor.fetchone())[0]
+            async with db.execute("SELECT COUNT(*) FROM Deal WHERE guildId=? AND middlemanId=? AND status=?", (str(guild.id), str(uid), DEAL_STATUS_COMPLETED)) as cursor:
+                completed = (await cursor.fetchone())[0]
+        rep = await get_user_reputation(guild.id, uid)
+        value = (
+            f"Status: **{status.title().replace('_', ' ')}**\n"
+            f"Active Deals: **{int(active or 0)}**\n"
+            f"Completed Deals: **{int(completed or 0)}**\n"
+            f"Average Rating: **{_panel_rating(rep.get('averageRating') if rep else 0)}**\n"
+            f"Note: {note}\n"
+            f"Last Updated: {format_discord_ts(updated_at)}"
+        )
+        embed.add_field(name=await _public_user_display(guild, uid), value=value, inline=False)
+    embed.set_footer(text=f"Auto-updated • Last updated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
+    return embed
+
+
+def format_discord_ts(value):
+    dt = _parse_deal_datetime(value)
+    if not dt:
+        return "N/A"
+    return f"<t:{int(dt.timestamp())}:R>"
+
+
+async def build_active_deal_queue_embed(guild):
+    deals = await list_active_deals(guild.id)
+    embed = discord.Embed(title="📦 Active Deal Queue", color=0x5865F2)
+    if not deals:
+        embed.description = "No active deals."
+    for deal in deals[:15]:
+        value = (
+            f"Status: **{deal.get('status') or '-'}**\n"
+            f"Buyer: {await _public_user_display(guild, deal.get('buyerId'))}\n"
+            f"Seller: {await _public_user_display(guild, deal.get('sellerId'))}\n"
+            f"Middleman: {await _public_user_display(guild, deal.get('middlemanId'))}\n"
+            f"Age: {_panel_age(deal.get('createdAt'))}\n"
+            f"Next Step: {_deal_next_step(deal.get('status'))}"
+        )
+        embed.add_field(name=f"Deal {deal.get('dealId') or deal.get('id')}", value=value, inline=False)
+    extra = max(0, len(deals) - 15)
+    if extra:
+        embed.add_field(name="More", value=f"+{extra} more active deals", inline=False)
+    embed.set_footer(text=f"Auto-updated • Last updated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
+    return embed
+
+
+async def build_dispute_board_embed(guild):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            f"SELECT {DEAL_SELECT} FROM Deal WHERE guildId=? AND status=? ORDER BY disputedAt DESC, updatedAt DESC LIMIT 15",
+            (str(guild.id), DEAL_STATUS_DISPUTED),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    deals = [_deal_row_to_dict(row) for row in rows]
+    embed = discord.Embed(title="⚠️ Dispute Board", color=0xFEE75C)
+    if not deals:
+        embed.description = "No active disputes."
+    for deal in deals:
+        reason = _safe_archive_text(deal.get("disputeReason"), 180) or "-"
+        value = (
+            f"Buyer: {await _public_user_display(guild, deal.get('buyerId'))}\n"
+            f"Seller: {await _public_user_display(guild, deal.get('sellerId'))}\n"
+            f"Middleman: {await _public_user_display(guild, deal.get('middlemanId'))}\n"
+            f"Opened By: {await _public_user_display(guild, deal.get('disputedById'))}\n"
+            f"Reason: {reason}\n"
+            f"Age: {_panel_age(deal.get('disputedAt'))}\n"
+            f"Status: Unresolved"
+        )
+        embed.add_field(name=f"Deal {deal.get('dealId') or deal.get('id')}", value=value, inline=False)
+    embed.set_footer(text=f"Auto-updated • Last updated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
+    return embed
+
+
+async def build_trust_warning_embed(guild):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            f"SELECT {SCAM_REPORT_SELECT} FROM scammerReports WHERE guildId=? AND status='pending' ORDER BY createdAt DESC LIMIT 5",
+            (str(guild.id),),
+        ) as cursor:
+            pending_rows = await cursor.fetchall()
+        async with db.execute("SELECT COUNT(*) FROM scammerReports WHERE guildId=? AND status='pending'", (str(guild.id),)) as cursor:
+            pending_count = (await cursor.fetchone())[0]
+        async with db.execute("SELECT userId, reason, updatedAt FROM trustModerationStatus WHERE guildId=? AND status='under_review' ORDER BY updatedAt DESC LIMIT 5", (str(guild.id),)) as cursor:
+            under_rows = await cursor.fetchall()
+        async with db.execute("SELECT COUNT(*) FROM trustModerationStatus WHERE guildId=? AND status='under_review'", (str(guild.id),)) as cursor:
+            under_count = (await cursor.fetchone())[0]
+        async with db.execute("SELECT userId, reason, updatedAt FROM trustModerationStatus WHERE guildId=? AND status='blacklisted' ORDER BY updatedAt DESC LIMIT 5", (str(guild.id),)) as cursor:
+            black_rows = await cursor.fetchall()
+        async with db.execute("SELECT COUNT(*) FROM trustModerationStatus WHERE guildId=? AND status='blacklisted'", (str(guild.id),)) as cursor:
+            black_count = (await cursor.fetchone())[0]
+        async with db.execute("SELECT userId, status, reason, updatedAt FROM trustModerationStatus WHERE guildId=? ORDER BY updatedAt DESC LIMIT 5", (str(guild.id),)) as cursor:
+            action_rows = await cursor.fetchall()
+
+    embed = discord.Embed(title="🚨 Trust Warning / Report Panel", color=0xED4245)
+    pending_lines = []
+    for row in pending_rows:
+        report = _scam_report_row_to_dict(row)
+        target = await _public_user_display(guild, report.get("reportedUserId")) if report.get("reportedUserId") else _safe_archive_text(report.get("reportedRaw"), 80) or "Unresolved target"
+        pending_lines.append(f"#{report.get('id')} {target} • {_panel_age(report.get('createdAt'))}")
+    embed.add_field(name=f"Pending Scam Reports ({int(pending_count or 0)})", value="\n".join(pending_lines) or "None", inline=False)
+
+    under_lines = [f"{await _public_user_display(guild, uid)} • {_panel_age(updated_at)}" for uid, _reason, updated_at in under_rows]
+    embed.add_field(name=f"Under Review Users ({int(under_count or 0)})", value="\n".join(under_lines) or "None", inline=False)
+
+    black_lines = [f"{await _public_user_display(guild, uid)} • {_panel_age(updated_at)}" for uid, _reason, updated_at in black_rows]
+    embed.add_field(name=f"Blacklisted Users ({int(black_count or 0)})", value="\n".join(black_lines) or "None", inline=False)
+
+    action_lines = []
+    for uid, status, reason, updated_at in action_rows:
+        safe_reason = _safe_archive_text(reason, 80) or "-"
+        action_lines.append(f"{await _public_user_display(guild, uid)} → **{status}** • {safe_reason} • {_panel_age(updated_at)}")
+    embed.add_field(name="Recent Trust Actions", value="\n".join(action_lines) or "N/A", inline=False)
+    embed.set_footer(text=f"Auto-updated • Last updated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
+    return embed
+
+
+async def build_trusted_vouch_leaderboard_embed(guild):
+    reps = await get_reputation_leaderboard(guild.id, 10)
+    embed = discord.Embed(
+        title="🏆 Trusted Vouch Leaderboard",
+        description="Top trusted users based on verified and approved vouches.",
+        color=0xFFD700,
+    )
+    if not reps:
+        embed.add_field(name="Belum ada data", value="Belum ada vouch verified atau approved yang bisa ditampilkan.", inline=False)
+    for idx, rep in enumerate(reps, start=1):
+        name = await _public_user_display(guild, rep.get("userId"))
+        value = (
+            f"Verified Deal Vouches: **{int(rep.get('verifiedDealVouches') or 0)}**\n"
+            f"Admin Approved Vouches: **{int(rep.get('manualApprovedVouches') or 0)}**\n"
+            f"Average Rating: **{_panel_rating(rep.get('averageRating'))}**\n"
+            f"Trust Rank: **{rep.get('trustLevel') or 'New User'}**"
+        )
+        embed.add_field(name=f"#{idx} {name}", value=value, inline=False)
+    embed.set_footer(text=f"Auto-updated • Last updated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
+    return embed
+
+
+async def get_server_trust_stats(guild_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async def one(query, params=()):
+            async with db.execute(query, params) as cursor:
+                row = await cursor.fetchone()
+                return row[0] if row else 0
+
+        completed = await one("SELECT COUNT(*) FROM Deal WHERE guildId=? AND status=?", (str(guild_id), DEAL_STATUS_COMPLETED))
+        verified_vouches = await one(
+            "SELECT COUNT(*) FROM Vouch WHERE guildId=? AND status='active' AND vouchType='verified_deal' AND approvalStatus='verified'",
+            (str(guild_id),),
+        )
+        manual_vouches = await one(
+            "SELECT COUNT(*) FROM Vouch WHERE guildId=? AND status='active' AND vouchType='manual' AND approvalStatus='approved'",
+            (str(guild_id),),
+        )
+        active_traders = await one(
+            """
+            SELECT COUNT(DISTINCT v.targetId)
+            FROM Vouch v
+            LEFT JOIN trustModerationStatus t ON t.guildId=v.guildId AND t.userId=v.targetId
+            WHERE v.guildId=? AND v.status='active' AND v.targetId IS NOT NULL
+              AND ((v.vouchType='verified_deal' AND v.approvalStatus='verified') OR (v.vouchType='manual' AND v.approvalStatus='approved'))
+              AND COALESCE(t.status, 'clear') != 'blacklisted'
+            """,
+            (str(guild_id),),
+        )
+        avg_rating = await one(
+            """
+            SELECT AVG(rating) FROM Vouch
+            WHERE guildId=? AND status='active'
+              AND ((vouchType='verified_deal' AND approvalStatus='verified') OR (vouchType='manual' AND approvalStatus='approved'))
+            """,
+            (str(guild_id),),
+        )
+        disputed = await one("SELECT COUNT(*) FROM Deal WHERE guildId=? AND disputedAt IS NOT NULL", (str(guild_id),))
+        cancelled = await one("SELECT COUNT(*) FROM Deal WHERE guildId=? AND status='Cancelled'", (str(guild_id),))
+        under_review = await one("SELECT COUNT(*) FROM trustModerationStatus WHERE guildId=? AND status='under_review'", (str(guild_id),))
+        blacklisted = await one("SELECT COUNT(*) FROM trustModerationStatus WHERE guildId=? AND status='blacklisted'", (str(guild_id),))
+    return {
+        "completed": int(completed or 0),
+        "verified_vouches": int(verified_vouches or 0),
+        "manual_vouches": int(manual_vouches or 0),
+        "active_traders": int(active_traders or 0),
+        "avg_rating": float(avg_rating or 0),
+        "disputed": int(disputed or 0),
+        "cancelled": int(cancelled or 0),
+        "under_review": int(under_review or 0),
+        "blacklisted": int(blacklisted or 0),
+    }
+
+
+async def build_server_trust_stats_embed(guild):
+    stats = await get_server_trust_stats(guild.id)
+    embed = discord.Embed(title="📊 Server Trust Stats", color=0x5865F2)
+    embed.add_field(name="Completed Deals", value=str(stats["completed"]), inline=True)
+    embed.add_field(name="Verified Deal Vouches", value=str(stats["verified_vouches"]), inline=True)
+    embed.add_field(name="Admin Approved Vouches", value=str(stats["manual_vouches"]), inline=True)
+    embed.add_field(name="Active Traders", value=str(stats["active_traders"]), inline=True)
+    embed.add_field(name="Average Rating", value=_panel_rating(stats["avg_rating"]), inline=True)
+    embed.add_field(name="Disputed Deals", value=str(stats["disputed"]), inline=True)
+    embed.add_field(name="Cancelled Deals", value=str(stats["cancelled"]), inline=True)
+    embed.add_field(name="Under Review Users", value=str(stats["under_review"]), inline=True)
+    embed.add_field(name="Blacklisted Users", value=str(stats["blacklisted"]), inline=True)
+    embed.set_footer(text=f"Auto-updated • Last updated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
+    return embed
+
+
+async def _resolve_panel_channel(guild, config):
+    if not guild or not config or not config.get("channelId"):
+        return None
+    try:
+        channel = guild.get_channel(int(config["channelId"]))
+        if channel:
+            return channel
+        return await guild.fetch_channel(int(config["channelId"]))
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException, TypeError, ValueError):
+        return None
+
+
+async def refresh_deal_panel(guild, panel_type, *, force=False):
+    try:
+        if panel_type not in REFRESHABLE_DEAL_PANEL_TYPES:
+            return None, "not_refreshable"
+        config = await get_deal_panel_config(guild.id, panel_type)
+        if not config or not config.get("enabled"):
+            return None, "disabled"
+        channel = await _resolve_panel_channel(guild, config)
+        if not channel:
+            return None, "missing_channel"
+        builders = {
+            "vouch_leaderboard": build_trusted_vouch_leaderboard_embed,
+            "trust_stats": build_server_trust_stats_embed,
+            "middleman_status": build_middleman_status_embed,
+            "active_deals": build_active_deal_queue_embed,
+            "dispute_board": build_dispute_board_embed,
+            "trust_warning": build_trust_warning_embed,
+        }
+        embed = await builders[panel_type](guild)
+        payload_hash = _deal_panel_hash(embed)
+        message = None
+        if config.get("messageId"):
+            try:
+                message = await channel.fetch_message(int(config["messageId"]))
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException, TypeError, ValueError):
+                message = None
+        if message and not force and config.get("lastPayloadHash") == payload_hash:
+            return message, "unchanged"
+        if message:
+            await message.edit(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+            await set_deal_panel_config(guild.id, panel_type, channel.id, message.id, enabled=True, last_payload_hash=payload_hash)
+            return message, "updated"
+        message = await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        await set_deal_panel_config(guild.id, panel_type, channel.id, message.id, enabled=True, last_payload_hash=payload_hash)
+        await send_deal_audit_log(guild, "Trust Panel Recovered Message", deal_id=None, note=DEAL_PANEL_LABELS.get(panel_type), metadata={"status": "recovered"})
+        return message, "created"
+    except Exception as e:
+        logging.error(f"refresh_deal_panel error ({panel_type}): {e}")
+        return None, "error"
+
+
+async def setup_deal_panel(guild, panel_type, channel):
+    if panel_type not in DEAL_PANEL_TYPES:
+        return None, "invalid_type"
+    await set_deal_panel_config(guild.id, panel_type, channel.id, None, enabled=True, last_payload_hash=None)
+    if panel_type in REFRESHABLE_DEAL_PANEL_TYPES:
+        return await refresh_deal_panel(guild, panel_type, force=True)
+    return await get_deal_panel_config(guild.id, panel_type), "configured"
+
+
+async def refresh_public_trust_panels(guild_id):
+    try:
+        guild = client.get_guild(int(guild_id))
+    except (TypeError, ValueError):
+        guild = None
+    if not guild:
+        return
+    await refresh_deal_panel(guild, "vouch_leaderboard")
+    await refresh_deal_panel(guild, "trust_stats")
+
+
+async def refresh_all_public_trust_panels():
+    configs = await list_enabled_deal_panel_configs()
+    guild_ids = sorted({config["guildId"] for config in configs if config["panelType"] in {"vouch_leaderboard", "trust_stats"}})
+    for guild_id in guild_ids:
+        await refresh_public_trust_panels(guild_id)
+
+
+async def refresh_staff_operation_panels(guild_id, panel_types=None):
+    try:
+        guild = client.get_guild(int(guild_id))
+    except (TypeError, ValueError):
+        guild = None
+    if not guild:
+        return
+    target_types = set(panel_types or STAFF_OPERATION_PANEL_TYPES) & STAFF_OPERATION_PANEL_TYPES
+    for panel_type in sorted(target_types):
+        await refresh_deal_panel(guild, panel_type)
+
+
+async def refresh_all_staff_operation_panels():
+    configs = await list_enabled_deal_panel_configs()
+    guild_ids = sorted({config["guildId"] for config in configs if config["panelType"] in STAFF_OPERATION_PANEL_TYPES})
+    for guild_id in guild_ids:
+        await refresh_staff_operation_panels(guild_id)
+
+
+async def _panel_event_exists(guild_id, panel_type, event_key):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT id FROM dealPanelEvents WHERE guildId=? AND panelType=? AND eventKey=?",
+            (str(guild_id), panel_type, event_key),
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
+
+async def _record_panel_event(guild_id, panel_type, event_type, event_key, message_id, channel_id):
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT OR IGNORE INTO dealPanelEvents (guildId, panelType, eventType, eventKey, messageId, channelId, createdAt)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (str(guild_id), panel_type, event_type, event_key, str(message_id), str(channel_id), now),
+        )
+        await db.commit()
+
+
+async def _send_panel_feed_embed(guild, panel_type, event_type, event_key, embed):
+    try:
+        config = await get_deal_panel_config(guild.id, panel_type)
+        if not config or not config.get("enabled"):
+            return None, "disabled"
+        if await _panel_event_exists(guild.id, panel_type, event_key):
+            return None, "duplicate"
+        channel = await _resolve_panel_channel(guild, config)
+        if not channel:
+            return None, "missing_channel"
+        message = await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        await _record_panel_event(guild.id, panel_type, event_type, event_key, message.id, channel.id)
+        return message, None
+    except Exception as e:
+        logging.error(f"_send_panel_feed_embed error ({panel_type}, {event_key}): {e}")
+        return None, "error"
+
+
+async def send_public_vouch_feed(guild_id, vouch_id):
+    try:
+        vouch = await get_vouch_by_id(guild_id, vouch_id)
+        if not vouch or vouch.get("status") != "active":
+            return None, "not_public"
+        if vouch.get("vouchType") == "verified_deal":
+            if vouch.get("approvalStatus") != "verified":
+                return None, "not_public"
+            title = "⭐ New Verified Deal Vouch"
+            source = "Verified Deal Vouch"
+            status = "Verified"
+        elif vouch.get("vouchType") == "manual":
+            if vouch.get("approvalStatus") != "approved":
+                return None, "not_public"
+            title = "⭐ New Admin Approved Vouch"
+            source = "Admin Approved Manual Vouch"
+            status = "Admin Approved"
+        else:
+            return None, "not_public"
+        guild = client.get_guild(int(guild_id))
+        if not guild:
+            return None, "missing_guild"
+        embed = discord.Embed(title=title, color=0xFFD700)
+        embed.add_field(name="From", value=await _public_user_display(guild, vouch.get("reviewerId")), inline=True)
+        embed.add_field(name="To", value=await _public_user_display(guild, vouch.get("targetId")), inline=True)
+        embed.add_field(name="Rating", value=_panel_rating(vouch.get("rating")), inline=True)
+        embed.add_field(name="Source", value=source, inline=True)
+        embed.add_field(name="Status", value=status, inline=True)
+        if vouch.get("dealId"):
+            embed.add_field(name="Deal ID", value=str(vouch.get("dealId")), inline=True)
+        embed.add_field(name="Review", value=_safe_archive_text(vouch.get("review"), 220) or "-", inline=False)
+        if vouch.get("vouchType") == "manual" and int(vouch.get("proofCount") or 0) > 0:
+            embed.add_field(name="Proof", value="Available", inline=True)
+        embed.set_footer(text="Trusted vouch system")
+        return await _send_panel_feed_embed(guild, "recent_vouches", "vouch", f"vouch:{vouch_id}", embed)
+    except Exception as e:
+        logging.error(f"send_public_vouch_feed error: {e}")
+        return None, "error"
+
+
+async def send_public_completed_deal_feed(guild_id, deal_row_id):
+    try:
+        deal = await get_deal_by_id(deal_row_id)
+        if not deal or deal.get("status") != DEAL_STATUS_COMPLETED:
+            return None, "not_completed"
+        guild = client.get_guild(int(guild_id))
+        if not guild:
+            return None, "missing_guild"
+        archive = await get_deal_archive(guild_id, deal.get("dealId") or f"ROW-{deal.get('id')}")
+        embed = discord.Embed(
+            title="✅ Deal Completed",
+            description="A middleman deal has been completed successfully.",
+            color=0x57F287,
+        )
+        embed.add_field(name="Deal ID", value=deal.get("dealId") or "-", inline=True)
+        embed.add_field(name="Buyer", value=await _public_user_display(guild, deal.get("buyerId")), inline=True)
+        embed.add_field(name="Seller", value=await _public_user_display(guild, deal.get("sellerId")), inline=True)
+        embed.add_field(name="Middleman", value=await _public_user_display(guild, deal.get("middlemanId")), inline=True)
+        embed.add_field(name="Status", value="Completed", inline=True)
+        embed.add_field(name="Vouch", value="Eligible" if deal.get("isVouchEligible") else "Not Eligible", inline=True)
+        embed.add_field(name="Archived", value="Yes" if archive else "No", inline=True)
+        embed.set_footer(text="Verified middleman transaction")
+        return await _send_panel_feed_embed(guild, "completed_deals", "completed_deal", f"completed_deal:{deal.get('dealId') or deal.get('id')}", embed)
+    except Exception as e:
+        logging.error(f"send_public_completed_deal_feed error: {e}")
+        return None, "error"
+
+
+async def on_public_trust_vouch_changed(guild_id, vouch_id=None):
+    if vouch_id is not None:
+        await send_public_vouch_feed(guild_id, vouch_id)
+    await refresh_public_trust_panels(guild_id)
+
+
+async def on_public_trust_stats_changed(guild_id):
+    await refresh_public_trust_panels(guild_id)
+
+
+async def get_deal_config(guild_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT guildId, middlemanRoleId, ownerRoleId, dealLogChannelId, vouchChannelId, "
+            "dealStaffRoleIds, allowedTicketCategoryIds, dealIdPrefix, pingCooldownSeconds, "
+            "reminderEnabled, reminderIntervals, requirePaymentProof, requireTransferProof, "
+            "allowUserCancelRequest, autoTimeoutEnabled, trustedRoleThreshold "
+            "FROM DealConfig WHERE guildId=?",
+            (str(guild_id),),
+        ) as cursor:
+            row = await cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "guildId": row[0],
+        "middlemanRoleId": row[1],
+        "ownerRoleId": row[2],
+        "dealLogChannelId": row[3],
+        "vouchChannelId": row[4],
+        "dealStaffRoleIds": _json_id_list(row[5]),
+        "allowedTicketCategoryIds": _json_id_list(row[6]),
+        "allowedTicketChannelIds": [],
+        "dealIdPrefix": row[7] or "MM",
+        "pingCooldownSeconds": int(row[8] or 3600),
+        "reminderEnabled": bool(row[9]),
+        "reminderIntervals": _deal_reminder_intervals(row[10]),
+        "requirePaymentProof": bool(row[11]),
+        "requireTransferProof": bool(row[12]),
+        "allowUserCancelRequest": bool(1 if row[13] is None else row[13]),
+        "autoTimeoutEnabled": bool(row[14]),
+        "trustedRoleThreshold": int(row[15] or 0),
+    }
+
+
+def is_deal_config_complete(config):
+    return True
+
+
+def is_deal_channel_allowed(channel, config):
+    # Legacy helper retained for older config paths. /deal start no longer requires category validation.
+    if not channel or not config:
+        return False
+    channel_ids = set(config.get("allowedTicketChannelIds") or [])
+    if str(channel.id) in channel_ids:
+        return True
+    category_id = getattr(channel, "category_id", None)
+    category_ids = set(config.get("allowedTicketCategoryIds") or [])
+    return category_id is not None and str(category_id) in category_ids
+
+
+def member_has_deal_role(member, config):
+    if not member:
+        return False
+    configured_role_ids = set()
+    if config:
+        if config.get("middlemanRoleId"):
+            configured_role_ids.add(str(config["middlemanRoleId"]))
+        configured_role_ids.update(str(role_id) for role_id in config.get("dealStaffRoleIds", []))
+    roles = getattr(member, "roles", [])
+    if configured_role_ids:
+        return any(str(role.id) in configured_role_ids for role in roles)
+    default_names = {"middleman", "miserator"}
+    return any(str(getattr(role, "name", "")).strip().lower() in default_names for role in roles)
+
+
+def member_has_owner_role(member, config):
+    if not member or not config or not config.get("ownerRoleId"):
+        return False
+    role_id = int(config["ownerRoleId"])
+    return any(role.id == role_id for role in getattr(member, "roles", []))
+
+
+def member_can_admin_override(member, config):
+    return bool(getattr(member.guild_permissions, "administrator", False) or member_has_owner_role(member, config))
+
+
+async def save_deal_config(
+    guild_id,
+    *,
+    middleman_role_id=None,
+    owner_role_id=None,
+    deal_log_channel_id=None,
+    vouch_channel_id=None,
+    deal_staff_role_ids=None,
+    allowed_ticket_category_ids=None,
+    deal_id_prefix=None,
+    ping_cooldown_seconds=None,
+    reminder_enabled=None,
+    reminder_intervals=None,
+    require_payment_proof=None,
+    require_transfer_proof=None,
+    allow_user_cancel_request=None,
+    auto_timeout_enabled=None,
+    trusted_role_threshold=None,
+):
+    current = await get_deal_config(guild_id) or {}
+    guild_id = str(guild_id)
+    middleman_role_id = str(middleman_role_id) if middleman_role_id is not None else current.get("middlemanRoleId")
+    owner_role_id = str(owner_role_id) if owner_role_id is not None else current.get("ownerRoleId")
+    deal_log_channel_id = str(deal_log_channel_id) if deal_log_channel_id is not None else current.get("dealLogChannelId")
+    vouch_channel_id = str(vouch_channel_id) if vouch_channel_id is not None else current.get("vouchChannelId")
+    staff_role_ids = (
+        [str(x) for x in deal_staff_role_ids]
+        if deal_staff_role_ids is not None
+        else current.get("dealStaffRoleIds", [])
+    )
+    allowed_ids = (
+        [str(x) for x in allowed_ticket_category_ids]
+        if allowed_ticket_category_ids is not None
+        else current.get("allowedTicketCategoryIds", [])
+    )
+    prefix = (deal_id_prefix if deal_id_prefix is not None else current.get("dealIdPrefix")) or "MM"
+    prefix = re.sub(r"[^A-Za-z0-9_-]", "", prefix).upper()[:12] or "MM"
+    ping_cooldown_seconds = int(ping_cooldown_seconds if ping_cooldown_seconds is not None else current.get("pingCooldownSeconds", 3600))
+    reminder_enabled = int(bool(reminder_enabled if reminder_enabled is not None else current.get("reminderEnabled", False)))
+    reminder_intervals = (
+        _deal_reminder_intervals(json.dumps(reminder_intervals))
+        if reminder_intervals is not None
+        else current.get("reminderIntervals", dict(DEAL_DEFAULT_REMINDER_INTERVALS))
+    )
+    require_payment_proof = int(bool(require_payment_proof if require_payment_proof is not None else current.get("requirePaymentProof", False)))
+    require_transfer_proof = int(bool(require_transfer_proof if require_transfer_proof is not None else current.get("requireTransferProof", False)))
+    allow_user_cancel_request = int(bool(allow_user_cancel_request if allow_user_cancel_request is not None else current.get("allowUserCancelRequest", True)))
+    auto_timeout_enabled = int(bool(auto_timeout_enabled if auto_timeout_enabled is not None else current.get("autoTimeoutEnabled", False)))
+    trusted_role_threshold = int(trusted_role_threshold if trusted_role_threshold is not None else current.get("trustedRoleThreshold", 0))
+    now = _deal_now()
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO DealConfig (
+                guildId, middlemanRoleId, ownerRoleId, dealLogChannelId, vouchChannelId, dealStaffRoleIds,
+                allowedTicketCategoryIds, dealIdPrefix, pingCooldownSeconds, reminderEnabled, reminderIntervals,
+                requirePaymentProof, requireTransferProof, allowUserCancelRequest, autoTimeoutEnabled, trustedRoleThreshold,
+                createdAt, updatedAt
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(guildId) DO UPDATE SET
+                middlemanRoleId=excluded.middlemanRoleId,
+                ownerRoleId=excluded.ownerRoleId,
+                dealLogChannelId=excluded.dealLogChannelId,
+                vouchChannelId=excluded.vouchChannelId,
+                dealStaffRoleIds=excluded.dealStaffRoleIds,
+                allowedTicketCategoryIds=excluded.allowedTicketCategoryIds,
+                dealIdPrefix=excluded.dealIdPrefix,
+                pingCooldownSeconds=excluded.pingCooldownSeconds,
+                reminderEnabled=excluded.reminderEnabled,
+                reminderIntervals=excluded.reminderIntervals,
+                requirePaymentProof=excluded.requirePaymentProof,
+                requireTransferProof=excluded.requireTransferProof,
+                allowUserCancelRequest=excluded.allowUserCancelRequest,
+                autoTimeoutEnabled=excluded.autoTimeoutEnabled,
+                trustedRoleThreshold=excluded.trustedRoleThreshold,
+                updatedAt=excluded.updatedAt
+            """,
+            (
+                guild_id, middleman_role_id, owner_role_id, deal_log_channel_id, vouch_channel_id,
+                json.dumps(staff_role_ids), json.dumps(allowed_ids), prefix, ping_cooldown_seconds,
+                reminder_enabled, json.dumps(reminder_intervals), require_payment_proof,
+                require_transfer_proof, allow_user_cancel_request, auto_timeout_enabled,
+                trusted_role_threshold, now, now,
+            ),
+        )
+        await db.commit()
+    await write_audit("deal_config_update", guild_id, f"prefix={prefix}, categories={','.join(allowed_ids)}", source="deal")
+    return await get_deal_config(guild_id)
+
+
+async def find_active_deal_for_channel(guild_id, channel_id):
+    placeholders = ",".join("?" for _ in DEAL_ACTIVE_STATUSES)
+    query = (
+        f"SELECT {DEAL_SELECT} FROM Deal WHERE guildId=? AND ticketChannelId=? "
+        f"AND status IN ({placeholders}) ORDER BY id DESC LIMIT 1"
+    )
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(query, (str(guild_id), str(channel_id), *DEAL_ACTIVE_STATUSES)) as cursor:
+            row = await cursor.fetchone()
+    return _deal_row_to_dict(row)
+
+
+async def get_deal_by_deal_id(guild_id, deal_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            f"SELECT {DEAL_SELECT} FROM Deal WHERE guildId=? AND dealId=?",
+            (str(guild_id), str(deal_id)),
+        ) as cursor:
+            row = await cursor.fetchone()
+    return _deal_row_to_dict(row)
+
+
+async def get_deal_by_id(row_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            f"SELECT {DEAL_SELECT} FROM Deal WHERE id=?",
+            (int(row_id),),
+        ) as cursor:
+            row = await cursor.fetchone()
+    return _deal_row_to_dict(row)
+
+
+async def create_pending_deal(guild_id, channel_id, created_by_id, buyer_id, seller_id, middleman_id):
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        placeholders = ",".join("?" for _ in DEAL_ACTIVE_STATUSES)
+        async with db.execute(
+            f"SELECT id FROM Deal WHERE guildId=? AND ticketChannelId=? AND status IN ({placeholders}) LIMIT 1",
+            (str(guild_id), str(channel_id), *DEAL_ACTIVE_STATUSES),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row:
+            await db.rollback()
+            return None
+        cur = await db.execute(
+            """
+            INSERT INTO Deal (
+                guildId, ticketChannelId, createdById, buyerId, sellerId, middlemanId,
+                status, createdAt, updatedAt
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(guild_id), str(channel_id), str(created_by_id), str(buyer_id),
+                str(seller_id), str(middleman_id), DEAL_STATUS_PENDING_FORM, now, now,
+            ),
+        )
+        row_id = cur.lastrowid
+        await db.commit()
+    await write_audit("deal_start", row_id, f"buyer={buyer_id}, seller={seller_id}, middleman={middleman_id}", source="deal")
+    await add_deal_log(guild_id, None, "deal_start", created_by_id, None, DEAL_STATUS_PENDING_FORM, f"row_id={row_id}")
+    await refresh_staff_operation_panels(guild_id, {"active_deals", "middleman_status"})
+    return await get_deal_by_id(row_id)
+
+
+async def set_deal_warning_message(deal_row_id, message_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE Deal SET warningMessageId=?, updatedAt=? WHERE id=?",
+            (str(message_id), _deal_now(), int(deal_row_id)),
+        )
+        await db.commit()
+
+
+async def set_deal_summary_message(deal_row_id, message_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE Deal SET summaryMessageId=?, updatedAt=? WHERE id=?",
+            (str(message_id), _deal_now(), int(deal_row_id)),
+        )
+        await db.commit()
+
+
+async def set_deal_vouch_progress_message(deal_row_id, message_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE Deal SET vouchProgressMessageId=?, updatedAt=? WHERE id=?",
+            (str(message_id), _deal_now(), int(deal_row_id)),
+        )
+        await db.commit()
+
+
+async def add_deal_log(guild_id, deal_id, action, actor_id, old_value=None, new_value=None, reason=None):
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO DealLog (guildId, dealId, action, actorId, oldValue, newValue, reason, createdAt)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(guild_id),
+                str(deal_id) if deal_id is not None else None,
+                str(action),
+                str(actor_id) if actor_id is not None else None,
+                old_value,
+                new_value,
+                reason,
+                now,
+            ),
+        )
+        await db.commit()
+
+
+async def update_deal_status(deal_row_id, expected_statuses, new_status, actor_id, action, extra_fields=None, reason=None):
+    expected = tuple(expected_statuses)
+    fields = dict(extra_fields or {})
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        async with db.execute(f"SELECT {DEAL_SELECT} FROM Deal WHERE id=?", (int(deal_row_id),)) as cursor:
+            row = await cursor.fetchone()
+        deal = _deal_row_to_dict(row)
+        if not deal:
+            await db.rollback()
+            return None, "not_found"
+        if deal["status"] not in expected:
+            await db.rollback()
+            return deal, "invalid_status"
+
+        fields["status"] = new_status
+        fields["updatedAt"] = now
+        set_clause = ", ".join(f"{key}=?" for key in fields.keys())
+        values = [str(v) if key.endswith("Id") and v is not None else v for key, v in fields.items()]
+        await db.execute(
+            f"UPDATE Deal SET {set_clause} WHERE id=?",
+            (*values, int(deal_row_id)),
+        )
+        await db.execute(
+            """
+            INSERT INTO DealLog (guildId, dealId, action, actorId, oldValue, newValue, reason, createdAt)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                deal["guildId"],
+                deal["dealId"],
+                action,
+                str(actor_id),
+                deal["status"],
+                new_status,
+                reason,
+                now,
+            ),
+        )
+        await db.commit()
+    await write_audit(action, deal_row_id, f"{deal['status']} -> {new_status}", source="deal")
+    if _deal_is_archivable_final_status(new_status):
+        archive_reason = None if new_status == DEAL_STATUS_COMPLETED else reason
+        await archive_deal_if_final(deal_row_id, new_status, actor_id, reason=archive_reason)
+    await refresh_staff_operation_panels(deal["guildId"], {"active_deals", "middleman_status", "dispute_board"})
+    return await get_deal_by_id(deal_row_id), None
+
+
+def get_deal_participant_role(deal, user_id):
+    uid = str(user_id)
+    if uid == str(deal.get("buyerId")):
+        return "Buyer"
+    if uid == str(deal.get("sellerId")):
+        return "Seller"
+    if uid == str(deal.get("middlemanId")):
+        return "Middleman"
+    return None
+
+
+def get_deal_role_user_id(deal, role):
+    role = str(role or "").strip().lower()
+    if role == "buyer":
+        return str(deal.get("buyerId"))
+    if role == "seller":
+        return str(deal.get("sellerId"))
+    if role == "middleman":
+        return str(deal.get("middlemanId"))
+    return None
+
+
+def get_possible_deal_vouches(deal):
+    return [
+        ("Buyer", "Seller", str(deal.get("buyerId")), str(deal.get("sellerId"))),
+        ("Buyer", "Middleman", str(deal.get("buyerId")), str(deal.get("middlemanId"))),
+        ("Seller", "Buyer", str(deal.get("sellerId")), str(deal.get("buyerId"))),
+        ("Seller", "Middleman", str(deal.get("sellerId")), str(deal.get("middlemanId"))),
+        ("Middleman", "Buyer", str(deal.get("middlemanId")), str(deal.get("buyerId"))),
+        ("Middleman", "Seller", str(deal.get("middlemanId")), str(deal.get("sellerId"))),
+    ]
+
+
+def can_deal_role_vouch_for(reviewer_role, target_role):
+    return (reviewer_role, target_role) in {
+        ("Buyer", "Seller"),
+        ("Buyer", "Middleman"),
+        ("Seller", "Buyer"),
+        ("Seller", "Middleman"),
+        ("Middleman", "Buyer"),
+        ("Middleman", "Seller"),
+    }
+
+
+def _vouch_row_to_dict(row):
+    if not row:
+        return None
+    return dict(zip(VOUCH_COLUMNS, row))
+
+
+def _reputation_row_to_dict(row):
+    if not row:
+        return None
+    cols = (
+        "guildId", "userId", "totalVouches", "verifiedVouches", "verifiedDealVouches",
+        "manualApprovedVouches", "averageRating", "trustScore", "buyerVouches", "sellerVouches", "middlemanVouches",
+        "removedVouches", "reports", "trustLevel", "updatedAt",
+    )
+    return dict(zip(cols, row))
+
+
+def calculate_trust_level(total_verified, avg_rating, reports, removed, buyer_vouches, seller_vouches, middleman_vouches, trust_score, blacklisted=False):
+    if blacklisted:
+        return "Blacklisted"
+    if reports > 0:
+        return "Under Review"
+    if total_verified < 1:
+        return "New User"
+    if total_verified >= 500 and avg_rating >= 4.9:
+        return "Legendary Trader"
+    if total_verified >= 250 and avg_rating >= 4.85:
+        return "Elite Trader"
+    if total_verified >= 100 and avg_rating >= 4.8:
+        return "Trusted Seller"
+    if total_verified >= 60 and avg_rating >= 4.7:
+        return "Established Seller"
+    if total_verified >= 30 and avg_rating >= 4.6:
+        return "Reliable Seller"
+    if total_verified >= 10 and avg_rating >= 4.5:
+        return "Active Trader"
+    return "Verified User"
+
+
+def calculate_trust_score(total_verified, avg_rating, reports, removed, recent_count=0):
+    if total_verified <= 0:
+        base = 0
+    else:
+        base = total_verified * (avg_rating / 5.0) * 5 + min(50, recent_count * 2)
+    penalty = reports * 25 + removed * 8
+    return round(max(0, base - penalty), 2)
+
+
+async def list_deal_vouches(guild_id, deal_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            f"""
+            SELECT {VOUCH_SELECT}
+            FROM Vouch
+            WHERE guildId=? AND dealId=? AND status='active'
+              AND vouchType='verified_deal'
+              AND approvalStatus='verified'
+            ORDER BY id ASC
+            """,
+            (str(guild_id), str(deal_id)),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return [_vouch_row_to_dict(row) for row in rows]
+
+
+async def list_user_vouches(guild_id, user_id, include_removed=False):
+    status_filter = "" if include_removed else """
+        AND status='active'
+        AND (
+            (vouchType='verified_deal' AND approvalStatus='verified')
+            OR (vouchType='manual' AND approvalStatus='approved')
+        )
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            f"""
+            SELECT {VOUCH_SELECT}
+            FROM Vouch
+            WHERE guildId=? AND targetId=? {status_filter}
+            ORDER BY id DESC
+            """,
+            (str(guild_id), str(user_id)),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return [_vouch_row_to_dict(row) for row in rows]
+
+
+async def get_vouch_by_id(guild_id, vouch_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            f"""
+            SELECT {VOUCH_SELECT}
+            FROM Vouch WHERE guildId=? AND id=?
+            """,
+            (str(guild_id), int(vouch_id)),
+        ) as cursor:
+            row = await cursor.fetchone()
+    return _vouch_row_to_dict(row)
+
+
+async def get_user_reputation(guild_id, user_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """
+            SELECT guildId, userId, totalVouches, verifiedVouches, verifiedDealVouches, manualApprovedVouches, averageRating, trustScore,
+                   buyerVouches, sellerVouches, middlemanVouches, removedVouches, reports,
+                   trustLevel, updatedAt
+            FROM UserReputation WHERE guildId=? AND userId=?
+            """,
+            (str(guild_id), str(user_id)),
+        ) as cursor:
+            row = await cursor.fetchone()
+    rep = _reputation_row_to_dict(row)
+    if rep:
+        return rep
+    return await recalculate_user_reputation(guild_id, user_id)
+
+
+async def recalculate_user_reputation(guild_id, user_id):
+    guild_id = str(guild_id)
+    user_id = str(user_id)
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """
+            SELECT COUNT(*),
+                   COALESCE(SUM(CASE WHEN vouchType='verified_deal' THEN 1 ELSE 0 END),0),
+                   COALESCE(SUM(CASE WHEN vouchType='manual' THEN 1 ELSE 0 END),0),
+                   COALESCE(AVG(rating),0),
+                   COALESCE(SUM(CASE WHEN targetRole='Buyer' THEN 1 ELSE 0 END),0),
+                   COALESCE(SUM(CASE WHEN targetRole='Seller' THEN 1 ELSE 0 END),0),
+                   COALESCE(SUM(CASE WHEN targetRole='Middleman' THEN 1 ELSE 0 END),0)
+            FROM Vouch
+            WHERE guildId=? AND targetId=? AND status='active'
+              AND (
+                  (vouchType='verified_deal' AND approvalStatus='verified')
+                  OR (vouchType='manual' AND approvalStatus='approved')
+              )
+            """,
+            (guild_id, user_id),
+        ) as cur:
+            total, verified_deal, manual_approved, avg_rating, buyer_v, seller_v, mm_v = await cur.fetchone()
+        async with db.execute(
+            "SELECT COUNT(*) FROM Vouch WHERE guildId=? AND targetId=? AND status='removed'",
+            (guild_id, user_id),
+        ) as cur:
+            removed = (await cur.fetchone())[0]
+        async with db.execute(
+            "SELECT status FROM trustModerationStatus WHERE guildId=? AND userId=?",
+            (guild_id, user_id),
+        ) as cur:
+            trust_status_row = await cur.fetchone()
+        async with db.execute(
+            """
+            SELECT COUNT(*) FROM VouchReport r
+            JOIN Vouch v ON v.id=r.vouchId AND v.guildId=r.guildId
+            WHERE r.guildId=? AND v.targetId=? AND r.status='open'
+            """,
+            (guild_id, user_id),
+        ) as cur:
+            reports = (await cur.fetchone())[0]
+        async with db.execute(
+            """
+            SELECT COUNT(*) FROM Vouch
+            WHERE guildId=? AND targetId=? AND status='active' AND createdAt >= ?
+              AND (
+                  (vouchType='verified_deal' AND approvalStatus='verified')
+                  OR (vouchType='manual' AND approvalStatus='approved')
+              )
+            """,
+            (guild_id, user_id, (datetime.utcnow() - timedelta(days=30)).isoformat() + "Z"),
+        ) as cur:
+            recent = (await cur.fetchone())[0]
+
+        total = int(total or 0)
+        verified_deal = int(verified_deal or 0)
+        manual_approved = int(manual_approved or 0)
+        verified = verified_deal + manual_approved
+        avg_rating = float(avg_rating or 0)
+        buyer_v = int(buyer_v or 0)
+        seller_v = int(seller_v or 0)
+        mm_v = int(mm_v or 0)
+        removed = int(removed or 0)
+        reports = int(reports or 0)
+        score = calculate_trust_score(verified, avg_rating, reports, removed, recent)
+        moderation_status = (trust_status_row[0] if trust_status_row else "clear") or "clear"
+        blacklisted = moderation_status == "blacklisted"
+        level = calculate_trust_level(
+            verified,
+            avg_rating,
+            reports if moderation_status != "under_review" else max(1, reports),
+            removed,
+            buyer_v,
+            seller_v,
+            mm_v,
+            score,
+            blacklisted=blacklisted,
+        )
+        await db.execute(
+            """
+            INSERT INTO UserReputation (
+                guildId, userId, totalVouches, verifiedVouches, verifiedDealVouches, manualApprovedVouches, averageRating, trustScore,
+                buyerVouches, sellerVouches, middlemanVouches, removedVouches, reports,
+                trustLevel, updatedAt
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(guildId, userId) DO UPDATE SET
+                totalVouches=excluded.totalVouches,
+                verifiedVouches=excluded.verifiedVouches,
+                verifiedDealVouches=excluded.verifiedDealVouches,
+                manualApprovedVouches=excluded.manualApprovedVouches,
+                averageRating=excluded.averageRating,
+                trustScore=excluded.trustScore,
+                buyerVouches=excluded.buyerVouches,
+                sellerVouches=excluded.sellerVouches,
+                middlemanVouches=excluded.middlemanVouches,
+                removedVouches=excluded.removedVouches,
+                reports=excluded.reports,
+                trustLevel=excluded.trustLevel,
+                updatedAt=excluded.updatedAt
+            """,
+            (guild_id, user_id, total, verified, verified_deal, manual_approved, avg_rating, score, buyer_v, seller_v, mm_v, removed, reports, level, now),
+        )
+        await db.commit()
+    return {
+        "guildId": guild_id,
+        "userId": user_id,
+        "totalVouches": total,
+        "verifiedVouches": verified,
+        "verifiedDealVouches": verified_deal,
+        "manualApprovedVouches": manual_approved,
+        "averageRating": avg_rating,
+        "trustScore": score,
+        "buyerVouches": buyer_v,
+        "sellerVouches": seller_v,
+        "middlemanVouches": mm_v,
+        "removedVouches": removed,
+        "reports": reports,
+        "trustLevel": level,
+        "updatedAt": now,
+    }
+
+
+async def get_reputation_leaderboard(guild_id, limit=10):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """
+            SELECT DISTINCT targetId FROM Vouch
+            WHERE guildId=? AND targetId IS NOT NULL AND status='active'
+              AND (
+                  (vouchType='verified_deal' AND approvalStatus='verified')
+                  OR (vouchType='manual' AND approvalStatus='approved')
+              )
+            """,
+            (str(guild_id),),
+        ) as cur:
+            rows = await cur.fetchall()
+    reps = []
+    for (uid,) in rows:
+        reps.append(await recalculate_user_reputation(guild_id, uid))
+    reps = [r for r in reps if r["trustLevel"] != "Blacklisted" and r["verifiedVouches"] > 0]
+    reps.sort(key=lambda r: (r["trustScore"], r["averageRating"], r["verifiedVouches"]), reverse=True)
+    return reps[:limit]
+
+
+async def remove_vouch(guild_id, vouch_id, removed_by, reason):
+    reason = str(reason or "").strip()
+    if not reason:
+        return None, "missing_reason"
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        async with db.execute(
+            f"""
+            SELECT {VOUCH_SELECT}
+            FROM Vouch WHERE guildId=? AND id=?
+            """,
+            (str(guild_id), int(vouch_id)),
+        ) as cur:
+            row = await cur.fetchone()
+        vouch = _vouch_row_to_dict(row)
+        if not vouch:
+            await db.rollback()
+            return None, "not_found"
+        if vouch["status"] == "removed":
+            await db.rollback()
+            return vouch, "already_removed"
+        await db.execute(
+            "UPDATE Vouch SET status='removed', approvalStatus='removed', removedBy=?, removeReason=?, updatedAt=? WHERE id=?",
+            (str(removed_by), reason, now, int(vouch_id)),
+        )
+        await db.execute(
+            """
+            INSERT INTO DealLog (guildId, dealId, action, actorId, oldValue, newValue, reason, createdAt)
+            VALUES (?, ?, 'vouch_removed', ?, 'active', 'removed', ?, ?)
+            """,
+            (str(guild_id), vouch["dealId"], str(removed_by), reason, now),
+        )
+        await db.commit()
+    await write_audit("vouch_removed", vouch_id, reason, source="deal")
+    await recalculate_user_reputation(guild_id, vouch["targetId"])
+    await on_public_trust_stats_changed(guild_id)
+    return await get_vouch_by_id(guild_id, vouch_id), None
+
+
+async def report_vouch(guild_id, vouch_id, reporter_id, reason, proof_url=None):
+    reason = str(reason or "").strip()
+    if not reason:
+        return None, "missing_reason"
+    vouch = await get_vouch_by_id(guild_id, vouch_id)
+    if not vouch:
+        return None, "not_found"
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """
+            INSERT INTO VouchReport (guildId, vouchId, reporterId, reason, proofUrl, status, createdAt)
+            VALUES (?, ?, ?, ?, ?, 'open', ?)
+            """,
+            (str(guild_id), int(vouch_id), str(reporter_id), reason, str(proof_url).strip() if proof_url else None, now),
+        )
+        await db.commit()
+        report_id = cur.lastrowid
+    await write_audit("vouch_reported", vouch_id, reason, source="deal")
+    await recalculate_user_reputation(guild_id, vouch["targetId"])
+    return {"id": report_id, "vouch": vouch, "reason": reason, "proofUrl": proof_url, "createdAt": now}, None
+
+
+async def get_manual_vouch_review_config(guild_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT guildId, reviewChannelId, enabled, createdAt, updatedAt FROM manualVouchReviewConfig WHERE guildId=?",
+            (str(guild_id),),
+        ) as cursor:
+            row = await cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "guildId": row[0],
+        "reviewChannelId": row[1],
+        "enabled": bool(row[2]),
+        "createdAt": row[3],
+        "updatedAt": row[4],
+    }
+
+
+async def set_manual_vouch_review_config(guild_id, channel_id, enabled=True):
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO manualVouchReviewConfig (guildId, reviewChannelId, enabled, createdAt, updatedAt)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(guildId) DO UPDATE SET
+                reviewChannelId=excluded.reviewChannelId,
+                enabled=excluded.enabled,
+                updatedAt=excluded.updatedAt
+            """,
+            (str(guild_id), str(channel_id) if channel_id is not None else None, int(bool(enabled)), now, now),
+        )
+        await db.commit()
+    return await get_manual_vouch_review_config(guild_id)
+
+
+async def disable_manual_vouch_review_config(guild_id):
+    current = await get_manual_vouch_review_config(guild_id)
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO manualVouchReviewConfig (guildId, reviewChannelId, enabled, createdAt, updatedAt)
+            VALUES (?, ?, 0, ?, ?)
+            ON CONFLICT(guildId) DO UPDATE SET
+                enabled=0,
+                updatedAt=excluded.updatedAt
+            """,
+            (str(guild_id), current.get("reviewChannelId") if current else None, now, now),
+        )
+        await db.commit()
+    return await get_manual_vouch_review_config(guild_id)
+
+
+async def get_manual_vouch_panel_config(guild_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT guildId, channelId, messageId, enabled, createdAt, updatedAt FROM manualVouchPanelConfig WHERE guildId=?",
+            (str(guild_id),),
+        ) as cursor:
+            row = await cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "guildId": row[0],
+        "channelId": row[1],
+        "messageId": row[2],
+        "enabled": bool(row[3]),
+        "createdAt": row[4],
+        "updatedAt": row[5],
+    }
+
+
+async def set_manual_vouch_panel_config(guild_id, channel_id, message_id, enabled=True):
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO manualVouchPanelConfig (guildId, channelId, messageId, enabled, createdAt, updatedAt)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(guildId) DO UPDATE SET
+                channelId=excluded.channelId,
+                messageId=excluded.messageId,
+                enabled=excluded.enabled,
+                updatedAt=excluded.updatedAt
+            """,
+            (str(guild_id), str(channel_id) if channel_id is not None else None, str(message_id) if message_id is not None else None, int(bool(enabled)), now, now),
+        )
+        await db.commit()
+    return await get_manual_vouch_panel_config(guild_id)
+
+
+async def disable_manual_vouch_panel_config(guild_id):
+    current = await get_manual_vouch_panel_config(guild_id)
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO manualVouchPanelConfig (guildId, channelId, messageId, enabled, createdAt, updatedAt)
+            VALUES (?, ?, ?, 0, ?, ?)
+            ON CONFLICT(guildId) DO UPDATE SET
+                enabled=0,
+                updatedAt=excluded.updatedAt
+            """,
+            (
+                str(guild_id),
+                current.get("channelId") if current else None,
+                current.get("messageId") if current else None,
+                now,
+                now,
+            ),
+        )
+        await db.commit()
+    return await get_manual_vouch_panel_config(guild_id)
+
+
+async def cleanup_rate_limit_events(days=7):
+    cutoff = (datetime.utcnow() - timedelta(days=int(days or 7))).isoformat() + "Z"
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("DELETE FROM rateLimitEvents WHERE createdAt < ?", (cutoff,))
+            await db.commit()
+    except Exception as e:
+        logging.error(f"cleanup_rate_limit_events error: {e}")
+
+
+async def seconds_since_rate_limit_event(guild_id, user_id, action_type):
+    cutoff = (datetime.utcnow() - timedelta(days=7)).isoformat() + "Z"
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM rateLimitEvents WHERE createdAt < ?", (cutoff,))
+        async with db.execute(
+            """
+            SELECT createdAt FROM rateLimitEvents
+            WHERE guildId=? AND userId=? AND actionType=?
+            ORDER BY createdAt DESC, id DESC
+            LIMIT 1
+            """,
+            (str(guild_id), str(user_id), str(action_type)),
+        ) as cursor:
+            row = await cursor.fetchone()
+        await db.commit()
+    if not row or not row[0]:
+        return None
+    dt = _parse_deal_datetime(row[0])
+    if not dt:
+        return None
+    return max(0, (datetime.utcnow() - dt).total_seconds())
+
+
+async def record_rate_limit_event(guild_id, user_id, action_type, target_id=None, event_key=None):
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO rateLimitEvents (guildId, userId, actionType, targetId, eventKey, createdAt)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(guild_id),
+                str(user_id),
+                str(action_type),
+                str(target_id) if target_id is not None else None,
+                str(event_key) if event_key is not None else None,
+                now,
+            ),
+        )
+        await db.commit()
+
+
+async def manual_vouch_submit_guard(guild_id, reviewer_id, target_id=None):
+    elapsed = await seconds_since_rate_limit_event(guild_id, reviewer_id, "manual_vouch_submit")
+    if elapsed is not None and elapsed < 60:
+        return "cooldown"
+    reviewer_id = str(reviewer_id)
+    target_id_text = str(target_id) if target_id is not None else None
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """
+            SELECT COUNT(*) FROM Vouch
+            WHERE guildId=? AND reviewerId=? AND vouchType='manual' AND approvalStatus='pending'
+            """,
+            (str(guild_id), reviewer_id),
+        ) as cursor:
+            pending_count = (await cursor.fetchone())[0]
+        if int(pending_count or 0) >= 3:
+            return "too_many_pending"
+        if target_id_text:
+            async with db.execute(
+                """
+                SELECT COUNT(*) FROM Vouch
+                WHERE guildId=? AND reviewerId=? AND targetId=? AND vouchType='manual' AND approvalStatus='pending'
+                """,
+                (str(guild_id), reviewer_id, target_id_text),
+            ) as cursor:
+                duplicate = (await cursor.fetchone())[0]
+            if int(duplicate or 0) > 0:
+                return "duplicate_pending"
+    return None
+
+
+def _deal_proof_record_is_supported(record):
+    if not isinstance(record, dict):
+        return False
+    content_type = str(record.get("contentType") or record.get("content_type") or "").lower()
+    filename = str(record.get("filename") or "").lower()
+    if content_type in {"image/png", "image/jpeg", "image/jpg", "image/webp", "application/pdf"}:
+        return True
+    return any(filename.endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".webp", ".pdf"))
+
+
+async def create_pending_manual_vouch(guild_id, reviewer_id, target_id, target_raw, target_resolved, rating, review, context, notes, proofs):
+    proofs = list(proofs or [])
+    if not proofs:
+        return None, "missing_proof"
+    if len(proofs) > 15:
+        return None, "too_many_proofs"
+    if any(not _deal_proof_record_is_supported(proof) for proof in proofs):
+        return None, "invalid_proof"
+    try:
+        rating = int(rating)
+    except (TypeError, ValueError):
+        return None, "invalid_rating"
+    if rating < 1 or rating > 5:
+        return None, "invalid_rating"
+    review = str(review or "").strip()
+    if len(review) < 3:
+        return None, "short_review"
+    reviewer_id = str(reviewer_id)
+    target_id_text = str(target_id) if target_id is not None else None
+    if target_id_text and reviewer_id == target_id_text:
+        return None, "self"
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        async with db.execute(
+            """
+            SELECT COUNT(*) FROM Vouch
+            WHERE guildId=? AND reviewerId=? AND vouchType='manual' AND approvalStatus='pending'
+            """,
+            (str(guild_id), reviewer_id),
+        ) as cursor:
+            pending_count = (await cursor.fetchone())[0]
+        if int(pending_count or 0) >= 3:
+            await db.rollback()
+            return None, "too_many_pending"
+        if target_id_text:
+            async with db.execute(
+                """
+                SELECT COUNT(*) FROM Vouch
+                WHERE guildId=? AND reviewerId=? AND targetId=? AND vouchType='manual' AND approvalStatus='pending'
+                """,
+                (str(guild_id), reviewer_id, target_id_text),
+            ) as cursor:
+                duplicate = (await cursor.fetchone())[0]
+            if int(duplicate or 0) > 0:
+                await db.rollback()
+                return None, "duplicate_pending"
+        cur = await db.execute(
+            """
+            INSERT INTO Vouch (
+                guildId, dealId, reviewerId, targetId, reviewerRole, targetRole,
+                rating, review, proofUrl, verifiedDeal, status, vouchType, approvalStatus,
+                proofCount, proofData, proofSubmittedAt, context, staffNotes, targetRaw,
+                targetResolved, createdAt, updatedAt
+            )
+            VALUES (?, NULL, ?, ?, 'Manual', 'Manual', ?, ?, NULL, 0, 'pending', 'manual', 'pending',
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(guild_id),
+                reviewer_id,
+                target_id_text,
+                rating,
+                review,
+                len(proofs),
+                json.dumps(proofs, ensure_ascii=False),
+                now,
+                str(context or "").strip() or None,
+                str(notes or "").strip() or None,
+                str(target_raw or "").strip() or None,
+                1 if target_resolved else 0,
+                now,
+                now,
+            ),
+        )
+        await db.commit()
+        row_id = cur.lastrowid
+    await write_audit("manual_vouch_submitted", row_id, f"reviewer={reviewer_id}, target={target_id_text or target_raw}", source="deal")
+    return await get_vouch_by_id(guild_id, row_id), None
+
+
+async def approve_manual_vouch(guild_id, vouch_id, actor_id):
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        async with db.execute(f"SELECT {VOUCH_SELECT} FROM Vouch WHERE guildId=? AND id=?", (str(guild_id), int(vouch_id))) as cursor:
+            row = await cursor.fetchone()
+        vouch = _vouch_row_to_dict(row)
+        if not vouch:
+            await db.rollback()
+            return None, "not_found"
+        if vouch.get("vouchType") != "manual" or vouch.get("approvalStatus") != "pending":
+            await db.rollback()
+            return vouch, "processed"
+        if not vouch.get("targetId") or not vouch.get("targetResolved"):
+            await db.rollback()
+            return vouch, "unresolved_target"
+        await db.execute(
+            """
+            UPDATE Vouch
+            SET status='active', approvalStatus='approved', approvedById=?, approvedAt=?, updatedAt=?
+            WHERE id=?
+            """,
+            (str(actor_id), now, now, int(vouch_id)),
+        )
+        await db.commit()
+    updated = await get_vouch_by_id(guild_id, vouch_id)
+    await recalculate_user_reputation(guild_id, updated["targetId"])
+    await write_audit("manual_vouch_approved", vouch_id, f"approvedBy={actor_id}", source="deal")
+    await on_public_trust_vouch_changed(guild_id, vouch_id)
+    return updated, None
+
+
+async def reject_manual_vouch(guild_id, vouch_id, actor_id, reason=None):
+    now = _deal_now()
+    reason = str(reason or "").strip() or None
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        async with db.execute(f"SELECT {VOUCH_SELECT} FROM Vouch WHERE guildId=? AND id=?", (str(guild_id), int(vouch_id))) as cursor:
+            row = await cursor.fetchone()
+        vouch = _vouch_row_to_dict(row)
+        if not vouch:
+            await db.rollback()
+            return None, "not_found"
+        if vouch.get("vouchType") != "manual" or vouch.get("approvalStatus") != "pending":
+            await db.rollback()
+            return vouch, "processed"
+        await db.execute(
+            """
+            UPDATE Vouch
+            SET status='rejected', approvalStatus='rejected', rejectedById=?, rejectedAt=?,
+                rejectionReason=?, updatedAt=?
+            WHERE id=?
+            """,
+            (str(actor_id), now, reason, now, int(vouch_id)),
+        )
+        await db.commit()
+    await write_audit("manual_vouch_rejected", vouch_id, f"rejectedBy={actor_id}", source="deal")
+    return await get_vouch_by_id(guild_id, vouch_id), None
+
+
+SCAM_REPORT_COLUMNS = (
+    "id", "guildId", "reporterId", "reportedUserId", "reportedRaw", "reportedResolved",
+    "reason", "chronology", "nominalItem", "notes", "proofCount", "proofData",
+    "proofSubmittedAt", "status", "reviewMessageId", "reviewChannelId",
+    "evidenceThreadId", "reviewedById", "rejectedById", "rejectedAt",
+    "rejectionReason", "resolvedById", "resolvedAt", "resolution", "staffNotes",
+    "createdAt", "updatedAt",
+)
+SCAM_REPORT_SELECT = ", ".join(SCAM_REPORT_COLUMNS)
+
+
+def _scam_report_row_to_dict(row):
+    if not row:
+        return None
+    return dict(zip(SCAM_REPORT_COLUMNS, row))
+
+
+def _trust_status_row_to_dict(row):
+    if not row:
+        return None
+    cols = ("guildId", "userId", "status", "reason", "sourceType", "sourceId", "updatedById", "updatedAt", "createdAt")
+    return dict(zip(cols, row))
+
+
+async def get_scam_report_review_config(guild_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT guildId, reviewChannelId, enabled, createdAt, updatedAt FROM scamReportReviewConfig WHERE guildId=?",
+            (str(guild_id),),
+        ) as cursor:
+            row = await cursor.fetchone()
+    if not row:
+        return None
+    return {"guildId": row[0], "reviewChannelId": row[1], "enabled": bool(row[2]), "createdAt": row[3], "updatedAt": row[4]}
+
+
+async def set_scam_report_review_config(guild_id, channel_id, enabled=True):
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO scamReportReviewConfig (guildId, reviewChannelId, enabled, createdAt, updatedAt)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(guildId) DO UPDATE SET
+                reviewChannelId=excluded.reviewChannelId,
+                enabled=excluded.enabled,
+                updatedAt=excluded.updatedAt
+            """,
+            (str(guild_id), str(channel_id) if channel_id is not None else None, int(bool(enabled)), now, now),
+        )
+        await db.commit()
+    return await get_scam_report_review_config(guild_id)
+
+
+async def disable_scam_report_review_config(guild_id):
+    current = await get_scam_report_review_config(guild_id)
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO scamReportReviewConfig (guildId, reviewChannelId, enabled, createdAt, updatedAt)
+            VALUES (?, ?, 0, ?, ?)
+            ON CONFLICT(guildId) DO UPDATE SET enabled=0, updatedAt=excluded.updatedAt
+            """,
+            (str(guild_id), current.get("reviewChannelId") if current else None, now, now),
+        )
+        await db.commit()
+    return await get_scam_report_review_config(guild_id)
+
+
+async def get_scam_report_panel_config(guild_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT guildId, channelId, messageId, enabled, createdAt, updatedAt FROM scamReportPanelConfig WHERE guildId=?",
+            (str(guild_id),),
+        ) as cursor:
+            row = await cursor.fetchone()
+    if not row:
+        return None
+    return {"guildId": row[0], "channelId": row[1], "messageId": row[2], "enabled": bool(row[3]), "createdAt": row[4], "updatedAt": row[5]}
+
+
+async def set_scam_report_panel_config(guild_id, channel_id, message_id, enabled=True):
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO scamReportPanelConfig (guildId, channelId, messageId, enabled, createdAt, updatedAt)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(guildId) DO UPDATE SET
+                channelId=excluded.channelId,
+                messageId=excluded.messageId,
+                enabled=excluded.enabled,
+                updatedAt=excluded.updatedAt
+            """,
+            (str(guild_id), str(channel_id) if channel_id is not None else None, str(message_id) if message_id is not None else None, int(bool(enabled)), now, now),
+        )
+        await db.commit()
+    return await get_scam_report_panel_config(guild_id)
+
+
+async def disable_scam_report_panel_config(guild_id):
+    current = await get_scam_report_panel_config(guild_id)
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO scamReportPanelConfig (guildId, channelId, messageId, enabled, createdAt, updatedAt)
+            VALUES (?, ?, ?, 0, ?, ?)
+            ON CONFLICT(guildId) DO UPDATE SET enabled=0, updatedAt=excluded.updatedAt
+            """,
+            (str(guild_id), current.get("channelId") if current else None, current.get("messageId") if current else None, now, now),
+        )
+        await db.commit()
+    return await get_scam_report_panel_config(guild_id)
+
+
+async def get_trust_moderation_status(guild_id, user_id):
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT guildId, userId, status, reason, sourceType, sourceId, updatedById, updatedAt, createdAt FROM trustModerationStatus WHERE guildId=? AND userId=?",
+                (str(guild_id), str(user_id)),
+            ) as cursor:
+                row = await cursor.fetchone()
+    except sqlite3.OperationalError as e:
+        if "trustModerationStatus" not in str(e):
+            raise
+        row = None
+    return _trust_status_row_to_dict(row) or {
+        "guildId": str(guild_id),
+        "userId": str(user_id),
+        "status": "clear",
+        "reason": None,
+        "sourceType": None,
+        "sourceId": None,
+        "updatedById": None,
+        "updatedAt": None,
+        "createdAt": None,
+    }
+
+
+async def set_trust_moderation_status(guild_id, user_id, status, reason, updated_by_id, source_type=None, source_id=None):
+    status = str(status or "").strip().lower()
+    if status not in {"clear", "under_review", "blacklisted"}:
+        return None, "invalid_status"
+    reason = str(reason or "").strip()
+    if not reason:
+        return None, "missing_reason"
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO trustModerationStatus (
+                guildId, userId, status, reason, sourceType, sourceId, updatedById, updatedAt, createdAt
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(guildId, userId) DO UPDATE SET
+                status=excluded.status,
+                reason=excluded.reason,
+                sourceType=excluded.sourceType,
+                sourceId=excluded.sourceId,
+                updatedById=excluded.updatedById,
+                updatedAt=excluded.updatedAt
+            """,
+            (str(guild_id), str(user_id), status, reason, source_type, str(source_id) if source_id is not None else None, str(updated_by_id), now, now),
+        )
+        await db.commit()
+    await write_audit("trust_status_updated", user_id, f"{status}: {reason[:120]}", source="deal")
+    await on_public_trust_stats_changed(guild_id)
+    await refresh_staff_operation_panels(guild_id, {"trust_warning"})
+    return await get_trust_moderation_status(guild_id, user_id), None
+
+
+async def scam_report_submit_guard(guild_id, reporter_id, reported_user_id=None):
+    elapsed = await seconds_since_rate_limit_event(guild_id, reporter_id, "scam_report_submit")
+    if elapsed is not None and elapsed < 120:
+        return "cooldown"
+    reporter_id = str(reporter_id)
+    reported_id_text = str(reported_user_id) if reported_user_id is not None else None
+    if reported_id_text:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                """
+                SELECT COUNT(*) FROM scammerReports
+                WHERE guildId=? AND reporterId=? AND reportedUserId=?
+                  AND status IN ('pending', 'under_review')
+                """,
+                (str(guild_id), reporter_id, reported_id_text),
+            ) as cursor:
+                duplicate = (await cursor.fetchone())[0]
+        if int(duplicate or 0) > 0:
+            return "duplicate_pending"
+    return None
+
+
+async def create_pending_scam_report(guild_id, reporter_id, reported_user_id, reported_raw, reported_resolved, reason, chronology, nominal_item, notes, proofs):
+    proofs = list(proofs or [])
+    if not proofs:
+        return None, "missing_proof"
+    if len(proofs) > 15:
+        return None, "too_many_proofs"
+    if any(not _deal_proof_record_is_supported(proof) for proof in proofs):
+        return None, "invalid_proof"
+    reason = str(reason or "").strip()
+    chronology = str(chronology or "").strip()
+    if len(reason) < 3:
+        return None, "short_reason"
+    if len(chronology) < 5:
+        return None, "short_chronology"
+    reporter_id = str(reporter_id)
+    reported_id_text = str(reported_user_id) if reported_user_id is not None else None
+    if reported_id_text and reporter_id == reported_id_text:
+        return None, "self"
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        if reported_id_text:
+            async with db.execute(
+                """
+                SELECT COUNT(*) FROM scammerReports
+                WHERE guildId=? AND reporterId=? AND reportedUserId=? AND status IN ('pending', 'under_review')
+                """,
+                (str(guild_id), reporter_id, reported_id_text),
+            ) as cursor:
+                duplicate = (await cursor.fetchone())[0]
+            if int(duplicate or 0) > 0:
+                await db.rollback()
+                return None, "duplicate_pending"
+        cur = await db.execute(
+            """
+            INSERT INTO scammerReports (
+                guildId, reporterId, reportedUserId, reportedRaw, reportedResolved,
+                reason, chronology, nominalItem, notes, proofCount, proofData,
+                proofSubmittedAt, status, createdAt, updatedAt
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+            """,
+            (
+                str(guild_id), reporter_id, reported_id_text, str(reported_raw or "").strip() or None,
+                1 if reported_resolved else 0, reason, chronology,
+                str(nominal_item or "").strip() or None, str(notes or "").strip() or None,
+                len(proofs), json.dumps(proofs, ensure_ascii=False), now, now, now,
+            ),
+        )
+        await db.commit()
+        row_id = cur.lastrowid
+    await write_audit("scammer_report_submitted", row_id, f"reporter={reporter_id}, reported={reported_id_text or reported_raw}", source="deal")
+    await refresh_staff_operation_panels(guild_id, {"trust_warning"})
+    return await get_scam_report_by_id(guild_id, row_id), None
+
+
+async def get_scam_report_by_id(guild_id, report_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(f"SELECT {SCAM_REPORT_SELECT} FROM scammerReports WHERE guildId=? AND id=?", (str(guild_id), int(report_id))) as cursor:
+            row = await cursor.fetchone()
+    return _scam_report_row_to_dict(row)
+
+
+async def set_scam_report_review_message(guild_id, report_id, channel_id, message_id, thread_id=None):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE scammerReports SET reviewChannelId=?, reviewMessageId=?, evidenceThreadId=?, updatedAt=? WHERE guildId=? AND id=?",
+            (str(channel_id), str(message_id), str(thread_id) if thread_id else None, _deal_now(), str(guild_id), int(report_id)),
+        )
+        await db.commit()
+    return await get_scam_report_by_id(guild_id, report_id)
+
+
+SCAM_REPORT_FINAL_STATUSES = {"blacklisted", "confirmed_scam", "rejected", "resolved", "closed"}
+
+
+async def update_scam_report_status(guild_id, report_id, actor_id, status, reason=None, note=None, resolution=None, evidence_summary=None, duration=None):
+    status = str(status or "").strip().lower()
+    if status not in {"under_review", "confirmed_scam", "blacklisted", "rejected", "resolved", "closed"}:
+        return None, "invalid_status"
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        async with db.execute(f"SELECT {SCAM_REPORT_SELECT} FROM scammerReports WHERE guildId=? AND id=?", (str(guild_id), int(report_id))) as cursor:
+            row = await cursor.fetchone()
+        report = _scam_report_row_to_dict(row)
+        if not report:
+            await db.rollback()
+            return None, "not_found"
+        if report.get("status") in SCAM_REPORT_FINAL_STATUSES:
+            await db.rollback()
+            return report, "processed"
+        if str(report.get("status") or "").lower() == status:
+            await db.rollback()
+            return report, "processed"
+        if status in SCAM_REPORT_FINAL_STATUSES and report.get("status") in SCAM_REPORT_FINAL_STATUSES:
+            await db.rollback()
+            return report, "processed"
+        staff_notes = "\n".join(part for part in (report.get("staffNotes"), note, evidence_summary, duration) if str(part or "").strip()) or None
+        fields = {"status": status, "reviewedById": str(actor_id), "staffNotes": staff_notes, "updatedAt": now}
+        if status == "rejected":
+            fields.update({"rejectedById": str(actor_id), "rejectedAt": now, "rejectionReason": str(reason or "").strip() or None})
+        if status in ("resolved", "closed"):
+            fields.update({"resolvedById": str(actor_id), "resolvedAt": now, "resolution": str(resolution or reason or "").strip() or None})
+        set_clause = ", ".join(f"{key}=?" for key in fields)
+        await db.execute(
+            f"UPDATE scammerReports SET {set_clause} WHERE guildId=? AND id=?",
+            (*fields.values(), str(guild_id), int(report_id)),
+        )
+        await db.commit()
+    updated = await get_scam_report_by_id(guild_id, report_id)
+    if updated.get("reportedUserId") and status in ("under_review", "confirmed_scam", "blacklisted"):
+        trust_status = "under_review" if status == "under_review" else "blacklisted"
+        await set_trust_moderation_status(guild_id, updated["reportedUserId"], trust_status, reason or updated.get("reason") or status, actor_id, "scam_report", report_id)
+        await recalculate_user_reputation(guild_id, updated["reportedUserId"])
+    await write_audit(f"scam_report_{status}", report_id, str(reason or resolution or "")[:120], source="deal")
+    await refresh_staff_operation_panels(guild_id, {"trust_warning"})
+    return updated, None
+
+
+async def add_scam_report_note(guild_id, report_id, actor_id, note):
+    note = str(note or "").strip()
+    if not note:
+        return None, "missing_note"
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        async with db.execute(f"SELECT {SCAM_REPORT_SELECT} FROM scammerReports WHERE guildId=? AND id=?", (str(guild_id), int(report_id))) as cursor:
+            row = await cursor.fetchone()
+        report = _scam_report_row_to_dict(row)
+        if not report:
+            await db.rollback()
+            return None, "not_found"
+        combined = "\n".join(part for part in (report.get("staffNotes"), f"{_deal_now()} <{actor_id}> {note}") if str(part or "").strip())
+        await db.execute(
+            "UPDATE scammerReports SET staffNotes=?, updatedAt=? WHERE guildId=? AND id=?",
+            (combined, now, str(guild_id), int(report_id)),
+        )
+        await db.commit()
+    await write_audit("scam_report_note_added", report_id, note[:120], source="deal")
+    return await get_scam_report_by_id(guild_id, report_id), None
+
+
+async def detect_suspicious_vouch(vouch):
+    reasons = []
+    review = str(vouch.get("review") or "").strip()
+    if len(review) < 12:
+        reasons.append("review terlalu pendek")
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """
+            SELECT COUNT(*) FROM Vouch
+            WHERE guildId=? AND reviewerId=? AND targetId=? AND status='active'
+            """,
+            (vouch["guildId"], vouch["reviewerId"], vouch["targetId"]),
+        ) as cur:
+            same_pair = (await cur.fetchone())[0]
+        async with db.execute(
+            "SELECT COUNT(*) FROM Vouch WHERE guildId=? AND reviewerId=? AND createdAt >= ?",
+            (vouch["guildId"], vouch["reviewerId"], (datetime.utcnow() - timedelta(hours=1)).isoformat() + "Z"),
+        ) as cur:
+            recent = (await cur.fetchone())[0]
+        async with db.execute(
+            """
+            SELECT COUNT(*) FROM VouchReport r
+            JOIN Vouch v ON v.id=r.vouchId AND v.guildId=r.guildId
+            WHERE r.guildId=?
+              AND (v.reviewerId IN (?, ?) OR v.targetId IN (?, ?))
+              AND r.status='open'
+            """,
+            (
+                vouch["guildId"],
+                vouch["reviewerId"],
+                vouch["targetId"],
+                vouch["reviewerId"],
+                vouch["targetId"],
+            ),
+        ) as cur:
+            reports = (await cur.fetchone())[0]
+        async with db.execute(
+            "SELECT nominalItem FROM Deal WHERE guildId=? AND dealId=?",
+            (vouch["guildId"], vouch["dealId"]),
+        ) as cur:
+            deal_row = await cur.fetchone()
+    if same_pair > 1:
+        reasons.append("pasangan reviewer/target berulang")
+    if recent >= 5:
+        reasons.append("terlalu banyak vouch dalam waktu singkat")
+    if reports > 0:
+        reasons.append("user punya report terbuka")
+    nominal = int(deal_row[0] or 0) if deal_row else 0
+    if not vouch.get("proofUrl") and nominal >= 1_000_000:
+        reasons.append("high-value deal tanpa proof")
+    return reasons
+
+
+async def create_verified_deal_vouch(deal, reviewer_id, target_id, rating, review, proof_url=None):
+    if not deal or deal.get("status") != DEAL_STATUS_COMPLETED or not deal.get("isVouchEligible"):
+        return None, "not_completed"
+    reviewer_id = str(reviewer_id)
+    target_id = str(target_id)
+    if reviewer_id == target_id:
+        return None, "self"
+    reviewer_role = get_deal_participant_role(deal, reviewer_id)
+    target_role = get_deal_participant_role(deal, target_id)
+    if not reviewer_role or not target_role:
+        return None, "not_participant"
+    if not can_deal_role_vouch_for(reviewer_role, target_role):
+        return None, "not_allowed"
+    try:
+        rating = int(rating)
+    except (TypeError, ValueError):
+        return None, "invalid_rating"
+    if rating < 1 or rating > 5:
+        return None, "invalid_rating"
+    review = str(review or "").strip()
+    if not review:
+        return None, "empty_review"
+    if len(review) < 3:
+        return None, "short_review"
+    proof_url = None
+
+    now = _deal_now()
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute(
+                """
+                INSERT INTO Vouch (
+                    guildId, dealId, reviewerId, targetId, reviewerRole, targetRole,
+                    rating, review, proofUrl, verifiedDeal, status, vouchType, approvalStatus,
+                    proofCount, targetResolved, createdAt, updatedAt
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'active', 'verified_deal', 'verified', 0, 1, ?, ?)
+                """,
+                (
+                    str(deal["guildId"]),
+                    str(deal["dealId"]),
+                    reviewer_id,
+                    target_id,
+                    reviewer_role,
+                    target_role,
+                    rating,
+                    review,
+                    str(proof_url).strip() if proof_url else None,
+                    now,
+                    now,
+                ),
+            )
+            await db.execute(
+                """
+                INSERT INTO DealLog (guildId, dealId, action, actorId, oldValue, newValue, reason, createdAt)
+                VALUES (?, ?, 'deal_vouch_submitted', ?, NULL, ?, ?, ?)
+                """,
+                (
+                    str(deal["guildId"]),
+                    str(deal["dealId"]),
+                    reviewer_id,
+                    f"{reviewer_role}->{target_role}",
+                    f"rating={rating}",
+                    now,
+                ),
+            )
+            await db.commit()
+            row_id = cur.lastrowid
+    except sqlite3.IntegrityError:
+        return None, "duplicate"
+
+    await write_audit("deal_vouch_submitted", deal["dealId"], f"{reviewer_role}->{target_role} rating={rating}", source="deal")
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            f"""
+            SELECT {VOUCH_SELECT}
+            FROM Vouch WHERE id=?
+            """,
+            (row_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+    vouch = _vouch_row_to_dict(row)
+    await recalculate_user_reputation(deal["guildId"], target_id)
+    await on_public_trust_vouch_changed(deal["guildId"], row_id)
+    suspicious = await detect_suspicious_vouch(vouch)
+    if suspicious:
+        await add_deal_log(
+            deal["guildId"],
+            deal["dealId"],
+            "vouch_suspicious",
+            reviewer_id,
+            None,
+            f"vouch_id={vouch['id']}",
+            ", ".join(suspicious),
+        )
+    return vouch, None
+
+
+async def update_deal_editable_fields(deal_row_id, actor_id, *, payment_penjual, payment_pembeli, nominal_item, fee_type, description, force=False):
+    nominal = parse_rupiah_amount(nominal_item)
+    if nominal is None:
+        return None, "invalid_nominal"
+    fee_type = str(fee_type or "").strip().capitalize()
+    if fee_type not in ("Inc", "Exc"):
+        return None, "invalid_fee"
+    mm_fee = calculate_middleman_fee(nominal)
+    if fee_type == "Exc":
+        buyer_pays = nominal + mm_fee
+        seller_receives = nominal
+    else:
+        buyer_pays = nominal
+        seller_receives = nominal - mm_fee
+    if seller_receives < 0:
+        return None, "invalid_nominal"
+
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        async with db.execute(f"SELECT {DEAL_SELECT} FROM Deal WHERE id=?", (int(deal_row_id),)) as cursor:
+            row = await cursor.fetchone()
+        deal = _deal_row_to_dict(row)
+        if not deal:
+            await db.rollback()
+            return None, "not_found"
+        if not force and deal["status"] not in (DEAL_STATUS_PENDING_FORM, DEAL_STATUS_WAITING_FUNDS):
+            await db.rollback()
+            return deal, "invalid_status"
+        old_value = json.dumps({
+            "paymentPenjual": deal.get("paymentPenjual"),
+            "paymentPembeli": deal.get("paymentPembeli"),
+            "nominalItem": deal.get("nominalItem"),
+            "feeType": deal.get("feeType"),
+            "mmFee": deal.get("mmFee"),
+            "buyerPays": deal.get("buyerPays"),
+            "sellerReceives": deal.get("sellerReceives"),
+            "description": deal.get("description"),
+        }, ensure_ascii=False)
+        new_value_obj = {
+            "paymentPenjual": str(payment_penjual).strip(),
+            "paymentPembeli": str(payment_pembeli).strip(),
+            "nominalItem": nominal,
+            "feeType": fee_type,
+            "mmFee": mm_fee,
+            "buyerPays": buyer_pays,
+            "sellerReceives": seller_receives,
+            "description": str(description).strip(),
+        }
+        await db.execute(
+            """
+            UPDATE Deal
+            SET paymentPenjual=?, paymentPembeli=?, nominalItem=?, feeType=?, mmFee=?,
+                buyerPays=?, sellerReceives=?, description=?, updatedAt=?
+            WHERE id=?
+            """,
+            (
+                new_value_obj["paymentPenjual"],
+                new_value_obj["paymentPembeli"],
+                nominal,
+                fee_type,
+                mm_fee,
+                buyer_pays,
+                seller_receives,
+                new_value_obj["description"],
+                now,
+                int(deal_row_id),
+            ),
+        )
+        new_value = json.dumps(new_value_obj, ensure_ascii=False)
+        await db.execute(
+            """
+            INSERT INTO DealLog (guildId, dealId, action, actorId, oldValue, newValue, reason, createdAt)
+            VALUES (?, ?, ?, ?, ?, ?, NULL, ?)
+            """,
+            (deal["guildId"], deal["dealId"], "deal_force_edit" if force else "deal_edit", str(actor_id), old_value, new_value, now),
+        )
+        await db.commit()
+    await write_audit("deal_force_edit" if force else "deal_edit", deal_row_id, "editable fields updated", source="deal")
+    return await get_deal_by_id(deal_row_id), None
+
+
+async def cancel_deal(deal_row_id, actor_id, reason):
+    reason = str(reason or "").strip()
+    if not reason:
+        return None, "missing_reason"
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        async with db.execute(f"SELECT {DEAL_SELECT} FROM Deal WHERE id=?", (int(deal_row_id),)) as cursor:
+            row = await cursor.fetchone()
+        deal = _deal_row_to_dict(row)
+        if not deal:
+            await db.rollback()
+            return None, "not_found"
+        if deal["status"] in (DEAL_STATUS_COMPLETED, "Cancelled", "Voided/Duplicate"):
+            await db.rollback()
+            return deal, "invalid_status"
+        await db.execute(
+            """
+            UPDATE Deal
+            SET status='Cancelled', cancelledById=?, cancelledAt=?, cancelReason=?,
+                isVouchEligible=0, updatedAt=?
+            WHERE id=?
+            """,
+            (str(actor_id), now, reason, now, int(deal_row_id)),
+        )
+        await db.execute(
+            """
+            INSERT INTO DealLog (guildId, dealId, action, actorId, oldValue, newValue, reason, createdAt)
+            VALUES (?, ?, 'deal_cancel', ?, ?, 'Cancelled', ?, ?)
+            """,
+            (deal["guildId"], deal["dealId"], str(actor_id), deal["status"], reason, now),
+        )
+        await db.commit()
+    await write_audit("deal_cancel", deal_row_id, reason, source="deal")
+    await archive_deal_if_final(deal_row_id, "Cancelled", actor_id, reason=reason)
+    await refresh_staff_operation_panels(deal["guildId"], {"active_deals", "middleman_status", "dispute_board"})
+    return await get_deal_by_id(deal_row_id), None
+
+
+async def request_deal_cancel(deal_row_id, actor_id, reason):
+    reason = str(reason or "").strip()
+    if not reason:
+        return None, "missing_reason"
+    deal = await get_deal_by_id(deal_row_id)
+    if not deal:
+        return None, "not_found"
+    if deal["status"] in (DEAL_STATUS_COMPLETED, "Cancelled", "Voided/Duplicate"):
+        return deal, "invalid_status"
+    await add_deal_log(deal["guildId"], deal["dealId"], "deal_cancel_requested", actor_id, deal["status"], deal["status"], reason)
+    await write_audit("deal_cancel_requested", deal_row_id, reason, source="deal")
+    return deal, None
+
+
+async def dispute_deal(deal_row_id, actor_id, reason, proof_url=None):
+    reason = str(reason or "").strip()
+    if not reason:
+        return None, "missing_reason"
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        async with db.execute(f"SELECT {DEAL_SELECT} FROM Deal WHERE id=?", (int(deal_row_id),)) as cursor:
+            row = await cursor.fetchone()
+        deal = _deal_row_to_dict(row)
+        if not deal:
+            await db.rollback()
+            return None, "not_found"
+        if deal["status"] in (DEAL_STATUS_COMPLETED, "Cancelled", "Voided/Duplicate", DEAL_STATUS_DISPUTED):
+            await db.rollback()
+            return deal, "invalid_status"
+        await db.execute(
+            """
+            UPDATE Deal
+            SET status=?, disputedById=?, disputedAt=?, disputeReason=?, disputeProofUrl=?,
+                disputePreviousStatus=?, statusBeforeDispute=?, isVouchEligible=0, updatedAt=?
+            WHERE id=?
+            """,
+            (
+                DEAL_STATUS_DISPUTED, str(actor_id), now, reason,
+                str(proof_url).strip() if proof_url else None,
+                deal["status"], deal["status"], now, int(deal_row_id),
+            ),
+        )
+        await db.execute(
+            """
+            INSERT INTO DealLog (guildId, dealId, action, actorId, oldValue, newValue, reason, createdAt)
+            VALUES (?, ?, 'deal_dispute', ?, ?, ?, ?, ?)
+            """,
+            (deal["guildId"], deal["dealId"], str(actor_id), deal["status"], DEAL_STATUS_DISPUTED, reason, now),
+        )
+    await db.commit()
+    await write_audit("deal_dispute", deal_row_id, reason, source="deal")
+    await on_public_trust_stats_changed(deal["guildId"])
+    await refresh_staff_operation_panels(deal["guildId"], {"active_deals", "dispute_board"})
+    return await get_deal_by_id(deal_row_id), None
+
+
+def infer_dispute_restore_status(deal):
+    if not deal:
+        return DEAL_STATUS_PENDING_FORM
+    if deal.get("statusBeforeDispute"):
+        return deal["statusBeforeDispute"]
+    if deal.get("disputePreviousStatus"):
+        return deal["disputePreviousStatus"]
+    if deal.get("completedAt"):
+        return None
+    if deal.get("buyerConfirmedAt"):
+        return DEAL_STATUS_BUYER_CONFIRMED
+    if deal.get("itemSentAt"):
+        return DEAL_STATUS_ITEM_SENT
+    if deal.get("fundsReceivedAt"):
+        return DEAL_STATUS_FUNDS_RECEIVED
+    if deal.get("formSubmittedAt") or deal.get("dealId"):
+        return DEAL_STATUS_WAITING_FUNDS
+    return DEAL_STATUS_PENDING_FORM
+
+
+async def resolve_deal_dispute(deal_row_id, actor_id, resolution):
+    resolution = str(resolution or "").strip()
+    if not resolution:
+        return None, "missing_resolution"
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        async with db.execute(f"SELECT {DEAL_SELECT} FROM Deal WHERE id=?", (int(deal_row_id),)) as cursor:
+            row = await cursor.fetchone()
+        deal = _deal_row_to_dict(row)
+        if not deal:
+            await db.rollback()
+            return None, "not_found"
+        if deal["status"] != DEAL_STATUS_DISPUTED:
+            await db.rollback()
+            return deal, "invalid_status"
+        previous = infer_dispute_restore_status(deal)
+        if not previous:
+            await db.rollback()
+            return deal, "missing_previous_status"
+        new_status = previous
+        await db.execute(
+            """
+            UPDATE Deal
+            SET status=?, disputeResolvedById=?, disputeResolvedAt=?, disputeResolution=?, updatedAt=?
+            WHERE id=?
+            """,
+            (new_status, str(actor_id), now, resolution, now, int(deal_row_id)),
+        )
+        await db.execute(
+            """
+            INSERT INTO DealLog (guildId, dealId, action, actorId, oldValue, newValue, reason, createdAt)
+            VALUES (?, ?, 'deal_dispute_resolved', ?, ?, ?, ?, ?)
+            """,
+            (deal["guildId"], deal["dealId"], str(actor_id), DEAL_STATUS_DISPUTED, new_status, resolution, now),
+        )
+    await db.commit()
+    await write_audit("deal_dispute_resolved", deal_row_id, resolution, source="deal")
+    await on_public_trust_stats_changed(deal["guildId"])
+    await refresh_staff_operation_panels(deal["guildId"], {"active_deals", "dispute_board"})
+    return await get_deal_by_id(deal_row_id), None
+
+
+async def force_deal_status(deal_row_id, actor_id, status, reason):
+    status = str(status or "").strip()
+    reason = str(reason or "").strip()
+    if not status or not reason:
+        return None, "missing"
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        async with db.execute(f"SELECT {DEAL_SELECT} FROM Deal WHERE id=?", (int(deal_row_id),)) as cursor:
+            row = await cursor.fetchone()
+        deal = _deal_row_to_dict(row)
+        if not deal:
+            await db.rollback()
+            return None, "not_found"
+        vouch_ok = 1 if status == DEAL_STATUS_COMPLETED else 0 if status in ("Cancelled", "Voided/Duplicate", DEAL_STATUS_DISPUTED) else deal.get("isVouchEligible", 0)
+        await db.execute(
+            "UPDATE Deal SET status=?, isVouchEligible=?, updatedAt=? WHERE id=?",
+            (status, vouch_ok, now, int(deal_row_id)),
+        )
+        await db.execute(
+            """
+            INSERT INTO DealLog (guildId, dealId, action, actorId, oldValue, newValue, reason, createdAt)
+            VALUES (?, ?, 'deal_force_status', ?, ?, ?, ?, ?)
+            """,
+            (deal["guildId"], deal["dealId"], str(actor_id), deal["status"], status, reason, now),
+        )
+        await db.commit()
+    await write_audit("deal_force_status", deal_row_id, f"{status}: {reason}", source="deal")
+    if _deal_is_archivable_final_status(status):
+        await archive_deal_if_final(deal_row_id, status, actor_id, reason=reason)
+    await refresh_staff_operation_panels(deal["guildId"], {"active_deals", "middleman_status", "dispute_board"})
+    return await get_deal_by_id(deal_row_id), None
+
+
+async def mark_deal_void_duplicate(deal_row_id, actor_id, reason):
+    reason = str(reason or "").strip()
+    if not reason:
+        return None, "missing_reason"
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        async with db.execute(f"SELECT {DEAL_SELECT} FROM Deal WHERE id=?", (int(deal_row_id),)) as cursor:
+            row = await cursor.fetchone()
+        deal = _deal_row_to_dict(row)
+        if not deal:
+            await db.rollback()
+            return None, "not_found"
+        await db.execute(
+            "UPDATE Deal SET status='Voided/Duplicate', isVouchEligible=0, updatedAt=? WHERE id=?",
+            (now, int(deal_row_id)),
+        )
+        await db.execute(
+            """
+            INSERT INTO DealLog (guildId, dealId, action, actorId, oldValue, newValue, reason, createdAt)
+            VALUES (?, ?, 'deal_void_duplicate', ?, ?, 'Voided/Duplicate', ?, ?)
+            """,
+            (deal["guildId"], deal["dealId"], str(actor_id), deal["status"], reason, now),
+        )
+        await db.commit()
+    await write_audit("deal_void_duplicate", deal_row_id, reason, source="deal")
+    await archive_deal_if_final(deal_row_id, "Voided/Duplicate", actor_id, reason=reason)
+    await refresh_staff_operation_panels(deal["guildId"], {"active_deals", "middleman_status", "dispute_board"})
+    return await get_deal_by_id(deal_row_id), None
+
+
+async def add_deal_note(guild_id, deal_id, actor_id, note):
+    note = str(note or "").strip()
+    if not note:
+        return None, "empty_note"
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "INSERT INTO DealNote (guildId, dealId, actorId, note, createdAt) VALUES (?, ?, ?, ?, ?)",
+            (str(guild_id), str(deal_id), str(actor_id), note, now),
+        )
+        await db.execute(
+            """
+            INSERT INTO DealLog (guildId, dealId, action, actorId, oldValue, newValue, reason, createdAt)
+            VALUES (?, ?, 'deal_note_added', ?, NULL, NULL, ?, ?)
+            """,
+            (str(guild_id), str(deal_id), str(actor_id), note, now),
+        )
+        await db.commit()
+        row_id = cur.lastrowid
+    await write_audit("deal_note_added", deal_id, f"note_id={row_id}", source="deal")
+    return row_id, None
+
+
+async def list_deal_notes(guild_id, deal_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT id, guildId, dealId, actorId, note, createdAt FROM DealNote WHERE guildId=? AND dealId=? ORDER BY id ASC",
+            (str(guild_id), str(deal_id)),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return [
+        {"id": r[0], "guildId": r[1], "dealId": r[2], "actorId": r[3], "note": r[4], "createdAt": r[5]}
+        for r in rows
+    ]
+
+
+async def list_deal_logs(guild_id, deal_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT id, action, actorId, oldValue, newValue, reason, createdAt FROM DealLog WHERE guildId=? AND dealId=? ORDER BY id ASC",
+            (str(guild_id), str(deal_id)),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return [
+        {"id": r[0], "action": r[1], "actorId": r[2], "oldValue": r[3], "newValue": r[4], "reason": r[5], "createdAt": r[6]}
+        for r in rows
+    ]
+
+
+async def list_active_deals(guild_id):
+    placeholders = ",".join("?" for _ in DEAL_ACTIVE_STATUSES)
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            f"SELECT {DEAL_SELECT} FROM Deal WHERE guildId=? AND status IN ({placeholders}) ORDER BY updatedAt DESC, id DESC",
+            (str(guild_id), *DEAL_ACTIVE_STATUSES),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return [_deal_row_to_dict(row) for row in rows]
+
+
+def _parse_deal_datetime(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", ""))
+    except ValueError:
+        return None
+
+
+async def _get_deal_reminder_last_sent(guild_id, deal_id, reminder_type):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT sentAt FROM DealReminderLog WHERE guildId=? AND dealId=? AND reminderType=?",
+            (str(guild_id), str(deal_id), str(reminder_type)),
+        ) as cursor:
+            row = await cursor.fetchone()
+    return row[0] if row else None
+
+
+async def _mark_deal_reminder_sent(guild_id, deal_id, reminder_type):
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO DealReminderLog (guildId, dealId, reminderType, sentAt)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(guildId, dealId, reminderType) DO UPDATE SET sentAt=excluded.sentAt
+            """,
+            (str(guild_id), str(deal_id), str(reminder_type), now),
+        )
+        await db.commit()
+
+
+async def should_send_deal_reminder(config, deal, reminder_type, anchor_time, interval_seconds):
+    anchor = _parse_deal_datetime(anchor_time)
+    if not anchor:
+        return False
+    now = datetime.utcnow()
+    if (now - anchor).total_seconds() < int(interval_seconds):
+        return False
+    last_sent = await _get_deal_reminder_last_sent(deal["guildId"], deal["dealId"] or deal["id"], reminder_type)
+    last_dt = _parse_deal_datetime(last_sent)
+    cooldown = int(config.get("pingCooldownSeconds", 3600))
+    return not last_dt or (now - last_dt).total_seconds() >= cooldown
+
+
+async def expire_deal_for_timeout(deal, reason):
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE Deal SET status='Expired', isVouchEligible=0, updatedAt=? WHERE id=? AND status NOT IN ('Completed','Cancelled','Expired','Voided/Duplicate')",
+            (now, int(deal["id"])),
+        )
+        await db.execute(
+            """
+            INSERT INTO DealLog (guildId, dealId, action, actorId, oldValue, newValue, reason, createdAt)
+            VALUES (?, ?, 'deal_auto_expired', NULL, ?, 'Expired', ?, ?)
+            """,
+            (deal["guildId"], deal["dealId"], deal["status"], reason, now),
+        )
+        await db.commit()
+    await write_audit("deal_auto_expired", deal["dealId"] or deal["id"], reason, source="deal")
+    await archive_deal_if_final(deal["id"], "Expired", None, reason=reason)
+    await refresh_staff_operation_panels(deal["guildId"], {"active_deals", "middleman_status", "dispute_board"})
+
+
+async def cancel_pending_deal(deal_row_id, cancelled_by_id):
+    now = _deal_now()
+    reason = "Cancelled before form submission"
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """
+            UPDATE Deal
+            SET status='Cancelled', cancelledById=?, cancelledAt=?, cancelReason=?, updatedAt=?
+            WHERE id=? AND status=?
+            """,
+            (str(cancelled_by_id), now, reason, now, int(deal_row_id), DEAL_STATUS_PENDING_FORM),
+        )
+        await db.commit()
+        ok = cur.rowcount > 0
+    if ok:
+        await write_audit("deal_cancel_pending", deal_row_id, f"cancelledBy={cancelled_by_id}", source="deal")
+        await archive_deal_if_final(deal_row_id, "Cancelled", cancelled_by_id, reason=reason)
+        deal = await get_deal_by_id(deal_row_id)
+        if deal:
+            await refresh_staff_operation_panels(deal["guildId"], {"active_deals", "middleman_status"})
+    return ok
+
+
+async def finalize_deal_from_form(
+    deal_row_id,
+    *,
+    submitted_by_id=None,
+    payment_penjual,
+    payment_pembeli,
+    nominal_item,
+    fee_type,
+    mm_fee,
+    buyer_pays,
+    seller_receives,
+    description,
+):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        async with db.execute("SELECT guildId, status FROM Deal WHERE id=?", (int(deal_row_id),)) as cursor:
+            row = await cursor.fetchone()
+        if not row or row[1] != DEAL_STATUS_PENDING_FORM:
+            await db.rollback()
+            return None
+
+        guild_id = row[0]
+        async with db.execute("SELECT dealIdPrefix FROM DealConfig WHERE guildId=?", (guild_id,)) as cursor:
+            cfg_row = await cursor.fetchone()
+        prefix = (cfg_row[0] if cfg_row and cfg_row[0] else "MM").upper()
+
+        async with db.execute(
+            "SELECT dealId FROM Deal WHERE guildId=? AND dealId LIKE ?",
+            (guild_id, f"{prefix}-%"),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        max_number = 0
+        pattern = re.compile(rf"^{re.escape(prefix)}-(\d+)$")
+        for existing in rows:
+            if existing[0]:
+                match = pattern.match(existing[0])
+                if match:
+                    max_number = max(max_number, int(match.group(1)))
+
+        next_number = max_number + 1
+        now = _deal_now()
+        while True:
+            deal_id = f"{prefix}-{next_number:04d}"
+            try:
+                await db.execute(
+                    """
+                    UPDATE Deal
+                    SET dealId=?, paymentPenjual=?, paymentPembeli=?, nominalItem=?, feeType=?,
+                        mmFee=?, buyerPays=?, sellerReceives=?, description=?, status=?,
+                        formSubmittedById=?, formSubmittedAt=?, updatedAt=?
+                    WHERE id=? AND status=?
+                    """,
+                    (
+                        deal_id, payment_penjual, payment_pembeli, int(nominal_item), fee_type,
+                        int(mm_fee), int(buyer_pays), int(seller_receives), description,
+                        DEAL_STATUS_WAITING_FUNDS, str(submitted_by_id) if submitted_by_id else None,
+                        now, now, int(deal_row_id), DEAL_STATUS_PENDING_FORM,
+                    ),
+                )
+                await db.commit()
+                await add_deal_log(guild_id, deal_id, "deal_form_submit", submitted_by_id, DEAL_STATUS_PENDING_FORM, DEAL_STATUS_WAITING_FUNDS, None)
+                await write_audit("deal_form_submit", deal_row_id, f"dealId={deal_id}", source="deal")
+                await refresh_staff_operation_panels(guild_id, {"active_deals"})
+                return await get_deal_by_id(deal_row_id)
+            except sqlite3.IntegrityError:
+                next_number += 1
+
+
+async def update_deal_fields(deal_row_id, actor_id, fields, action, reason=None):
+    fields = dict(fields or {})
+    if not fields:
+        return await get_deal_by_id(deal_row_id), None
+    now = _deal_now()
+    fields["updatedAt"] = now
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        async with db.execute(f"SELECT {DEAL_SELECT} FROM Deal WHERE id=?", (int(deal_row_id),)) as cursor:
+            row = await cursor.fetchone()
+        deal = _deal_row_to_dict(row)
+        if not deal:
+            await db.rollback()
+            return None, "not_found"
+        set_clause = ", ".join(f"{key}=?" for key in fields.keys())
+        values = [str(v) if key.endswith("Id") and v is not None else v for key, v in fields.items()]
+        await db.execute(f"UPDATE Deal SET {set_clause} WHERE id=?", (*values, int(deal_row_id)))
+        await db.execute(
+            """
+            INSERT INTO DealLog (guildId, dealId, action, actorId, oldValue, newValue, reason, createdAt)
+            VALUES (?, ?, ?, ?, NULL, NULL, ?, ?)
+            """,
+            (deal["guildId"], deal["dealId"], action, str(actor_id) if actor_id else None, reason, now),
+        )
+        await db.commit()
+    await write_audit(action, deal_row_id, reason, source="deal")
+    await refresh_staff_operation_panels(deal["guildId"], {"active_deals"})
+    return await get_deal_by_id(deal_row_id), None
+
+
+async def patch_deal_channel_permissions(channel, target, reason=None):
+    overwrite = channel.overwrites_for(target)
+    for permission_name in DEAL_REQUIRED_PERMISSION_NAMES:
+        setattr(overwrite, permission_name, True)
+    await channel.set_permissions(target, overwrite=overwrite, reason=reason)
+
+
+def parse_rupiah_amount(value):
+    text = str(value or "").strip()
+    text = re.sub(r"(?i)^rp\s*", "", text).strip()
+    if re.search(r"[A-Za-z]", text):
+        return None
+    if not re.fullmatch(r"[0-9][0-9.,]*", text):
+        return None
+    digits = re.sub(r"[.,]", "", text)
+    if not digits:
+        return None
+    amount = int(digits)
+    return amount if amount > 0 else None
+
+
+def format_rupiah(amount):
+    return f"Rp{int(amount):,}".replace(",", ".")
+
+
+def calculate_middleman_fee(nominal_item):
+    nominal_item = int(nominal_item)
+    if nominal_item <= 99_999:
+        return 3_000
+    if nominal_item <= 199_999:
+        return 6_000
+    if nominal_item <= 999_999:
+        return 10_000
+    if nominal_item <= 1_999_999:
+        return 20_000
+    if nominal_item <= 2_999_999:
+        return 30_000
+    return 40_000
+
+
 # ── Reminder persistence ──────────────────────────────────────────────────────
 async def add_reminder(user_id, channel_id, message, fire_at):
     try:
@@ -2971,6 +6770,89 @@ async def on_guild_join(guild):
 from discord.ext import tasks
 import time
 
+@tasks.loop(minutes=5)
+async def deal_reminder_loop():
+    if not deal_phase_at_least(5):
+        return
+    now = datetime.utcnow()
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT DISTINCT guildId FROM DealConfig") as cur:
+                guild_rows = await cur.fetchall()
+        for (guild_id,) in guild_rows:
+            config = await get_deal_config(guild_id)
+            if not config:
+                continue
+            intervals = config.get("reminderIntervals", DEAL_DEFAULT_REMINDER_INTERVALS)
+            deals = await list_active_deals(guild_id)
+            guild = client.get_guild(int(guild_id))
+            if not guild:
+                continue
+            for deal in deals:
+                channel = guild.get_channel(int(deal["ticketChannelId"]))
+                if not channel:
+                    continue
+                reminder_type = None
+                anchor_time = None
+                interval_seconds = None
+                message = None
+
+                if deal["status"] == DEAL_STATUS_PENDING_FORM:
+                    reminder_type = "form_not_submitted"
+                    anchor_time = deal.get("createdAt")
+                    interval_seconds = intervals.get("form_not_submitted_seconds", DEAL_DEFAULT_REMINDER_INTERVALS["form_not_submitted_seconds"])
+                    message = f"⏰ Reminder deal `{deal.get('dealId') or deal['id']}`: form belum diisi. Middleman: <@{deal['middlemanId']}>"
+                elif deal["status"] == DEAL_STATUS_WAITING_FUNDS:
+                    reminder_type = "waiting_funds"
+                    anchor_time = deal.get("updatedAt") or deal.get("createdAt")
+                    interval_seconds = intervals.get("waiting_funds_seconds", DEAL_DEFAULT_REMINDER_INTERVALS["waiting_funds_seconds"])
+                    message = f"⏰ Reminder deal `{deal['dealId']}`: masih menunggu Dana Masuk. Buyer: <@{deal['buyerId']}>, Middleman: <@{deal['middlemanId']}>"
+                elif deal["status"] in (DEAL_STATUS_FUNDS_RECEIVED, DEAL_STATUS_ITEM_SENT):
+                    reminder_type = "funds_no_confirm"
+                    anchor_time = deal.get("fundsReceivedAt") or deal.get("updatedAt")
+                    interval_seconds = intervals.get("funds_no_confirm_seconds", DEAL_DEFAULT_REMINDER_INTERVALS["funds_no_confirm_seconds"])
+                    message = f"⏰ Reminder deal `{deal['dealId']}`: buyer belum confirm. Buyer: <@{deal['buyerId']}>, Middleman: <@{deal['middlemanId']}>"
+                elif deal["status"] == DEAL_STATUS_DISPUTED:
+                    reminder_type = "disputed"
+                    anchor_time = deal.get("disputedAt") or deal.get("updatedAt")
+                    interval_seconds = intervals.get("disputed_seconds", DEAL_DEFAULT_REMINDER_INTERVALS["disputed_seconds"])
+                    role_ping = f"<@&{config['middlemanRoleId']}>" if config.get("middlemanRoleId") else "Staff"
+                    message = f"⏰ Reminder dispute deal `{deal['dealId']}`: {role_ping} mohon cek dan resolve dispute."
+
+                if config.get("reminderEnabled") and reminder_type and await should_send_deal_reminder(config, deal, reminder_type, anchor_time, interval_seconds):
+                    await channel.send(message)
+                    await _mark_deal_reminder_sent(guild_id, deal.get("dealId") or deal["id"], reminder_type)
+                    await add_deal_log(guild_id, deal.get("dealId"), f"deal_reminder_{reminder_type}", None, None, deal["status"], message)
+
+                if config.get("autoTimeoutEnabled"):
+                    timeout_seconds = intervals.get("timeout_seconds", DEAL_DEFAULT_REMINDER_INTERVALS["timeout_seconds"])
+                    updated = _parse_deal_datetime(deal.get("updatedAt") or deal.get("createdAt"))
+                    if updated and (now - updated).total_seconds() >= timeout_seconds and deal["status"] not in (DEAL_STATUS_COMPLETED, "Cancelled", "Expired", "Voided/Duplicate"):
+                        await expire_deal_for_timeout(deal, f"inactive >= {timeout_seconds}s")
+                        try:
+                            await channel.send(f"⌛ Deal `{deal.get('dealId') or deal['id']}` otomatis ditandai **Expired** karena inactive.")
+                        except discord.HTTPException:
+                            pass
+    except Exception as e:
+        logging.error(f"deal_reminder_loop error: {e}")
+
+
+@tasks.loop(minutes=15)
+async def public_trust_panel_loop():
+    try:
+        await refresh_all_public_trust_panels()
+    except Exception as e:
+        logging.error(f"public_trust_panel_loop error: {e}")
+
+
+@tasks.loop(minutes=15)
+async def staff_operation_panel_loop():
+    try:
+        await refresh_all_staff_operation_panels()
+    except Exception as e:
+        logging.error(f"staff_operation_panel_loop error: {e}")
+
+
 @tasks.loop(minutes=30)
 async def clean_caches():
     now = datetime.now()
@@ -2992,21 +6874,50 @@ async def clean_caches():
 
 
 # ── PREFIX COMMAND SYSTEM (FakeInteraction) ──────────────────────────────────
+PREFIX_COMMAND_HANDLERS = {}
+DEAL_PREFIX_RESERVED_TOP_LEVEL = {
+    "rep",
+    "trank",
+    "trustlb",
+    "vouch",
+    "vouchleaderboard",
+    "vouchremove",
+    "vouchreport",
+    "vouches",
+    "rank",
+    "removevouch",
+    "reportvouch",
+}
+
+
+def register_prefix_command_handler(name, handler):
+    PREFIX_COMMAND_HANDLERS[str(name).lower()] = handler
+
+
 class FakeResponse:
     def __init__(self, message):
         self.message = message
+        self._done = False
     def is_done(self):
-        return True
+        return self._done
     async def defer(self, ephemeral=False, thinking=False):
-        pass
+        self._done = True
+    async def send_message(self, *args, **kwargs):
+        kwargs.pop("ephemeral", None)
+        kwargs.pop("wait", None)
+        self._done = True
+        return await self.message.reply(*args, **kwargs)
+    async def send_modal(self, modal):
+        raise RuntimeError("Modal Discord harus dibuka lewat button interaction, bukan prefix text.")
 
 class FakeFollowup:
     def __init__(self, message):
         self.message = message
     async def send(self, *args, **kwargs):
-        # Remove ephemeral from kwargs since normal send doesn't support it
+        # Prefix message tidak punya ephemeral; ubah jadi reply biasa.
         kwargs.pop("ephemeral", None)
-        return await self.message.channel.send(*args, **kwargs)
+        kwargs.pop("wait", None)
+        return await self.message.reply(*args, **kwargs)
 
 class FakeInteraction:
     def __init__(self, message):
@@ -3024,6 +6935,7 @@ class FakeInteraction:
 
     async def send(self, *args, **kwargs):
         kwargs.pop("ephemeral", None)
+        kwargs.pop("wait", None)
         return await self.message.channel.send(*args, **kwargs)
 
         
@@ -3040,7 +6952,20 @@ async def on_message(message):
             
         cmd_name = parts[0].lower()
         args_list = parts[1:]
-        
+
+        prefix_handler = PREFIX_COMMAND_HANDLERS.get(cmd_name)
+        if prefix_handler:
+            logging.info(f"[CMD] (prefix) {message.author} ({message.author.id}) -> {cmd_name} {' '.join(args_list)}".rstrip())
+            try:
+                await prefix_handler(message, args_list)
+            except Exception as e:
+                logging.exception(f"Error executing custom prefix command {BOT_PREFIX}{cmd_name}: {e}")
+                await message.channel.send("âŒ Gagal mengeksekusi perintah. Cek format argumennya ya.")
+            return
+
+        if cmd_name in DEAL_PREFIX_RESERVED_TOP_LEVEL:
+            return
+
         # Check if the command exists in the CommandTree
         cmd = tree.get_command(cmd_name)
         if cmd:

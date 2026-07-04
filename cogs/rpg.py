@@ -3,7 +3,113 @@ from core import *
 import random, asyncio, sqlite3
 from datetime import datetime
 
+
+def normalize_user_id(value):
+    if value is None or isinstance(value, bool):
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.startswith("<@") and text.endswith(">"):
+        text = text[2:-1].strip()
+        if text.startswith("!"):
+            text = text[1:].strip()
+    if not text.isdigit():
+        return None
+    user_id = int(text)
+    return user_id if user_id > 0 else None
+
+
 def setup(tree, client):
+    async def format_leaderboard_user(bot, guild, user_id):
+        normalized_id = normalize_user_id(user_id)
+        if normalized_id is None:
+            return "Unknown User"
+
+        member = guild.get_member(normalized_id) if guild else None
+        if not member and guild:
+            try:
+                member = await guild.fetch_member(normalized_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                member = None
+        if member:
+            return f"@{member.display_name}"
+
+        user = bot.get_user(normalized_id) if bot else None
+        if not user and bot:
+            try:
+                user = await bot.fetch_user(normalized_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                user = None
+        if user:
+            display_name = getattr(user, "global_name", None) or getattr(user, "name", None)
+            return f"@{display_name}" if display_name is not None else "Unknown User"
+        return "Unknown User"
+
+    async def _prefix_rank_member(guild, token):
+        user_id = normalize_user_id(token)
+        if user_id is None or not guild:
+            return None
+        member = guild.get_member(user_id)
+        if member:
+            return member
+        try:
+            return await guild.fetch_member(user_id)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            return None
+
+    async def rpg_rank_prefix_dispatcher(message, args):
+        target = message.author
+        if args:
+            parsed = await _prefix_rank_member(message.guild, args[0])
+            if not parsed:
+                await message.reply("User tidak valid.", delete_after=10)
+                return
+            target = parsed
+        stat = await get_discord_stat(str(target.id))
+        rank = await get_user_rank(target.id)
+        embed = discord.Embed(title=f"🏅 RPG Rank — {target.display_name}", color=discord.Color.gold())
+        embed.add_field(name="Rank", value=f"#{rank}" if rank else "-", inline=True)
+        embed.add_field(name="Level", value=str(stat.get("level", 1)), inline=True)
+        embed.add_field(name="XP", value=f"{int(stat.get('xp', 0) or 0):,}", inline=True)
+        embed.add_field(name="Koin", value=f"{int(stat.get('coins', 0) or 0):,}", inline=True)
+        await message.reply(embed=embed)
+
+    register_prefix_command_handler("rank", rpg_rank_prefix_dispatcher)
+
+    async def _rpg_level_leaderboard_embed(guild):
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT id, xp, level FROM DiscordStat ORDER BY level DESC, xp DESC LIMIT 10"
+            ) as cursor:
+                rows = await cursor.fetchall()
+        embed = discord.Embed(
+            title="🏆 RPG Level Leaderboard",
+            description="Top users ranked by level and experience." if rows else "No RPG level data yet.\nStart chatting or using RPG features to appear on the leaderboard.",
+            color=discord.Color.gold(),
+        )
+        medals = ["🥇", "🥈", "🥉"]
+        for idx, (uid, xp, level) in enumerate(rows, start=1):
+            name = await format_leaderboard_user(client, guild, uid)
+            current_xp = int(xp or 0)
+            current_level = int(level or 1)
+            needed = max(100, current_level * 100)
+            prefix = medals[idx - 1] if idx <= 3 else f"`#{idx}`"
+            if idx <= 3:
+                value = (
+                    f"> 🧬 **Level:** {current_level}\n"
+                    f"> ✨ **XP:** {current_xp:,}\n"
+                    f"> 📈 **Progress:** {current_xp:,}/{needed:,} XP"
+                )
+            else:
+                value = (
+                    f"> 🧬 Level: {current_level}\n"
+                    f"> ✨ XP: {current_xp:,}\n"
+                    f"> 📈 Progress: {current_xp:,}/{needed:,} XP"
+                )
+            embed.add_field(name=f"{prefix} **{name}**", value=value, inline=False)
+        return embed
+
     @tree.command(name="profile", description="Lihat profil RPG kamu")
     async def slash_profile(interaction: discord.Interaction):
         await interaction.response.defer()
@@ -475,6 +581,11 @@ def setup(tree, client):
         for i, row in enumerate(rows):
             embed.add_field(name=f"#{i+1} {row[1]}", value=f"Level: {row[3]} | Koin: {row[2]}", inline=False)
         await interaction.followup.send(embed=embed)
+
+    @tree.command(name="leaderboard", description="Lihat RPG level leaderboard")
+    async def slash_leaderboard(interaction: discord.Interaction):
+        await interaction.response.defer()
+        await interaction.followup.send(embed=await _rpg_level_leaderboard_embed(interaction.guild))
     
     @tree.command(name="weekly", description="Ambil jatah koin mingguan")
     async def slash_weekly(interaction: discord.Interaction):
