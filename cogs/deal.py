@@ -1,4 +1,4 @@
-﻿import discord
+import discord
 from discord import app_commands
 from datetime import datetime
 from core import *
@@ -266,11 +266,33 @@ async def handle_deal_message(client, message: discord.Message) -> bool:
             await message.add_reaction("✅")
         except discord.HTTPException:
             pass
+
+        prior_msg_id = deal.get("paymentProofConfirmationMessageId")
+        edited = False
+        if prior_msg_id:
+            try:
+                conf_msg = await message.channel.fetch_message(int(prior_msg_id))
+                await conf_msg.edit(
+                    embed=await _payment_proof_embed(updated, message.guild, client, valid_attachment),
+                    view=PaymentProofActionView(updated["id"]),
+                )
+                edited = True
+            except Exception:
+                pass
+
+        if not edited:
+            conf_msg = await message.channel.send(
+                embed=await _payment_proof_embed(updated, message.guild, client, valid_attachment),
+                view=PaymentProofActionView(updated["id"]),
+            )
+            await update_deal_fields(
+                updated["id"],
+                message.author.id,
+                {"paymentProofConfirmationMessageId": str(conf_msg.id)},
+                "deal_payment_proof_conf_msg_updated",
+            )
+            updated = await get_deal_by_id(updated["id"])
             
-        await message.channel.send(
-            embed=await _payment_proof_embed(updated, message.guild, client, valid_attachment),
-            view=PaymentProofActionView(updated["id"]),
-        )
         await _update_summary_message(message.guild, updated)
         return True
     except Exception as e:

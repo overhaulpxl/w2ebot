@@ -235,6 +235,7 @@ def _init_db():
             paymentProofChannelId TEXT,
             paymentProofSubmittedById TEXT,
             paymentProofSubmittedAt TEXT,
+            paymentProofConfirmationMessageId TEXT,
             transferProofUrl TEXT,
             transferProofNotes TEXT,
             transferProofMessageId TEXT,
@@ -271,6 +272,7 @@ def _init_db():
         "paymentProofChannelId": "TEXT",
         "paymentProofSubmittedById": "TEXT",
         "paymentProofSubmittedAt": "TEXT",
+        "paymentProofConfirmationMessageId": "TEXT",
         "transferProofUrl": "TEXT",
         "transferProofNotes": "TEXT",
         "transferProofMessageId": "TEXT",
@@ -3360,7 +3362,7 @@ DEAL_COLUMNS = (
     "disputePreviousStatus", "statusBeforeDispute", "disputeResolvedById", "disputeResolvedAt",
     "disputeResolution", "paymentProofUrl",
     "paymentProofNotes", "paymentProofMessageId", "paymentProofChannelId",
-    "paymentProofSubmittedById", "paymentProofSubmittedAt", "transferProofUrl",
+    "paymentProofSubmittedById", "paymentProofSubmittedAt", "paymentProofConfirmationMessageId", "transferProofUrl",
     "transferProofNotes", "transferProofMessageId", "transferProofChannelId",
     "transferProofSubmittedById", "transferProofSubmittedAt", "sellerPayoutPlatform",
     "sellerPayoutAccount", "sellerPayoutName", "sellerPayoutSubmittedById",
@@ -6443,6 +6445,43 @@ async def update_deal_fields(deal_row_id, actor_id, fields, action, reason=None)
     return await get_deal_by_id(deal_row_id), None
 
 
+async def update_deal_payment_proof_atomic(deal_row_id, actor_id, fields, action, reason=None):
+    fields = dict(fields or {})
+    if not fields:
+        return await get_deal_by_id(deal_row_id), None
+    now = _deal_now()
+    fields["updatedAt"] = now
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        async with db.execute(f"SELECT {DEAL_SELECT} FROM Deal WHERE id=?", (int(deal_row_id),)) as cursor:
+            row = await cursor.fetchone()
+        deal = _deal_row_to_dict(row)
+        if not deal:
+            await db.rollback()
+            return None, "not_found"
+        if deal.get("status") != DEAL_STATUS_WAITING_FUNDS:
+            await db.rollback()
+            return deal, "invalid_status"
+        set_clause = ", ".join(f"{key}=?" for key in fields.keys())
+        values = [str(v) if key.endswith("Id") and v is not None else v for key, v in fields.items()]
+        cursor = await db.execute(f"UPDATE Deal SET {set_clause} WHERE id=? AND status=?", (*values, int(deal_row_id), DEAL_STATUS_WAITING_FUNDS))
+        if cursor.rowcount == 0:
+            await db.rollback()
+            return deal, "invalid_status"
+        await db.execute(
+            """
+            INSERT INTO DealLog (guildId, dealId, action, actorId, oldValue, newValue, reason, createdAt)
+            VALUES (?, ?, ?, ?, NULL, NULL, ?, ?)
+            """,
+            (deal["guildId"], deal["dealId"], action, str(actor_id) if actor_id else None, reason, now),
+        )
+        await db.commit()
+    await write_audit(action, deal_row_id, reason, source="deal")
+    await refresh_staff_operation_panels(deal["guildId"], {"active_deals"})
+    return await get_deal_by_id(deal_row_id), None
+
+
+
 async def patch_deal_channel_permissions(channel, target, reason=None):
     overwrite = channel.overwrites_for(target)
     for permission_name in DEAL_REQUIRED_PERMISSION_NAMES:
@@ -6943,6 +6982,19 @@ class FakeInteraction:
 async def on_message(message):
     if message.author.bot:
         return
+
+
+
+    # Auto-detect payment proof
+    if message.attachments:
+        try:
+            from cogs.deal import handle_deal_message
+            if await handle_deal_message(client, message):
+                return
+        except Exception as e:
+            logging.exception("Error in handle_deal_message: %s", e)
+    # duplicate bot check removed
+        # duplicate return removed
 
     # Auto-read prefix commands
     if message.content.startswith(BOT_PREFIX):
