@@ -133,6 +133,16 @@ def get_help_embed(category: str, guild=None) -> discord.Embed:
             inline=False,
         )
         embed.add_field(
+            name="Payment Profile",
+            value=(
+                "`/deal payment-config set` | `/deal payment-config image`\n"
+                "`/deal payment-config show` | `/deal payment-config enable`\n"
+                "`/deal payment-config disable` | `/deal payment-config clear-image`\n\n"
+                "Profile payment bersifat per admin/middleman user. `set` membuka modal, payment text bisa satu atau banyak akun, dan image QRIS/payment bersifat opsional. `w!deal payment-config set` akan mengarahkan ke slash command. Instruksi otomatis muncul setelah form selesai, dan detail payment hanya tampil di private deal channel atau response config staff-only/ephemeral/DM."
+            ),
+            inline=False,
+        )
+        embed.add_field(
             name="Dispute",
             value=(
                 "`/deal dispute deal_id:<id> reason:<reason>`\n"
@@ -191,18 +201,23 @@ def get_help_embed(category: str, guild=None) -> discord.Embed:
             value=(
                 "`/deal audit-log set channel:#channel` | `/deal audit-log status` | `/deal audit-log disable`\n"
                 "`/deal archive info deal_id:<id>` | `/deal archive search user:@user`\n"
-                "`/deal archive recent` | `/deal archive backfill`"
+                "`/deal archive recent` | `/deal archive backfill`\n"
+                "`/deal recover-buttons scope:<all|active-deals|panels|reviews> scan_limit:<angka>`"
             ),
             inline=False,
         )
         embed.add_field(
             name="Public Trust Panels",
             value=(
-                "`/deal panel leaderboard-set channel:#channel` | `/deal panel leaderboard-status`\n"
-                "`/deal panel stats-set channel:#channel` | `/deal panel stats-status`\n"
-                "`/deal panel recent-vouches-set channel:#channel` | `/deal panel recent-vouches-status`\n"
-                "`/deal panel completed-deals-set channel:#channel` | `/deal panel completed-deals-status`\n"
-                "`/deal panel refresh panel:<panel>` | `/deal panel disable panel:<panel>`"
+                "`/deal panel leaderboard action:set channel:#channel`\n"
+                "`/deal panel leaderboard action:refresh|disable|status`\n"
+                "`/deal panel stats action:set channel:#channel`\n"
+                "`/deal panel stats action:refresh|disable|status`\n"
+                "`/deal panel recent-vouches action:set channel:#channel`\n"
+                "`/deal panel recent-vouches action:disable|status`\n"
+                "`/deal panel completed-deals action:set channel:#channel`\n"
+                "`/deal panel completed-deals action:disable|status`\n"
+                "Flat slash lama tetap tersedia: `leaderboard-set`, `stats-set`, `refresh`, `disable`."
             ),
             inline=False,
         )
@@ -278,7 +293,13 @@ class HelpSelect(discord.ui.Select):
             discord.SelectOption(label="Middleman & Vouch", description="Deal, vouch, trust profile, reports, panels", emoji="🛡️", value="middleman"),
             discord.SelectOption(label="Utilitas & Admin", description="Booster custom role, bot tracker, radar", value="utils"),
         ]
-        super().__init__(placeholder="Pilih kategori panduan...", min_values=1, max_values=1, options=options)
+        super().__init__(
+            placeholder="Pilih kategori panduan...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="w2e_help_select",
+        )
 
     async def callback(self, interaction: discord.Interaction):
         if self.current_user_id and interaction.user.id != self.current_user_id:
@@ -309,6 +330,29 @@ class W2EHelpView(discord.ui.View):
                 await self.message.edit(view=self)
             except discord.HTTPException:
                 pass
+
+
+class ExpiredHelpSelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label="Menu kadaluarsa", description="Jalankan /help atau w!help lagi.", value="expired")
+        ]
+        super().__init__(
+            placeholder="Menu help sudah kadaluarsa...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="w2e_help_select",
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_message("Menu help sudah kadaluarsa. Jalankan `/help` atau `w!help` lagi.", ephemeral=True)
+
+
+class W2EHelpExpiredView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(ExpiredHelpSelect())
 
 
 async def send_w2e_help(target, current_user_id=None):

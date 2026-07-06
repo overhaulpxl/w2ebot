@@ -8,6 +8,9 @@
 # so we ignore the DB + the on-disk runtime config rather than all *.json.
 w2ebot.db
 *.db
+*.db-journal
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
 config.json

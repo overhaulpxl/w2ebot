@@ -57,6 +57,12 @@ intents.members = True
 
 client = discord.Client(intents=intents)
 tree = discord.app_commands.CommandTree(client)
+READY_STARTUP_CALLBACKS = []
+
+
+def register_ready_startup_task(callback):
+    if callback not in READY_STARTUP_CALLBACKS:
+        READY_STARTUP_CALLBACKS.append(callback)
 
 # Waktu start proses (untuk uptime di /api/bot/stats).
 BOT_START_TIME = datetime.utcnow()
@@ -249,6 +255,10 @@ def _init_db():
             sellerPayoutSubmittedAt TEXT,
             formSubmittedById TEXT,
             formSubmittedAt TEXT,
+            paymentInstructionOwnerId TEXT,
+            paymentInstructionMessageId TEXT,
+            paymentInstructionSentAt TEXT,
+            paymentInstructionPayloadHash TEXT,
             fundsReceivedNotes TEXT,
             fundsReceivedById TEXT,
             fundsReceivedAt TEXT,
@@ -286,6 +296,10 @@ def _init_db():
         "sellerPayoutSubmittedAt": "TEXT",
         "formSubmittedById": "TEXT",
         "formSubmittedAt": "TEXT",
+        "paymentInstructionOwnerId": "TEXT",
+        "paymentInstructionMessageId": "TEXT",
+        "paymentInstructionSentAt": "TEXT",
+        "paymentInstructionPayloadHash": "TEXT",
         "fundsReceivedNotes": "TEXT",
         "fundsReceivedById": "TEXT",
         "fundsReceivedAt": "TEXT",
@@ -323,6 +337,40 @@ def _init_db():
             createdAt TEXT
         )
     ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS dealPaymentProfiles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guildId TEXT NOT NULL,
+            userId TEXT NOT NULL,
+            title TEXT,
+            paymentText TEXT,
+            qrisNote TEXT,
+            note TEXT,
+            footerText TEXT,
+            imageUrl TEXT,
+            imageFilename TEXT,
+            enabled INTEGER DEFAULT 1,
+            createdAt TEXT,
+            updatedAt TEXT,
+            UNIQUE(guildId, userId)
+        )
+    ''')
+    existing_payment_profile_cols = {row[1] for row in conn.execute("PRAGMA table_info(dealPaymentProfiles)").fetchall()}
+    payment_profile_columns_to_add = {
+        "title": "TEXT",
+        "paymentText": "TEXT",
+        "qrisNote": "TEXT",
+        "note": "TEXT",
+        "footerText": "TEXT",
+        "imageUrl": "TEXT",
+        "imageFilename": "TEXT",
+        "enabled": "INTEGER DEFAULT 1",
+        "createdAt": "TEXT",
+        "updatedAt": "TEXT",
+    }
+    for col, ddl in payment_profile_columns_to_add.items():
+        if col not in existing_payment_profile_cols:
+            conn.execute(f"ALTER TABLE dealPaymentProfiles ADD COLUMN {col} {ddl}")
     conn.execute('''
         CREATE TABLE IF NOT EXISTS Vouch (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -601,6 +649,8 @@ def _init_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_deal_panels_type ON dealPanels(guildId, panelType)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_deal_panel_events_type ON dealPanelEvents(guildId, panelType)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_deal_panel_events_created ON dealPanelEvents(createdAt)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_deal_payment_profiles_guild ON dealPaymentProfiles(guildId)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_deal_payment_profiles_user ON dealPaymentProfiles(userId)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_middleman_status_status ON middlemanStatus(guildId, status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_rate_limit_events_lookup ON rateLimitEvents(guildId, userId, actionType, createdAt)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_rate_limit_events_key ON rateLimitEvents(guildId, eventKey, createdAt)")
@@ -2015,6 +2065,11 @@ async def on_ready():
     client.loop.create_task(resume_scheduled_jobs())
     client.loop.create_task(refresh_all_public_trust_panels())
     client.loop.create_task(refresh_all_staff_operation_panels())
+    for callback in list(READY_STARTUP_CALLBACKS):
+        try:
+            client.loop.create_task(callback())
+        except Exception as e:
+            logging.error(f"Failed to schedule ready startup callback: {e}")
     logging.info(f'We have logged in as {client.user}')
 
 @web.middleware
@@ -3367,11 +3422,17 @@ DEAL_COLUMNS = (
     "transferProofSubmittedById", "transferProofSubmittedAt", "sellerPayoutPlatform",
     "sellerPayoutAccount", "sellerPayoutName", "sellerPayoutSubmittedById",
     "sellerPayoutSubmittedAt", "formSubmittedById", "formSubmittedAt", "fundsReceivedNotes",
-    "fundsReceivedById", "fundsReceivedAt", "itemSentById", "itemSentAt",
+    "paymentInstructionOwnerId", "paymentInstructionMessageId", "paymentInstructionSentAt",
+    "paymentInstructionPayloadHash", "fundsReceivedById", "fundsReceivedAt", "itemSentById", "itemSentAt",
     "buyerConfirmedById", "buyerConfirmedAt", "completedById", "completedAt",
     "isVouchEligible", "createdAt", "updatedAt",
 )
 DEAL_SELECT = ", ".join(DEAL_COLUMNS)
+DEAL_PAYMENT_PROFILE_COLUMNS = (
+    "id", "guildId", "userId", "title", "paymentText", "qrisNote", "note",
+    "footerText", "imageUrl", "imageFilename", "enabled", "createdAt", "updatedAt",
+)
+DEAL_PAYMENT_PROFILE_SELECT = ", ".join(DEAL_PAYMENT_PROFILE_COLUMNS)
 DEAL_ARCHIVE_COLUMNS = (
     "id", "guildId", "dealId", "channelId", "buyerId", "sellerId", "middlemanId",
     "finalStatus", "paymentProofSubmitted", "transferProofSubmitted", "vouchEligible",
@@ -3691,6 +3752,163 @@ def _deal_panel_row_to_dict(row):
 def _deal_panel_hash(embed):
     payload = json.dumps(embed.to_dict(), sort_keys=True, ensure_ascii=False, default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def deal_payment_instruction_payload_hash(embed):
+    payload = json.dumps(embed.to_dict(), sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _payment_profile_row_to_dict(row):
+    if not row:
+        return None
+    data = dict(zip(DEAL_PAYMENT_PROFILE_COLUMNS, row))
+    data["enabled"] = bool(data.get("enabled"))
+    return data
+
+
+def _sanitize_payment_profile_text(value, max_length):
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return None
+    text = discord.utils.escape_mentions(text)
+    return text[:max_length]
+
+
+def deal_payment_profile_is_valid(profile):
+    if not profile:
+        return False
+    return bool(str(profile.get("paymentText") or "").strip() or str(profile.get("imageUrl") or "").strip())
+
+
+def resolve_deal_payment_instruction_owner_id(deal):
+    if not deal:
+        return None
+    buyer_id = str(deal.get("buyerId") or "")
+    seller_id = str(deal.get("sellerId") or "")
+    for key in ("paymentInstructionOwnerId", "middlemanId", "adminId", "executorId", "createdById", "startedById"):
+        value = str(deal.get(key) or "").strip()
+        if value and value not in {buyer_id, seller_id}:
+            return value
+    return None
+
+
+async def get_deal_payment_profile(guild_id, user_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            f"SELECT {DEAL_PAYMENT_PROFILE_SELECT} FROM dealPaymentProfiles WHERE guildId=? AND userId=?",
+            (str(guild_id), str(user_id)),
+        ) as cursor:
+            return _payment_profile_row_to_dict(await cursor.fetchone())
+
+
+async def save_deal_payment_profile(guild_id, user_id, **fields):
+    allowed = {
+        "title", "paymentText", "qrisNote", "note", "footerText",
+        "imageUrl", "imageFilename", "enabled",
+    }
+    clean_fields = {k: v for k, v in dict(fields or {}).items() if k in allowed}
+    if "title" in clean_fields:
+        clean_fields["title"] = _sanitize_payment_profile_text(clean_fields.get("title"), 100)
+    if "paymentText" in clean_fields:
+        clean_fields["paymentText"] = _sanitize_payment_profile_text(clean_fields.get("paymentText"), 3000)
+    if "qrisNote" in clean_fields:
+        clean_fields["qrisNote"] = _sanitize_payment_profile_text(clean_fields.get("qrisNote"), 1000)
+    if "note" in clean_fields:
+        clean_fields["note"] = _sanitize_payment_profile_text(clean_fields.get("note"), 1000)
+    if "footerText" in clean_fields:
+        clean_fields["footerText"] = _sanitize_payment_profile_text(clean_fields.get("footerText"), 300)
+    if "imageUrl" in clean_fields:
+        clean_fields["imageUrl"] = str(clean_fields.get("imageUrl") or "").strip() or None
+    if "imageFilename" in clean_fields:
+        clean_fields["imageFilename"] = str(clean_fields.get("imageFilename") or "").strip()[:255] or None
+
+    current = await get_deal_payment_profile(guild_id, user_id) or {}
+    merged = dict(current)
+    merged.update(clean_fields)
+    if "enabled" in clean_fields:
+        merged["enabled"] = bool(clean_fields["enabled"])
+    elif "enabled" not in merged:
+        merged["enabled"] = True
+    if not deal_payment_profile_is_valid(merged):
+        merged["enabled"] = False
+
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO dealPaymentProfiles (
+                guildId, userId, title, paymentText, qrisNote, note, footerText,
+                imageUrl, imageFilename, enabled, createdAt, updatedAt
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(guildId, userId) DO UPDATE SET
+                title=excluded.title,
+                paymentText=excluded.paymentText,
+                qrisNote=excluded.qrisNote,
+                note=excluded.note,
+                footerText=excluded.footerText,
+                imageUrl=excluded.imageUrl,
+                imageFilename=excluded.imageFilename,
+                enabled=excluded.enabled,
+                updatedAt=excluded.updatedAt
+            """,
+            (
+                str(guild_id), str(user_id), merged.get("title"), merged.get("paymentText"),
+                merged.get("qrisNote"), merged.get("note"), merged.get("footerText"),
+                merged.get("imageUrl"), merged.get("imageFilename"), int(bool(merged.get("enabled"))),
+                merged.get("createdAt") or now, now,
+            ),
+        )
+        await db.commit()
+    return await get_deal_payment_profile(guild_id, user_id), None
+
+
+async def set_deal_payment_profile_enabled(guild_id, user_id, enabled):
+    profile = await get_deal_payment_profile(guild_id, user_id)
+    if bool(enabled) and not deal_payment_profile_is_valid(profile):
+        return profile, "invalid_profile"
+    profile, _error = await save_deal_payment_profile(guild_id, user_id, enabled=bool(enabled))
+    return profile, None
+
+
+async def clear_deal_payment_profile_image(guild_id, user_id):
+    profile, error = await save_deal_payment_profile(
+        guild_id,
+        user_id,
+        imageUrl=None,
+        imageFilename=None,
+    )
+    return profile, error
+
+
+async def set_deal_payment_instruction_tracking(deal_row_id, message_id, payload_hash, owner_id=None):
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            UPDATE Deal
+            SET paymentInstructionOwnerId=CASE
+                    WHEN paymentInstructionOwnerId IS NULL OR paymentInstructionOwnerId='' THEN ?
+                    ELSE paymentInstructionOwnerId
+                END,
+                paymentInstructionMessageId=?,
+                paymentInstructionSentAt=?,
+                paymentInstructionPayloadHash=?,
+                updatedAt=?
+            WHERE id=?
+            """,
+            (
+                str(owner_id) if owner_id else None,
+                str(message_id) if message_id else None,
+                now,
+                str(payload_hash) if payload_hash else None,
+                now,
+                int(deal_row_id),
+            ),
+        )
+        await db.commit()
+    return await get_deal_by_id(deal_row_id)
 
 
 async def get_deal_panel_config(guild_id, panel_type):
@@ -4564,13 +4782,13 @@ async def create_pending_deal(guild_id, channel_id, created_by_id, buyer_id, sel
             """
             INSERT INTO Deal (
                 guildId, ticketChannelId, createdById, buyerId, sellerId, middlemanId,
-                status, createdAt, updatedAt
+                paymentInstructionOwnerId, status, createdAt, updatedAt
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(guild_id), str(channel_id), str(created_by_id), str(buyer_id),
-                str(seller_id), str(middleman_id), DEAL_STATUS_PENDING_FORM, now, now,
+                str(seller_id), str(middleman_id), str(middleman_id), DEAL_STATUS_PENDING_FORM, now, now,
             ),
         )
         row_id = cur.lastrowid

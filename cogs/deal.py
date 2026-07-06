@@ -2,6 +2,433 @@ import discord
 from discord import app_commands
 from datetime import datetime
 from core import *
+import logging
+import asyncio
+
+
+_STARTUP_RECOVERY_DONE = False
+_STARTUP_RECOVERY_LISTENER_REGISTERED = False
+
+
+async def _safe_respond(interaction: discord.Interaction, content=None, *, embed=None, view=None, ephemeral=False):
+    """Safely respond to interaction, handling cases where response might already be sent."""
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(content=content, embed=embed, view=view, ephemeral=ephemeral)
+        else:
+            await interaction.response.send_message(content=content, embed=embed, view=view, ephemeral=ephemeral)
+    except discord.InteractionResponded:
+        # Fallback if response is already sent but .is_done() didn't catch it
+        try:
+            await interaction.followup.send(content=content, embed=embed, view=view, ephemeral=ephemeral)
+        except Exception as e:
+            logging.error(f"Failed to send followup after InteractionResponded: {e}")
+    except Exception as e:
+        logging.error(f"Failed to respond to interaction: {e}")
+
+
+async def _handle_stale_view_interaction(interaction: discord.Interaction, view_name: str):
+    """Handle interactions with stale views (after bot restart)."""
+    await _safe_respond(
+        interaction, 
+        f"Button tidak tersedia. {view_name} ini sudah kadaluarsa setelah bot restart. Silakan refresh atau buat transaksi baru.",
+        ephemeral=True
+    )
+
+
+def _interaction_custom_id(interaction: discord.Interaction) -> str:
+    data = getattr(interaction, "data", None) or {}
+    return str(data.get("custom_id") or "")
+
+
+def _parse_positive_int(value):
+    try:
+        parsed = int(str(value or "").strip().strip("`"))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _message_embed_field(interaction: discord.Interaction, field_name: str):
+    message = getattr(interaction, "message", None)
+    if not message:
+        return None
+    for embed in getattr(message, "embeds", []) or []:
+        for field in getattr(embed, "fields", []) or []:
+            if str(getattr(field, "name", "")).strip().lower() == field_name.lower():
+                return str(getattr(field, "value", "") or "").strip()
+    return None
+
+
+async def _extract_deal_row_id_from_interaction(interaction: discord.Interaction, fallback=None):
+    parsed = _parse_positive_int(fallback)
+    if parsed:
+        return parsed
+
+    custom_id = _interaction_custom_id(interaction)
+    for token in reversed(custom_id.replace(":", "_").split("_")):
+        parsed = _parse_positive_int(token)
+        if parsed:
+            deal = await get_deal_by_id(parsed)
+            if deal:
+                return parsed
+
+    raw_deal_id = _message_embed_field(interaction, "Deal ID")
+    if raw_deal_id:
+        deal_id = raw_deal_id.strip().strip("`").strip()
+        deal = await get_deal_by_deal_id(interaction.guild.id, deal_id)
+        if deal:
+            return int(deal["id"])
+        parsed = _parse_positive_int(deal_id)
+        if parsed:
+            deal = await get_deal_by_id(parsed)
+            if deal:
+                return parsed
+    return None
+
+
+def _extract_numeric_embed_field(interaction: discord.Interaction, field_name: str, fallback=None):
+    parsed = _parse_positive_int(fallback)
+    if parsed:
+        return parsed
+    custom_id = _interaction_custom_id(interaction)
+    for token in reversed(custom_id.replace(":", "_").split("_")):
+        parsed = _parse_positive_int(token)
+        if parsed:
+            return parsed
+    return _parse_positive_int(_message_embed_field(interaction, field_name))
+
+
+class GlobalDealViewDispatcher(discord.ui.View):
+    """Persistent fallback for known deal buttons after bot restart."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def _deal_row_id(self, interaction: discord.Interaction):
+        deal_row_id = await _extract_deal_row_id_from_interaction(interaction)
+        if not deal_row_id:
+            await _safe_respond(interaction, "Data deal tidak ditemukan. Button sudah kadaluarsa setelah restart bot.", ephemeral=True)
+            return None
+        return deal_row_id
+
+    async def _dispatch_to_view(self, interaction: discord.Interaction, view_cls, method_name: str):
+        deal_row_id = await self._deal_row_id(interaction)
+        if not deal_row_id:
+            return
+        view = view_cls(deal_row_id)
+        await getattr(view, method_name)(interaction, None)
+
+    @discord.ui.button(label="Dana Masuk", style=discord.ButtonStyle.success, custom_id="deal_dana_masuk")
+    async def payment_dana_masuk(self, interaction: discord.Interaction, button: discord.ui.Button):
+        deal_row_id = await self._deal_row_id(interaction)
+        if not deal_row_id:
+            return
+        await _handle_dana_masuk(interaction, deal_row_id, None)
+
+    @discord.ui.button(label="Dispute", style=discord.ButtonStyle.secondary, custom_id="deal_dispute")
+    async def payment_dispute(self, interaction: discord.Interaction, button: discord.ui.Button):
+        deal_row_id = await self._deal_row_id(interaction)
+        if not deal_row_id:
+            return
+        await _open_dispute_modal(interaction, deal_row_id)
+
+    @discord.ui.button(label="Dana Masuk", style=discord.ButtonStyle.success, custom_id="deal_summary_dana_masuk")
+    async def summary_dana_masuk(self, interaction: discord.Interaction, button: discord.ui.Button):
+        deal_row_id = await self._deal_row_id(interaction)
+        if not deal_row_id:
+            return
+        await _handle_dana_masuk(interaction, deal_row_id, None)
+
+    @discord.ui.button(label="Edit Deal", style=discord.ButtonStyle.primary, custom_id="deal_summary_edit")
+    async def summary_edit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._dispatch_to_view(interaction, DealSummaryView, "edit_deal")
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, custom_id="deal_summary_cancel")
+    async def summary_cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._dispatch_to_view(interaction, DealSummaryView, "cancel")
+
+    @discord.ui.button(label="Dispute", style=discord.ButtonStyle.secondary, custom_id="deal_summary_dispute")
+    async def summary_dispute(self, interaction: discord.Interaction, button: discord.ui.Button):
+        deal_row_id = await self._deal_row_id(interaction)
+        if not deal_row_id:
+            return
+        await _open_dispute_modal(interaction, deal_row_id)
+
+    @discord.ui.button(label="Item Sent", style=discord.ButtonStyle.primary, custom_id="funds_item_sent")
+    async def funds_item_sent(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._dispatch_to_view(interaction, FundsReceivedView, "item_sent")
+
+    @discord.ui.button(label="Buyer Confirm", style=discord.ButtonStyle.success, custom_id="funds_buyer_confirm")
+    async def funds_buyer_confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._dispatch_to_view(interaction, FundsReceivedView, "buyer_confirm")
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, custom_id="funds_cancel")
+    async def funds_cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._dispatch_to_view(interaction, FundsReceivedView, "cancel")
+
+    @discord.ui.button(label="Dispute", style=discord.ButtonStyle.secondary, custom_id="funds_dispute")
+    async def funds_dispute(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._dispatch_to_view(interaction, FundsReceivedView, "dispute")
+
+    @discord.ui.button(label="Buyer Confirm", style=discord.ButtonStyle.success, custom_id="item_buyer_confirm")
+    async def item_buyer_confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._dispatch_to_view(interaction, ItemSentView, "buyer_confirm")
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, custom_id="item_cancel")
+    async def item_cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._dispatch_to_view(interaction, ItemSentView, "cancel")
+
+    @discord.ui.button(label="Dispute", style=discord.ButtonStyle.secondary, custom_id="item_dispute")
+    async def item_dispute(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._dispatch_to_view(interaction, ItemSentView, "dispute")
+
+    @discord.ui.button(label="Payout", style=discord.ButtonStyle.primary, custom_id="buyer_payout")
+    async def buyer_payout(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._dispatch_to_view(interaction, BuyerConfirmedView, "kirim_data_pencairan")
+
+    @discord.ui.button(label="Done", style=discord.ButtonStyle.success, custom_id="buyer_done")
+    async def buyer_done(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._dispatch_to_view(interaction, BuyerConfirmedView, "done_transfer")
+
+    @discord.ui.button(label="Dispute", style=discord.ButtonStyle.secondary, custom_id="buyer_dispute")
+    async def buyer_dispute(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._dispatch_to_view(interaction, BuyerConfirmedView, "dispute")
+
+    @discord.ui.button(label="Resolve", style=discord.ButtonStyle.success, custom_id="dispute_resolve")
+    async def dispute_resolve(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._dispatch_to_view(interaction, DisputeActionView, "resolve")
+
+    @discord.ui.button(label="Note", style=discord.ButtonStyle.secondary, custom_id="dispute_note")
+    async def dispute_note(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._dispatch_to_view(interaction, DisputeActionView, "add_note")
+
+    @discord.ui.button(label="Cancel Deal", style=discord.ButtonStyle.danger, custom_id="dispute_cancel")
+    async def dispute_cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._dispatch_to_view(interaction, DisputeActionView, "cancel_deal_button")
+
+    @discord.ui.button(label="Edit Deal", style=discord.ButtonStyle.primary, custom_id="safe_edit")
+    async def safe_edit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        deal_row_id = await self._deal_row_id(interaction)
+        if not deal_row_id:
+            return
+        deal = await get_deal_by_id(deal_row_id)
+        if not deal:
+            await _safe_respond(interaction, "Data deal tidak ditemukan.", ephemeral=True)
+            return
+        await SafeDealActionView(deal).edit(interaction, None)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, custom_id="safe_cancel")
+    async def safe_cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        deal_row_id = await self._deal_row_id(interaction)
+        if not deal_row_id:
+            return
+        deal = await get_deal_by_id(deal_row_id)
+        if not deal:
+            await _safe_respond(interaction, "Data deal tidak ditemukan.", ephemeral=True)
+            return
+        await SafeDealActionView(deal).cancel(interaction, None)
+
+    @discord.ui.button(label="Dispute", style=discord.ButtonStyle.secondary, custom_id="safe_dispute")
+    async def safe_dispute(self, interaction: discord.Interaction, button: discord.ui.Button):
+        deal_row_id = await self._deal_row_id(interaction)
+        if not deal_row_id:
+            return
+        deal = await get_deal_by_id(deal_row_id)
+        if not deal:
+            await _safe_respond(interaction, "Data deal tidak ditemukan.", ephemeral=True)
+            return
+        await SafeDealActionView(deal).dispute(interaction, None)
+
+    @discord.ui.button(label="Vouch Buyer", style=discord.ButtonStyle.primary, custom_id="vouch_buyer")
+    async def vouch_buyer(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._dispatch_to_view(interaction, VouchView, "vouch_buyer")
+
+    @discord.ui.button(label="Vouch Seller", style=discord.ButtonStyle.primary, custom_id="vouch_seller")
+    async def vouch_seller(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._dispatch_to_view(interaction, VouchView, "vouch_seller")
+
+    @discord.ui.button(label="Vouch Middleman", style=discord.ButtonStyle.primary, custom_id="vouch_middleman")
+    async def vouch_middleman(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._dispatch_to_view(interaction, VouchView, "vouch_middleman")
+
+
+class DealStartRestartFallbackView(discord.ui.View):
+    """Persistent fallback for deal-start form buttons after bot restart."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def _deal(self, interaction: discord.Interaction):
+        deal_row_id = await _extract_deal_row_id_from_interaction(interaction)
+        if not deal_row_id:
+            await _safe_respond(interaction, "Data deal tidak ditemukan. Button sudah kadaluarsa setelah restart bot.", ephemeral=True)
+            return None
+        deal = await get_deal_by_id(deal_row_id)
+        if not deal:
+            await _safe_respond(interaction, "Data deal tidak ditemukan.", ephemeral=True)
+            return None
+        return deal
+
+    @discord.ui.button(label="Ketentuan", style=discord.ButtonStyle.secondary, custom_id="deal_start_terms")
+    async def start_terms(self, interaction: discord.Interaction, button: discord.ui.Button):
+        deal = await self._deal(interaction)
+        if not deal:
+            return
+        await interaction.response.edit_message(embed=_terms_embed(deal), view=DealTermsView(deal))
+
+    @discord.ui.button(label="Form", style=discord.ButtonStyle.primary, custom_id="deal_start_form")
+    async def start_form(self, interaction: discord.Interaction, button: discord.ui.Button):
+        deal = await self._deal(interaction)
+        if not deal:
+            return
+        await DealStartView(deal)._open_form(interaction)
+
+    @discord.ui.button(label="Cancel Request", style=discord.ButtonStyle.danger, custom_id="deal_start_cancel")
+    async def start_cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        deal = await self._deal(interaction)
+        if not deal:
+            return
+        await DealStartView(deal).cancel_request(interaction, None)
+
+    @discord.ui.button(label="Back", style=discord.ButtonStyle.secondary, custom_id="deal_terms_back")
+    async def terms_back(self, interaction: discord.Interaction, button: discord.ui.Button):
+        deal = await self._deal(interaction)
+        if not deal:
+            return
+        await interaction.response.edit_message(embed=await _warning_embed(deal, interaction.guild, interaction.client), view=DealStartView(deal))
+
+    @discord.ui.button(label="Form", style=discord.ButtonStyle.primary, custom_id="deal_terms_form")
+    async def terms_form(self, interaction: discord.Interaction, button: discord.ui.Button):
+        deal = await self._deal(interaction)
+        if not deal:
+            return
+        await DealStartView(deal)._open_form(interaction)
+
+
+class ReviewRestartFallbackView(discord.ui.View):
+    """Persistent fallback for manual vouch and scam review buttons."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def _manual_vouch_id(self, interaction: discord.Interaction):
+        vouch_id = _extract_numeric_embed_field(interaction, "Vouch ID")
+        if not vouch_id:
+            await _safe_respond(interaction, "Vouch manual tidak ditemukan. Button sudah kadaluarsa setelah restart bot.", ephemeral=True)
+            return None
+        return vouch_id
+
+    async def _report_id(self, interaction: discord.Interaction):
+        report_id = _extract_numeric_embed_field(interaction, "Report ID")
+        if not report_id:
+            await _safe_respond(interaction, "Report scammer tidak ditemukan. Button sudah kadaluarsa setelah restart bot.", ephemeral=True)
+            return None
+        return report_id
+
+    @discord.ui.button(label="Approve", style=discord.ButtonStyle.success, custom_id="manual_vouch_approve")
+    async def manual_approve(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vouch_id = await self._manual_vouch_id(interaction)
+        if vouch_id:
+            await ManualVouchReviewView(vouch_id).approve(interaction, None)
+
+    @discord.ui.button(label="Reject", style=discord.ButtonStyle.danger, custom_id="manual_vouch_reject")
+    async def manual_reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vouch_id = await self._manual_vouch_id(interaction)
+        if vouch_id:
+            await ManualVouchReviewView(vouch_id).reject(interaction, None)
+
+    @discord.ui.button(label="Reject Reason", style=discord.ButtonStyle.secondary, custom_id="manual_vouch_reject_reason")
+    async def manual_reject_reason(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vouch_id = await self._manual_vouch_id(interaction)
+        if vouch_id:
+            await ManualVouchReviewView(vouch_id).reject_reason(interaction, None)
+
+    @discord.ui.button(label="Under Review", style=discord.ButtonStyle.secondary, custom_id="scam_report_under_review")
+    async def scam_under_review(self, interaction: discord.Interaction, button: discord.ui.Button):
+        report_id = await self._report_id(interaction)
+        if report_id:
+            await ScammerReportReviewView(report_id).under_review(interaction, None)
+
+    @discord.ui.button(label="Blacklist", style=discord.ButtonStyle.danger, custom_id="scam_report_blacklist")
+    async def scam_blacklist(self, interaction: discord.Interaction, button: discord.ui.Button):
+        report_id = await self._report_id(interaction)
+        if report_id:
+            await ScammerReportReviewView(report_id).blacklist(interaction, None)
+
+    @discord.ui.button(label="Reject Report", style=discord.ButtonStyle.danger, custom_id="scam_report_reject")
+    async def scam_reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+        report_id = await self._report_id(interaction)
+        if report_id:
+            await ScammerReportReviewView(report_id).reject(interaction, None)
+
+    @discord.ui.button(label="Add Note", style=discord.ButtonStyle.primary, custom_id="scam_report_note")
+    async def scam_note(self, interaction: discord.Interaction, button: discord.ui.Button):
+        report_id = await self._report_id(interaction)
+        if report_id:
+            await ScammerReportReviewView(report_id).note(interaction, None)
+
+    @discord.ui.button(label="Resolve", style=discord.ButtonStyle.success, custom_id="scam_report_resolve")
+    async def scam_resolve(self, interaction: discord.Interaction, button: discord.ui.Button):
+        report_id = await self._report_id(interaction)
+        if report_id:
+            await ScammerReportReviewView(report_id).resolve(interaction, None)
+
+
+class ProofSessionExpiredFallbackView(discord.ui.View):
+    """Persistent fallback for in-memory proof sessions after restart."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def _expired(self, interaction: discord.Interaction, label: str):
+        await _safe_respond(interaction, f"Sesi {label} sudah tidak aktif. Silakan submit ulang.", ephemeral=True)
+
+    @discord.ui.button(label="Submit Vouch", style=discord.ButtonStyle.success, custom_id="manual_vouch_proof_submit")
+    async def manual_submit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._expired(interaction, "upload proof vouch")
+
+    @discord.ui.button(label="Cancel Vouch", style=discord.ButtonStyle.danger, custom_id="manual_vouch_proof_cancel")
+    async def manual_cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._expired(interaction, "upload proof vouch")
+
+    @discord.ui.button(label="Submit Report", style=discord.ButtonStyle.success, custom_id="scam_report_proof_submit")
+    async def scam_submit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._expired(interaction, "upload proof report scammer")
+
+    @discord.ui.button(label="Cancel Report", style=discord.ButtonStyle.danger, custom_id="scam_report_proof_cancel")
+    async def scam_cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._expired(interaction, "upload proof report scammer")
+
+
+class MiscDealExpiredFallbackView(discord.ui.View):
+    """Persistent fallback for time-limited deal UI that cannot be reconstructed safely."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def _expired(self, interaction: discord.Interaction, label: str):
+        await _safe_respond(interaction, f"{label} sudah kadaluarsa. Jalankan command lagi untuk membuka tampilan baru.", ephemeral=True)
+
+    @discord.ui.button(label="Vouches Prev", style=discord.ButtonStyle.secondary, custom_id="vouches_prev")
+    async def vouches_prev(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._expired(interaction, "Halaman vouches")
+
+    @discord.ui.button(label="Vouches Next", style=discord.ButtonStyle.secondary, custom_id="vouches_next")
+    async def vouches_next(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._expired(interaction, "Halaman vouches")
+
+    @discord.ui.button(label="Deal List Prev", style=discord.ButtonStyle.secondary, custom_id="deal_list_prev")
+    async def deal_list_prev(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._expired(interaction, "Daftar deal")
+
+    @discord.ui.button(label="Deal List Next", style=discord.ButtonStyle.secondary, custom_id="deal_list_next")
+    async def deal_list_next(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._expired(interaction, "Daftar deal")
+
+    @discord.ui.button(label="Buka Form Edit", style=discord.ButtonStyle.primary, custom_id="prefix_edit_deal")
+    async def prefix_edit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._expired(interaction, "Tombol edit deal")
 
 
 DEAL_V1_PLACEHOLDER_MESSAGE = "Fitur ini akan aktif di V2."
@@ -13,6 +440,12 @@ CRITICAL_ACTION_LOCKS = {}
 REQUIRE_SELLER_PAYOUT_INFO = True
 ALLOWED_PROOF_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".pdf"}
 ALLOWED_PROOF_CONTENT_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/webp", "application/pdf"}
+ALLOWED_PAYMENT_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+ALLOWED_PAYMENT_IMAGE_CONTENT_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/webp"}
+PAYMENT_IMAGE_MAX_BYTES = 8 * 1024 * 1024
+PAYMENT_CONFIG_PERMISSION_MESSAGE = "Kamu tidak punya permission untuk mengatur instruksi pembayaran."
+PAYMENT_INSTRUCTION_DESCRIPTION_LIMIT = 3900
+PAYMENT_INSTRUCTION_TRUNCATED_SUFFIX = "\n\n⚠️ Instruksi terlalu panjang, sebagian teks dipotong. Staff dapat mempersingkat payment profile."
 
 
 def _is_admin(interaction: discord.Interaction):
@@ -209,6 +642,88 @@ def _attachment_is_valid_proof(attachment):
     return any(filename.endswith(ext) for ext in ALLOWED_PROOF_EXTENSIONS)
 
 
+def _attachment_is_valid_payment_image(attachment):
+    try:
+        if int(getattr(attachment, "size", 0) or 0) > PAYMENT_IMAGE_MAX_BYTES:
+            return False, "Ukuran image terlalu besar. Maksimal 8 MB."
+    except (TypeError, ValueError):
+        return False, "Ukuran image tidak valid."
+    content_type = str(getattr(attachment, "content_type", "") or "").lower()
+    filename = str(getattr(attachment, "filename", "") or "").lower()
+    if content_type in ALLOWED_PAYMENT_IMAGE_CONTENT_TYPES:
+        return True, None
+    if any(filename.endswith(ext) for ext in ALLOWED_PAYMENT_IMAGE_EXTENSIONS):
+        return True, None
+    return False, "Attachment harus berupa PNG, JPG/JPEG, atau WEBP."
+
+
+def _redact_payment_text(value):
+    text = str(value or "")
+    text = re.sub(r"\b(?:\d[\s-]?){5,}\d\b", "[nomor disembunyikan]", text)
+    text = re.sub(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b", "[email disembunyikan]", text)
+    return text
+
+
+def _clamp_payment_instruction_description(text, limit=PAYMENT_INSTRUCTION_DESCRIPTION_LIMIT):
+    text = str(text or "")
+    if len(text) <= limit:
+        return text
+    max_body = max(0, limit - len(PAYMENT_INSTRUCTION_TRUNCATED_SUFFIX))
+    return text[:max_body].rstrip() + PAYMENT_INSTRUCTION_TRUNCATED_SUFFIX
+
+
+def _profile_enabled_label(profile):
+    if not profile:
+        return "Belum dibuat"
+    if not deal_payment_profile_is_valid(profile):
+        return "Tidak valid"
+    return "Aktif" if profile.get("enabled") else "Nonaktif"
+
+
+def _payment_profile_preview_embed(profile, user, *, redacted=False):
+    title = "Payment Profile"
+    if user:
+        title = f"Payment Profile {getattr(user, 'display_name', None) or getattr(user, 'name', '')}".strip()
+    embed = discord.Embed(title=title, color=0x5865F2)
+    if not profile:
+        embed.description = "Payment profile belum dibuat."
+        return embed
+
+    payment_text = profile.get("paymentText") or "-"
+    qris_note = profile.get("qrisNote") or "-"
+    note = profile.get("note") or "-"
+    footer_text = profile.get("footerText") or "-"
+    if redacted:
+        payment_text = _redact_payment_text(payment_text)
+        qris_note = _redact_payment_text(qris_note)
+        note = _redact_payment_text(note)
+        footer_text = _redact_payment_text(footer_text)
+
+    embed.add_field(name="Status", value=_profile_enabled_label(profile), inline=True)
+    embed.add_field(name="Valid", value="Ya" if deal_payment_profile_is_valid(profile) else "Tidak", inline=True)
+    embed.add_field(name="Judul Embed", value=profile.get("title") or "Instruksi Pembayaran", inline=False)
+    embed.add_field(name="Payment Text", value=payment_text[:1024], inline=False)
+    embed.add_field(name="QRIS / Limit Note", value=qris_note[:1024], inline=False)
+    embed.add_field(name="Catatan Tambahan", value=note[:1024], inline=False)
+    embed.add_field(name="Footer / Warning", value=footer_text[:1024], inline=False)
+    embed.add_field(
+        name="Image",
+        value=("Tersedia" if profile.get("imageUrl") else "-") if redacted else (profile.get("imageFilename") or ("Tersedia" if profile.get("imageUrl") else "-")),
+        inline=False,
+    )
+    if profile.get("imageUrl") and not redacted:
+        embed.set_image(url=profile["imageUrl"])
+    embed.set_footer(text="Profile ini milik command runner, bukan role/server.")
+    return embed
+
+
+async def _require_payment_config_permission(interaction: discord.Interaction):
+    if await _can_configure_audit_log(interaction):
+        return True
+    await _safe_respond(interaction, PAYMENT_CONFIG_PERMISSION_MESSAGE, ephemeral=True)
+    return False
+
+
 async def handle_deal_message(client, message: discord.Message) -> bool:
     if message.author.bot:
         return False
@@ -376,6 +891,7 @@ async def _warning_embed(deal, guild=None, bot=None):
         ),
         color=0xFEE75C,
     )
+    embed.add_field(name="Deal ID", value=deal.get("dealId") or "-", inline=False)
     embed.add_field(name="Buyer", value=await format_user_display(bot, guild, deal.get("buyerId")), inline=True)
     embed.add_field(name="Seller", value=await format_user_display(bot, guild, deal.get("sellerId")), inline=True)
     embed.add_field(name="Middleman", value=await format_user_display(bot, guild, deal.get("middlemanId")), inline=True)
@@ -384,7 +900,7 @@ async def _warning_embed(deal, guild=None, bot=None):
     return embed
 
 
-def _terms_embed():
+def _terms_embed(deal=None):
     embed = discord.Embed(
         title="ℹ️ INFO LENGKAP, KETENTUAN, FEE DLL!",
         description=(
@@ -408,6 +924,8 @@ def _terms_embed():
         ),
         color=0x5865F2,
     )
+    if deal:
+        embed.add_field(name="Deal ID", value=deal.get("dealId") or "-", inline=False)
     embed.set_footer(text="W2E Middleman")
     return embed
 
@@ -443,6 +961,86 @@ async def _summary_embed(deal, guild=None, bot=None):
     return embed
 
 
+async def _payment_instruction_embed(deal, profile, guild=None, bot=None, *, warning=None):
+    owner_id = resolve_deal_payment_instruction_owner_id(deal)
+    if warning:
+        embed = discord.Embed(
+            title="Instruksi Pembayaran Belum Tersedia",
+            description=warning,
+            color=0xFEE75C,
+        )
+    else:
+        description_parts = []
+        if profile and profile.get("paymentText"):
+            description_parts.append(profile["paymentText"])
+        elif profile and profile.get("imageUrl"):
+            description_parts.append(
+                "Silakan scan QRIS/payment image di bawah, lalu upload bukti pembayaran melalui tombol/fitur yang tersedia."
+            )
+        if profile and profile.get("qrisNote"):
+            description_parts.append(profile["qrisNote"])
+        if profile and profile.get("note"):
+            description_parts.append(profile["note"])
+        embed = discord.Embed(
+            title=(profile.get("title") if profile else None) or "Instruksi Pembayaran",
+            description=_clamp_payment_instruction_description(
+                "\n\n".join(part for part in description_parts if str(part or "").strip())
+            ),
+            color=0x57F287,
+        )
+        if profile and profile.get("imageUrl"):
+            embed.set_image(url=profile["imageUrl"])
+
+    embed.add_field(name="Buyer", value=await format_user_display(bot, guild, deal.get("buyerId")), inline=True)
+    embed.add_field(name="Seller", value=await format_user_display(bot, guild, deal.get("sellerId")), inline=True)
+    embed.add_field(name="Middleman/Admin", value=await format_user_display(bot, guild, owner_id), inline=True)
+    nominal = format_rupiah(deal.get("buyerPays")) if deal.get("buyerPays") else "Sesuai kesepakatan deal"
+    embed.add_field(name="Nominal", value=nominal, inline=True)
+    embed.add_field(name="Status", value="Menunggu pembayaran buyer", inline=True)
+    footer = profile.get("footerText") if profile and profile.get("footerText") and not warning else None
+    embed.set_footer(text=footer or "Instruksi pembayaran middleman - Jangan kirim dana langsung ke seller")
+    return embed
+
+
+async def _send_or_update_payment_instruction(guild, channel, deal, *, force=False):
+    if not guild or not channel or not deal:
+        return "skipped"
+    if deal.get("status") != DEAL_STATUS_WAITING_FUNDS:
+        return "skipped"
+
+    owner_id = resolve_deal_payment_instruction_owner_id(deal)
+    warning = None
+    profile = None
+    if not owner_id:
+        warning = "Instruksi pembayaran belum dikonfigurasi untuk middleman/admin deal ini. Jalankan /deal payment-config set terlebih dahulu."
+    else:
+        profile = await get_deal_payment_profile(guild.id, owner_id)
+        if not profile or not profile.get("enabled") or not deal_payment_profile_is_valid(profile):
+            warning = "Instruksi pembayaran belum dikonfigurasi untuk middleman/admin deal ini. Jalankan /deal payment-config set terlebih dahulu."
+
+    embed = await _payment_instruction_embed(deal, profile, guild, client, warning=warning)
+    payload_hash = deal_payment_instruction_payload_hash(embed)
+    message = None
+    message_id = deal.get("paymentInstructionMessageId")
+    if message_id:
+        try:
+            message = await channel.fetch_message(int(message_id))
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException, TypeError, ValueError):
+            message = None
+
+    if message and not force and deal.get("paymentInstructionPayloadHash") == payload_hash:
+        return "unchanged"
+
+    if message:
+        await message.edit(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        await set_deal_payment_instruction_tracking(deal["id"], message.id, payload_hash, owner_id)
+        return "updated"
+
+    message = await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    await set_deal_payment_instruction_tracking(deal["id"], message.id, payload_hash, owner_id)
+    return "created"
+
+
 def _proof_value(url_value, notes_value):
     if url_value and notes_value:
         return f"{url_value}\n{notes_value}"
@@ -458,8 +1056,10 @@ def _split_proof(value, optional_notes=None):
     return None, combined or None
 
 
-def _transition_embed(title, description, color=0x57F287):
+def _transition_embed(title, description, color=0x57F287, deal=None):
     embed = discord.Embed(title=title, description=description, color=color)
+    if deal:
+        embed.add_field(name="Deal ID", value=deal.get("dealId") or "-", inline=False)
     embed.set_footer(text="W2E Middleman")
     return embed
 
@@ -510,7 +1110,7 @@ async def _buyer_confirm_embed(deal, guild=None, bot=None):
     return embed
 
 
-def _seller_payout_instruction_embed():
+def _seller_payout_instruction_embed(deal=None):
     embed = discord.Embed(
         title="💸 DATA PENCAIRAN DANA (MM → SELLER)",
         description=(
@@ -522,6 +1122,8 @@ def _seller_payout_instruction_embed():
         ),
         color=0x5865F2,
     )
+    if deal:
+        embed.add_field(name="Deal ID", value=deal.get("dealId") or "-", inline=False)
     embed.set_footer(text="Pastikan data benar. Salah input = risiko seller.")
     return embed
 
@@ -943,7 +1545,7 @@ class ManualVouchReviewView(discord.ui.View):
     async def _require_reviewer(self, interaction):
         if await _can_configure_audit_log(interaction):
             return True
-        await interaction.response.send_message("Kamu tidak punya permission untuk review vouch.", ephemeral=True)
+        await _safe_respond(interaction, "Kamu tidak punya permission untuk review vouch.", ephemeral=True)
         return False
 
     async def _update_review_message(self, interaction, vouch, status_text):
@@ -963,29 +1565,29 @@ class ManualVouchReviewView(discord.ui.View):
         except discord.HTTPException:
             pass
 
-    @discord.ui.button(label="✅ Approve", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="✅ Approve", style=discord.ButtonStyle.success, custom_id="manual_vouch_approve")
     async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self._require_reviewer(interaction):
             return
         lock_key = _acquire_action_lock("manual_vouch_review", interaction.guild.id, self.vouch_id, interaction.user.id)
         if not lock_key:
             await _send_lock_collision_audit(interaction, "manual_vouch_review", self.vouch_id)
-            await interaction.response.send_message("Action ini sedang diproses. Coba lagi sebentar.", ephemeral=True)
+            await _safe_respond(interaction, "Action ini sedang diproses. Coba lagi sebentar.", ephemeral=True)
             return
         try:
             vouch, error = await approve_manual_vouch(interaction.guild.id, self.vouch_id, interaction.user.id)
             if error == "processed":
                 await _send_abuse_guard_audit(interaction.guild, "Critical Action Duplicate Blocked", actor=interaction.user, note=f"manual_vouch:{self.vouch_id}")
-                await interaction.response.send_message("Vouch ini sudah diproses.", ephemeral=True)
+                await _safe_respond(interaction, "Vouch ini sudah diproses.", ephemeral=True)
                 return
             if error == "unresolved_target":
-                await interaction.response.send_message("Target belum resolved. Reject atau minta user submit ulang.", ephemeral=True)
+                await _safe_respond(interaction, "Target belum resolved. Reject atau minta user submit ulang.", ephemeral=True)
                 return
             if error:
-                await interaction.response.send_message("Vouch manual tidak ditemukan.", ephemeral=True)
+                await _safe_respond(interaction, "Vouch manual tidak ditemukan.", ephemeral=True)
                 return
             await self._update_review_message(interaction, vouch, "Approved")
-            await interaction.response.send_message("Manual vouch approved.", ephemeral=True)
+            await _safe_respond(interaction, "Manual vouch approved.", ephemeral=True)
             await send_deal_audit_log(
                 interaction.guild,
                 "Manual Vouch Approved",
@@ -997,26 +1599,26 @@ class ManualVouchReviewView(discord.ui.View):
         finally:
             _release_action_lock(lock_key)
 
-    @discord.ui.button(label="❌ Reject", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="❌ Reject", style=discord.ButtonStyle.danger, custom_id="manual_vouch_reject")
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self._require_reviewer(interaction):
             return
         lock_key = _acquire_action_lock("manual_vouch_review", interaction.guild.id, self.vouch_id, interaction.user.id)
         if not lock_key:
             await _send_lock_collision_audit(interaction, "manual_vouch_review", self.vouch_id)
-            await interaction.response.send_message("Action ini sedang diproses. Coba lagi sebentar.", ephemeral=True)
+            await _safe_respond(interaction, "Action ini sedang diproses. Coba lagi sebentar.", ephemeral=True)
             return
         try:
             vouch, error = await reject_manual_vouch(interaction.guild.id, self.vouch_id, interaction.user.id)
             if error == "processed":
                 await _send_abuse_guard_audit(interaction.guild, "Critical Action Duplicate Blocked", actor=interaction.user, note=f"manual_vouch:{self.vouch_id}")
-                await interaction.response.send_message("Vouch ini sudah diproses.", ephemeral=True)
+                await _safe_respond(interaction, "Vouch ini sudah diproses.", ephemeral=True)
                 return
             if error:
-                await interaction.response.send_message("Vouch manual tidak ditemukan.", ephemeral=True)
+                await _safe_respond(interaction, "Vouch manual tidak ditemukan.", ephemeral=True)
                 return
             await self._update_review_message(interaction, vouch, "Rejected")
-            await interaction.response.send_message("Manual vouch rejected.", ephemeral=True)
+            await _safe_respond(interaction, "Manual vouch rejected.", ephemeral=True)
             await send_deal_audit_log(
                 interaction.guild,
                 "Manual Vouch Rejected",
@@ -1027,7 +1629,7 @@ class ManualVouchReviewView(discord.ui.View):
         finally:
             _release_action_lock(lock_key)
 
-    @discord.ui.button(label="📝 Reject with Reason", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="📝 Reject with Reason", style=discord.ButtonStyle.secondary, custom_id="manual_vouch_reject_reason")
     async def reject_reason(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self._require_reviewer(interaction):
             return
@@ -1050,23 +1652,23 @@ class RejectManualVouchModal(discord.ui.Modal, title="Reject Manual Vouch"):
 
     async def on_submit(self, interaction: discord.Interaction):
         if not await _can_configure_audit_log(interaction):
-            await interaction.response.send_message("Kamu tidak punya permission untuk review vouch.", ephemeral=True)
+            await _safe_respond(interaction, "Kamu tidak punya permission untuk review vouch.", ephemeral=True)
             return
         lock_key = _acquire_action_lock("manual_vouch_review", interaction.guild.id, self.vouch_id, interaction.user.id)
         if not lock_key:
             await _send_lock_collision_audit(interaction, "manual_vouch_review", self.vouch_id)
-            await interaction.response.send_message("Action ini sedang diproses. Coba lagi sebentar.", ephemeral=True)
+            await _safe_respond(interaction, "Action ini sedang diproses. Coba lagi sebentar.", ephemeral=True)
             return
         try:
             vouch, error = await reject_manual_vouch(interaction.guild.id, self.vouch_id, interaction.user.id, str(self.reason.value).strip())
             if error == "processed":
                 await _send_abuse_guard_audit(interaction.guild, "Critical Action Duplicate Blocked", actor=interaction.user, note=f"manual_vouch:{self.vouch_id}")
-                await interaction.response.send_message("Vouch ini sudah diproses.", ephemeral=True)
+                await _safe_respond(interaction, "Vouch ini sudah diproses.", ephemeral=True)
                 return
             if error:
-                await interaction.response.send_message("Vouch manual tidak ditemukan.", ephemeral=True)
+                await _safe_respond(interaction, "Vouch manual tidak ditemukan.", ephemeral=True)
                 return
-            await interaction.response.send_message("Manual vouch rejected.", ephemeral=True)
+            await _safe_respond(interaction, "Manual vouch rejected.", ephemeral=True)
             if self.channel_id and self.message_id:
                 try:
                     channel = interaction.guild.get_channel(int(self.channel_id))
@@ -1144,7 +1746,7 @@ class ManualVouchProofSessionView(discord.ui.View):
         super().__init__(timeout=300)
         self.key = key
 
-    @discord.ui.button(label="✅ Submit Vouch", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="✅ Submit Vouch", style=discord.ButtonStyle.success, custom_id="manual_vouch_proof_submit")
     async def submit(self, interaction: discord.Interaction, button: discord.ui.Button):
         session = MANUAL_VOUCH_PROOF_SESSIONS.get(self.key)
         if not session or session.get("cancelled"):
@@ -1241,7 +1843,7 @@ class ManualVouchProofSessionView(discord.ui.View):
             note=truncate_review(vouch.get("review"), 120),
         )
 
-    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.danger, custom_id="manual_vouch_proof_cancel")
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         session = MANUAL_VOUCH_PROOF_SESSIONS.get(self.key)
         if str(interaction.user.id) != self.key[2]:
@@ -1342,9 +1944,12 @@ class ManualVouchPanelView(discord.ui.View):
     async def submit_vouch(self, interaction: discord.Interaction, button: discord.ui.Button):
         config = await get_manual_vouch_panel_config(interaction.guild.id)
         if not config or not config.get("enabled"):
-            await interaction.response.send_message("Panel vouch sedang nonaktif.", ephemeral=True)
+            await _safe_respond(interaction, "Panel vouch sedang nonaktif.", ephemeral=True)
             return
-        await interaction.response.send_modal(ManualVouchSubmitModal())
+        try:
+            await interaction.response.send_modal(ManualVouchSubmitModal())
+        except discord.InteractionResponded:
+            await _safe_respond(interaction, "Terjadi error saat membuka modal vouch.", ephemeral=True)
 
 
 def _scam_report_session_key(guild_id, channel_id, user_id):
@@ -1520,12 +2125,12 @@ class ScammerReportActionModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
         if not await _can_configure_audit_log(interaction):
-            await interaction.response.send_message("Kamu tidak punya permission untuk review report scammer.", ephemeral=True)
+            await _safe_respond(interaction, "Kamu tidak punya permission untuk review report scammer.", ephemeral=True)
             return
         lock_key = _acquire_action_lock("scam_report_review", interaction.guild.id, self.report_id, interaction.user.id)
         if not lock_key:
             await _send_lock_collision_audit(interaction, "scam_report_review", self.report_id)
-            await interaction.response.send_message("Action ini sedang diproses. Coba lagi sebentar.", ephemeral=True)
+            await _safe_respond(interaction, "Action ini sedang diproses. Coba lagi sebentar.", ephemeral=True)
             return
         try:
             action_label = None
@@ -1569,12 +2174,12 @@ class ScammerReportActionModal(discord.ui.Modal):
                 action_label = "Resolved / Closed"
             if error == "processed":
                 await _send_abuse_guard_audit(interaction.guild, "Critical Action Duplicate Blocked", actor=interaction.user, note=f"scam_report:{self.report_id}")
-                await interaction.response.send_message("Report ini sudah diproses.", ephemeral=True)
+                await _safe_respond(interaction, "Report ini sudah diproses.", ephemeral=True)
                 return
             if error:
-                await interaction.response.send_message("Report scammer tidak ditemukan.", ephemeral=True)
+                await _safe_respond(interaction, "Report scammer tidak ditemukan.", ephemeral=True)
                 return
-            await interaction.response.send_message(response, ephemeral=True)
+            await _safe_respond(interaction, response, ephemeral=True)
             await self._edit_source_message(interaction, report, action_label or report.get("status"))
             await send_deal_audit_log(
                 interaction.guild,
@@ -1597,7 +2202,7 @@ class ScammerReportReviewView(discord.ui.View):
     async def _require_staff(self, interaction):
         if await _can_configure_audit_log(interaction):
             return True
-        await interaction.response.send_message("Kamu tidak punya permission untuk review report scammer.", ephemeral=True)
+        await _safe_respond(interaction, "Kamu tidak punya permission untuk review report scammer.", ephemeral=True)
         return False
 
     async def _open_modal(self, interaction, action):
@@ -1605,36 +2210,39 @@ class ScammerReportReviewView(discord.ui.View):
             return
         report = await get_scam_report_by_id(interaction.guild.id, self.report_id)
         if not report:
-            await interaction.response.send_message("Report scammer tidak ditemukan.", ephemeral=True)
+            await _safe_respond(interaction, "Report scammer tidak ditemukan.", ephemeral=True)
             return
         if report.get("status") in SCAM_REPORT_FINAL_STATUSES and action != "note":
-            await interaction.response.send_message("Report ini sudah diproses.", ephemeral=True)
+            await _safe_respond(interaction, "Report ini sudah diproses.", ephemeral=True)
             return
         message = getattr(interaction, "message", None)
-        await interaction.response.send_modal(ScammerReportActionModal(
-            self.report_id,
-            action,
-            getattr(getattr(message, "channel", None), "id", None),
-            getattr(message, "id", None),
-        ))
+        try:
+            await interaction.response.send_modal(ScammerReportActionModal(
+                self.report_id,
+                action,
+                getattr(getattr(message, "channel", None), "id", None),
+                getattr(message, "id", None),
+            ))
+        except discord.InteractionResponded:
+            await _safe_respond(interaction, "Terjadi error saat membuka modal review.", ephemeral=True)
 
-    @discord.ui.button(label="👁️ Mark Under Review", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="👁️ Mark Under Review", style=discord.ButtonStyle.secondary, custom_id="scam_report_under_review")
     async def under_review(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._open_modal(interaction, "under_review")
 
-    @discord.ui.button(label="⛔ Confirm Scam / Blacklist", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="⛔ Confirm Scam / Blacklist", style=discord.ButtonStyle.danger, custom_id="scam_report_blacklist")
     async def blacklist(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._open_modal(interaction, "blacklisted")
 
-    @discord.ui.button(label="❌ Reject Report", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="❌ Reject Report", style=discord.ButtonStyle.danger, custom_id="scam_report_reject")
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._open_modal(interaction, "rejected")
 
-    @discord.ui.button(label="📝 Add Note", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="📝 Add Note", style=discord.ButtonStyle.primary, custom_id="scam_report_note")
     async def note(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._open_modal(interaction, "note")
 
-    @discord.ui.button(label="✅ Resolve / Close", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="✅ Resolve / Close", style=discord.ButtonStyle.success, custom_id="scam_report_resolve")
     async def resolve(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._open_modal(interaction, "resolved")
 
@@ -1693,7 +2301,7 @@ class ScammerReportProofSessionView(discord.ui.View):
         super().__init__(timeout=300)
         self.key = key
 
-    @discord.ui.button(label="✅ Submit Report", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="✅ Submit Report", style=discord.ButtonStyle.success, custom_id="scam_report_proof_submit")
     async def submit(self, interaction: discord.Interaction, button: discord.ui.Button):
         session = SCAM_REPORT_PROOF_SESSIONS.get(self.key)
         if not session or session.get("cancelled"):
@@ -1784,7 +2392,7 @@ class ScammerReportProofSessionView(discord.ui.View):
             reason=truncate_review(report.get("reason"), 120),
         )
 
-    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.danger, custom_id="scam_report_proof_cancel")
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         session = SCAM_REPORT_PROOF_SESSIONS.get(self.key)
         if str(interaction.user.id) != self.key[2]:
@@ -1878,9 +2486,12 @@ class ScamReportPanelView(discord.ui.View):
     async def report_scammer(self, interaction: discord.Interaction, button: discord.ui.Button):
         config = await get_scam_report_panel_config(interaction.guild.id)
         if not config or not config.get("enabled"):
-            await interaction.response.send_message("Panel report scammer sedang nonaktif.", ephemeral=True)
+            await _safe_respond(interaction, "Panel report scammer sedang nonaktif.", ephemeral=True)
             return
-        await interaction.response.send_modal(ReportScammerModal())
+        try:
+            await interaction.response.send_modal(ReportScammerModal())
+        except discord.InteractionResponded:
+            await _safe_respond(interaction, "Terjadi error saat membuka modal report.", ephemeral=True)
 
 
 async def _vouch_progress_embed(deal):
@@ -2606,7 +3217,7 @@ async def _payment_proof_embed(deal, guild=None, bot=None, attachment=None):
     return embed
 
 
-def _funds_received_embed():
+def _funds_received_embed(deal=None):
     return _transition_embed(
         "✅ Uang Telah Diterima Middleman",
         (
@@ -2616,35 +3227,36 @@ def _funds_received_embed():
             "• DONE = transaksi selesai\n\n"
             "WAJIB ALLREC UNTUK PENJUALAN AKUN"
         ),
+        deal=deal,
     )
 
 
 async def _handle_dana_masuk(interaction: discord.Interaction, deal_row_id: int, source_view=None):
     if not deal_phase_at_least(2):
-        await interaction.response.send_message(DEAL_V1_PLACEHOLDER_MESSAGE, ephemeral=True)
+        await _safe_respond(interaction, DEAL_V1_PLACEHOLDER_MESSAGE, ephemeral=True)
         return
     lock_key = _acquire_action_lock("deal_dana_masuk", interaction.guild.id, deal_row_id, interaction.user.id)
     if not lock_key:
         await _send_lock_collision_audit(interaction, "deal_dana_masuk", deal_row_id)
-        await interaction.response.send_message("Action ini sedang diproses. Coba lagi sebentar.", ephemeral=True)
+        await _safe_respond(interaction, "Action ini sedang diproses. Coba lagi sebentar.", ephemeral=True)
         return
     try:
         deal = await get_deal_by_id(deal_row_id)
         if not deal:
-            await interaction.response.send_message("Data deal tidak ditemukan.", ephemeral=True)
+            await _safe_respond(interaction, "Data deal tidak ditemukan.", ephemeral=True)
             return
         if await _block_if_disputed(interaction, deal):
             return
         if not _is_middleman(interaction, deal):
-            await interaction.response.send_message("Hanya middleman yang ditugaskan yang bisa menandai Dana Masuk.", ephemeral=True)
+            await _safe_respond(interaction, "Hanya middleman yang ditugaskan yang bisa menandai Dana Masuk.", ephemeral=True)
             return
         if deal["status"] != DEAL_STATUS_WAITING_FUNDS:
             await _send_abuse_guard_audit(interaction.guild, "Critical Action Duplicate Blocked", actor=interaction.user, note=f"deal_dana_masuk:{deal_row_id}")
-            await interaction.response.send_message("Deal ini sudah tidak menunggu konfirmasi dana.", ephemeral=True)
+            await _safe_respond(interaction, "Deal ini sudah tidak menunggu konfirmasi dana.", ephemeral=True)
             return
         config = await get_deal_config(interaction.guild.id)
         if config and config.get("requirePaymentProof") and not deal.get("paymentProofMessageId"):
-            await interaction.response.send_message("Buyer belum mengirim bukti payment.", ephemeral=True)
+            await _safe_respond(interaction, "Buyer belum mengirim bukti payment.", ephemeral=True)
             return
         updated, error = await update_deal_status(
             int(deal_row_id),
@@ -2657,22 +3269,17 @@ async def _handle_dana_masuk(interaction: discord.Interaction, deal_row_id: int,
         )
         if error:
             await _send_abuse_guard_audit(interaction.guild, "Critical Action Duplicate Blocked", actor=interaction.user, note=f"deal_dana_masuk:{deal_row_id}")
-            await interaction.response.send_message("Deal ini sudah tidak menunggu konfirmasi dana.", ephemeral=True)
+            await _safe_respond(interaction, "Deal ini sudah tidak menunggu konfirmasi dana.", ephemeral=True)
             return
         if source_view is not None:
             await _disable_source_message(interaction, source_view)
-        await interaction.response.send_message(embed=_funds_received_embed(), view=FundsReceivedView(updated["id"]))
+        # This is the success case - only one response call should reach here
+        await _safe_respond(interaction, embed=_funds_received_embed(updated), view=FundsReceivedView(updated["id"]))
         await _send_deal_log(interaction, updated, "Deal: Dana Masuk", "Uang telah diterima oleh middleman.")
     except Exception:
         logging.exception("Dana Masuk interaction failed for deal %s", deal_row_id)
         error_message = "Terjadi error saat memproses Dana Masuk. Cek console bot untuk detail."
-        try:
-            if interaction.response.is_done():
-                await interaction.followup.send(error_message, ephemeral=True)
-            else:
-                await interaction.response.send_message(error_message, ephemeral=True)
-        except Exception:
-            logging.exception("Failed to send Dana Masuk error response for deal %s", deal_row_id)
+        await _safe_respond(interaction, error_message, ephemeral=True)
     finally:
         _release_action_lock(lock_key)
 
@@ -2725,18 +3332,90 @@ async def _open_dispute_modal(interaction: discord.Interaction, deal_row_id: int
         return
     deal = await get_deal_by_id(deal_row_id)
     if not deal:
-        await interaction.response.send_message("Data deal tidak ditemukan.", ephemeral=True)
+        await _safe_respond(interaction, "Data deal tidak ditemukan.", ephemeral=True)
         return
     if deal.get("status") == DEAL_STATUS_DISPUTED:
-        await interaction.response.send_message("Action ini sudah diproses.", ephemeral=True)
+        await _safe_respond(interaction, "Action ini sudah diproses.", ephemeral=True)
         return
     if _is_terminal_deal_status(deal.get("status")):
-        await interaction.response.send_message("Deal ini sudah tidak bisa dibuat dispute.", ephemeral=True)
+        await _safe_respond(interaction, "Deal ini sudah tidak bisa dibuat dispute.", ephemeral=True)
         return
     if not await _can_open_dispute(interaction, deal):
-        await interaction.response.send_message(DISPUTE_OPEN_STAFF_ONLY_MESSAGE, ephemeral=True)
+        await _safe_respond(interaction, DISPUTE_OPEN_STAFF_ONLY_MESSAGE, ephemeral=True)
         return
-    await interaction.response.send_modal(DisputeDealModal(deal_row_id))
+    # Modal must be sent quickly without defer - all validation is done above
+    try:
+        await interaction.response.send_modal(DisputeDealModal(deal_row_id))
+    except discord.InteractionResponded:
+        await _safe_respond(interaction, "Terjadi error saat membuka modal dispute.", ephemeral=True)
+
+
+class PaymentProfileSetupModal(discord.ui.Modal, title="Payment Profile Setup"):
+    def __init__(self, profile=None):
+        super().__init__()
+        profile = profile or {}
+        self.title_input = discord.ui.TextInput(
+            label="Judul Payment",
+            placeholder="Payment blur",
+            required=False,
+            max_length=100,
+            default=profile.get("title") or "",
+        )
+        self.payment_text = discord.ui.TextInput(
+            label="Rekening / Payment Text",
+            style=discord.TextStyle.paragraph,
+            placeholder="BNI\n1679729308\nan Z* Z*\n\nDANA\n08xxxxxxxx\nan Z* Z*",
+            required=False,
+            max_length=3000,
+            default=profile.get("paymentText") or "",
+        )
+        self.qris_note = discord.ui.TextInput(
+            label="QRIS / Limit Note",
+            style=discord.TextStyle.paragraph,
+            placeholder="QRIS\nMAX 500K",
+            required=False,
+            max_length=1000,
+            default=profile.get("qrisNote") or "",
+        )
+        self.note = discord.ui.TextInput(
+            label="Catatan Tambahan",
+            style=discord.TextStyle.paragraph,
+            placeholder="Kirim sesuai nominal deal. Setelah transfer, upload bukti pembayaran.",
+            required=False,
+            max_length=1000,
+            default=profile.get("note") or "",
+        )
+        self.footer_text = discord.ui.TextInput(
+            label="Footer / Warning",
+            style=discord.TextStyle.paragraph,
+            placeholder="Jangan kirim dana langsung ke seller.",
+            required=False,
+            max_length=300,
+            default=profile.get("footerText") or "",
+        )
+        for item in (self.title_input, self.payment_text, self.qris_note, self.note, self.footer_text):
+            self.add_item(item)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not await _require_payment_config_permission(interaction):
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        profile, _error = await save_deal_payment_profile(
+            interaction.guild.id,
+            interaction.user.id,
+            title=str(self.title_input.value).strip(),
+            paymentText=str(self.payment_text.value).strip(),
+            qrisNote=str(self.qris_note.value).strip(),
+            note=str(self.note.value).strip(),
+            footerText=str(self.footer_text.value).strip(),
+        )
+        if not deal_payment_profile_is_valid(profile):
+            await interaction.followup.send(
+                "Profile payment disimpan, tetapi belum valid. Isi Payment Text atau upload QRIS/payment image.",
+                ephemeral=True,
+            )
+            return
+        await interaction.followup.send("Profile payment kamu berhasil disimpan.", ephemeral=True)
 
 
 class EditDealModal(discord.ui.Modal, title="Edit Deal"):
@@ -2759,14 +3438,14 @@ class EditDealModal(discord.ui.Modal, title="Edit Deal"):
     async def on_submit(self, interaction: discord.Interaction):
         deal = await get_deal_by_id(self.deal_row_id)
         if not deal:
-            await interaction.response.send_message("Data deal tidak ditemukan.", ephemeral=True)
+            await _safe_respond(interaction, "Data deal tidak ditemukan.", ephemeral=True)
             return
         if self.force:
             if not await _can_admin_override(interaction):
-                await interaction.response.send_message("Hanya admin atau owner role yang bisa force-edit deal.", ephemeral=True)
+                await _safe_respond(interaction, "Hanya admin atau owner role yang bisa force-edit deal.", ephemeral=True)
                 return
         elif not (_is_participant(interaction, deal) or await _can_manage_deal(interaction, deal=deal)):
-            await interaction.response.send_message(
+            await _safe_respond(interaction,
                 "Kamu tidak memiliki akses untuk mengedit deal ini. Hanya buyer, seller, dan middleman yang bisa mengedit.",
                 ephemeral=True,
             )
@@ -2782,19 +3461,19 @@ class EditDealModal(discord.ui.Modal, title="Edit Deal"):
             force=self.force,
         )
         if error == "invalid_status":
-            await interaction.response.send_message("Deal hanya bisa diedit sebelum Dana Masuk.", ephemeral=True)
+            await _safe_respond(interaction, "Deal hanya bisa diedit sebelum Dana Masuk.", ephemeral=True)
             return
         if error in ("invalid_nominal", "invalid_fee"):
-            await interaction.response.send_message("Nominal atau fee tidak valid. Fee harus Inc/Exc.", ephemeral=True)
+            await _safe_respond(interaction, "Nominal atau fee tidak valid. Fee harus Inc/Exc.", ephemeral=True)
             return
         if error:
-            await interaction.response.send_message("Gagal mengedit deal.", ephemeral=True)
+            await _safe_respond(interaction, "Gagal mengedit deal.", ephemeral=True)
             return
         await _update_summary_message(interaction.guild, updated)
         if self.force:
-            await interaction.response.send_message("✅ Override berhasil: deal diedit dan fee sudah dihitung ulang.", ephemeral=True)
+            await _safe_respond(interaction, "✅ Override berhasil: deal diedit dan fee sudah dihitung ulang.", ephemeral=True)
         else:
-            await interaction.response.send_message("✅ Deal berhasil diedit dan fee sudah dihitung ulang.", ephemeral=True)
+            await _safe_respond(interaction, "✅ Deal berhasil diedit dan fee sudah dihitung ulang.", ephemeral=True)
 
 
 class CancelDealModal(discord.ui.Modal, title="Cancel Deal"):
@@ -3036,19 +3715,19 @@ class DisputeActionView(discord.ui.View):
             return None
         return deal
 
-    @discord.ui.button(label="✅ Resolve / Undispute", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="✅ Resolve / Undispute", style=discord.ButtonStyle.success, custom_id="dispute_resolve")
     async def resolve(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self._require_staff(interaction):
             return
         await interaction.response.send_modal(ResolveDisputeModal(self.deal_row_id))
 
-    @discord.ui.button(label="📝 Add Note", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="📝 Add Note", style=discord.ButtonStyle.secondary, custom_id="dispute_note")
     async def add_note(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self._require_staff(interaction):
             return
         await interaction.response.send_modal(AddDealNoteModal(self.deal_row_id))
 
-    @discord.ui.button(label="❌ Cancel Deal", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="❌ Cancel Deal", style=discord.ButtonStyle.danger, custom_id="dispute_cancel")
     async def cancel_deal_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self._require_staff(interaction):
             return
@@ -3057,74 +3736,144 @@ class DisputeActionView(discord.ui.View):
 
 class PaymentProofActionView(discord.ui.View):
     def __init__(self, deal_row_id: int):
-        super().__init__(timeout=86400)
+        super().__init__(timeout=None)  # Make persistent
         self.deal_row_id = int(deal_row_id)
 
-    @discord.ui.button(label="✅ Dana Masuk", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="✅ Dana Masuk", style=discord.ButtonStyle.success, custom_id="deal_dana_masuk")
     async def dana_masuk(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await _handle_dana_masuk(interaction, self.deal_row_id, PaymentProofActionView(self.deal_row_id))
+        # Parse deal_row_id from message or custom interaction data
+        deal_row_id = await self._get_deal_row_id_from_interaction(interaction)
+        if not deal_row_id:
+            await _safe_respond(interaction, "Data deal tidak ditemukan. Button sudah kadaluarsa.", ephemeral=True)
+            return
+        await _handle_dana_masuk(interaction, deal_row_id, PaymentProofActionView(deal_row_id))
 
-    @discord.ui.button(label="⚠️ Dispute", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="⚠️ Dispute", style=discord.ButtonStyle.secondary, custom_id="deal_dispute")
     async def dispute(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await _open_dispute_modal(interaction, self.deal_row_id)
+        # Parse deal_row_id from message or custom interaction data  
+        deal_row_id = await self._get_deal_row_id_from_interaction(interaction)
+        if not deal_row_id:
+            await _safe_respond(interaction, "Data deal tidak ditemukan. Button sudah kadaluarsa.", ephemeral=True)
+            return
+        await _open_dispute_modal(interaction, deal_row_id)
+    
+    async def _get_deal_row_id_from_interaction(self, interaction: discord.Interaction):
+        """Get deal_row_id from message embed or database lookup."""
+        # Try to extract from constructor first (normal case)
+        if hasattr(self, 'deal_row_id') and self.deal_row_id:
+            return self.deal_row_id
+            
+        # Try to extract from message embed
+        message = getattr(interaction, 'message', None)
+        if message and message.embeds:
+            embed = message.embeds[0]
+            for field in embed.fields:
+                if field.name == "Deal ID" and field.value:
+                    # Extract deal ID and look up row ID
+                    deal_id = field.value.strip('`')
+                    deal = await get_deal_by_deal_id(interaction.guild.id, deal_id)
+                    return deal.get("id") if deal else None
+        
+        # Could not determine deal_row_id
+        return None
 
 
 class DealSummaryView(discord.ui.View):
     def __init__(self, deal_row_id: int):
-        super().__init__(timeout=86400)
+        super().__init__(timeout=None)  # Make persistent
         self.deal_row_id = deal_row_id
 
-    @discord.ui.button(label="✅ Dana Masuk", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="✅ Dana Masuk", style=discord.ButtonStyle.success, custom_id="deal_summary_dana_masuk")
     async def dana_masuk(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await _handle_dana_masuk(interaction, self.deal_row_id, DealSummaryView(self.deal_row_id))
+        deal_row_id = await self._get_deal_row_id_from_interaction(interaction)
+        if not deal_row_id:
+            await _safe_respond(interaction, "Data deal tidak ditemukan. Button sudah kadaluarsa.", ephemeral=True)
+            return
+        await _handle_dana_masuk(interaction, deal_row_id, DealSummaryView(deal_row_id))
 
-    @discord.ui.button(label="✏️ Edit Deal", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="✏️ Edit Deal", style=discord.ButtonStyle.primary, custom_id="deal_summary_edit")
     async def edit_deal(self, interaction: discord.Interaction, button: discord.ui.Button):
+        deal_row_id = await self._get_deal_row_id_from_interaction(interaction)
+        if not deal_row_id:
+            await _safe_respond(interaction, "Data deal tidak ditemukan. Button sudah kadaluarsa.", ephemeral=True)
+            return
+            
         if not deal_phase_at_least(2):
-            await interaction.response.send_message(DEAL_V1_PLACEHOLDER_MESSAGE, ephemeral=True)
+            await _safe_respond(interaction, DEAL_V1_PLACEHOLDER_MESSAGE, ephemeral=True)
             return
         if not await _require_deal_phase(interaction, 4):
             return
-        deal = await get_deal_by_id(self.deal_row_id)
+        deal = await get_deal_by_id(deal_row_id)
         if not deal:
-            await interaction.response.send_message("Data deal tidak ditemukan.", ephemeral=True)
+            await _safe_respond(interaction, "Data deal tidak ditemukan.", ephemeral=True)
             return
         if await _block_if_disputed(interaction, deal):
             return
         if not (_is_participant(interaction, deal) or await _can_manage_deal(interaction, deal=deal)):
-            await interaction.response.send_message(
+            await _safe_respond(interaction,
                 "Kamu tidak memiliki akses untuk mengedit deal ini. Hanya buyer, seller, dan middleman yang bisa mengedit.",
                 ephemeral=True,
             )
             return
         if deal["status"] != DEAL_STATUS_WAITING_FUNDS:
-            await interaction.response.send_message("Deal hanya bisa diedit sebelum Dana Masuk.", ephemeral=True)
+            await _safe_respond(interaction, "Deal hanya bisa diedit sebelum Dana Masuk.", ephemeral=True)
             return
-        await interaction.response.send_modal(EditDealModal(deal))
+        # Modal must be sent quickly - all validation done above
+        try:
+            await interaction.response.send_modal(EditDealModal(deal))
+        except discord.InteractionResponded:
+            await _safe_respond(interaction, "Terjadi error saat membuka modal edit.", ephemeral=True)
 
-    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.danger, custom_id="deal_summary_cancel")
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        deal_row_id = await self._get_deal_row_id_from_interaction(interaction)
+        if not deal_row_id:
+            await _safe_respond(interaction, "Data deal tidak ditemukan. Button sudah kadaluarsa.", ephemeral=True)
+            return
+            
         if not deal_phase_at_least(2):
-            await interaction.response.send_message(DEAL_V1_PLACEHOLDER_MESSAGE, ephemeral=True)
+            await _safe_respond(interaction, DEAL_V1_PLACEHOLDER_MESSAGE, ephemeral=True)
             return
         if not await _require_deal_phase(interaction, 4):
             return
-        await interaction.response.send_modal(CancelDealModal(self.deal_row_id))
+        try:
+            await interaction.response.send_modal(CancelDealModal(deal_row_id))
+        except discord.InteractionResponded:
+            await _safe_respond(interaction, "Terjadi error saat membuka modal cancel.", ephemeral=True)
 
-    @discord.ui.button(label="⚠️ Dispute", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="⚠️ Dispute", style=discord.ButtonStyle.secondary, custom_id="deal_summary_dispute")
     async def dispute(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not deal_phase_at_least(2):
-            await interaction.response.send_message(DEAL_V1_PLACEHOLDER_MESSAGE, ephemeral=True)
+        deal_row_id = await self._get_deal_row_id_from_interaction(interaction)
+        if not deal_row_id:
+            await _safe_respond(interaction, "Data deal tidak ditemukan. Button sudah kadaluarsa.", ephemeral=True)
             return
-        await _open_dispute_modal(interaction, self.deal_row_id)
-
-
+        await _open_dispute_modal(interaction, deal_row_id)
+    
+    async def _get_deal_row_id_from_interaction(self, interaction: discord.Interaction):
+        """Get deal_row_id from message embed or database lookup."""
+        # Try to extract from constructor first (normal case)
+        if hasattr(self, 'deal_row_id') and self.deal_row_id:
+            return self.deal_row_id
+            
+        # Try to extract from message embed
+        message = getattr(interaction, 'message', None)
+        if message and message.embeds:
+            embed = message.embeds[0]
+            for field in embed.fields:
+                if field.name == "Deal ID" and field.value:
+                    # Extract deal ID and look up row ID
+                    deal_id = field.value.strip('`')
+                    deal = await get_deal_by_deal_id(interaction.guild.id, deal_id)
+                    return deal.get("id") if deal else None
+        
+        # Could not determine deal_row_id
+        return None
 class FundsReceivedView(discord.ui.View):
     def __init__(self, deal_row_id: int):
         super().__init__(timeout=86400)
         self.deal_row_id = deal_row_id
 
-    @discord.ui.button(label="📦 Item Sent", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="📦 Item Sent", style=discord.ButtonStyle.primary, custom_id="funds_item_sent")
     async def item_sent(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await _require_deal_phase(interaction, 2):
             return
@@ -3163,25 +3912,26 @@ class FundsReceivedView(discord.ui.View):
                     "Buyer silakan cek item/data sesuai detail deal.\n"
                     "Jika sudah sesuai, tekan tombol “Buyer Confirm”."
                 ),
+                deal=deal,
             )
             await interaction.response.send_message(embed=embed, view=ItemSentView(deal["id"]))
             await _send_deal_log(interaction, deal, "Deal: Item Sent", "Seller menandai item/data sudah dikirim.")
         finally:
             _release_action_lock(lock_key)
 
-    @discord.ui.button(label="✅ Buyer Confirm", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="✅ Buyer Confirm", style=discord.ButtonStyle.success, custom_id="funds_buyer_confirm")
     async def buyer_confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await _require_deal_phase(interaction, 2):
             return
         await _buyer_confirm(interaction, self.deal_row_id)
 
-    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.danger, custom_id="funds_cancel")
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await _require_deal_phase(interaction, 4):
             return
         await interaction.response.send_modal(CancelDealModal(self.deal_row_id))
 
-    @discord.ui.button(label="⚠️ Dispute", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="⚠️ Dispute", style=discord.ButtonStyle.secondary, custom_id="funds_dispute")
     async def dispute(self, interaction: discord.Interaction, button: discord.ui.Button):
         await _open_dispute_modal(interaction, self.deal_row_id)
 
@@ -3191,19 +3941,19 @@ class ItemSentView(discord.ui.View):
         super().__init__(timeout=86400)
         self.deal_row_id = deal_row_id
 
-    @discord.ui.button(label="✅ Buyer Confirm", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="✅ Buyer Confirm", style=discord.ButtonStyle.success, custom_id="item_buyer_confirm")
     async def buyer_confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await _require_deal_phase(interaction, 2):
             return
         await _buyer_confirm(interaction, self.deal_row_id)
 
-    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.danger, custom_id="item_cancel")
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await _require_deal_phase(interaction, 4):
             return
         await interaction.response.send_modal(CancelDealModal(self.deal_row_id))
 
-    @discord.ui.button(label="⚠️ Dispute", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="⚠️ Dispute", style=discord.ButtonStyle.secondary, custom_id="item_dispute")
     async def dispute(self, interaction: discord.Interaction, button: discord.ui.Button):
         await _open_dispute_modal(interaction, self.deal_row_id)
 
@@ -3292,7 +4042,7 @@ class BuyerConfirmedView(discord.ui.View):
         super().__init__(timeout=86400)
         self.deal_row_id = deal_row_id
 
-    @discord.ui.button(label="🏦 Kirim Data Pencairan", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="🏦 Kirim Data Pencairan", style=discord.ButtonStyle.primary, custom_id="buyer_payout")
     async def kirim_data_pencairan(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await _require_deal_phase(interaction, 2):
             return
@@ -3310,7 +4060,7 @@ class BuyerConfirmedView(discord.ui.View):
             return
         await interaction.response.send_modal(SellerPayoutModal(self.deal_row_id))
 
-    @discord.ui.button(label="✅ Done & Transfer Sukses", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="✅ Done & Transfer Sukses", style=discord.ButtonStyle.success, custom_id="buyer_done")
     async def done_transfer(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await _require_deal_phase(interaction, 2):
             return
@@ -3377,7 +4127,7 @@ class BuyerConfirmedView(discord.ui.View):
         finally:
             _release_action_lock(lock_key)
 
-    @discord.ui.button(label="⚠️ Dispute", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="⚠️ Dispute", style=discord.ButtonStyle.secondary, custom_id="buyer_dispute")
     async def dispute(self, interaction: discord.Interaction, button: discord.ui.Button):
         await _open_dispute_modal(interaction, self.deal_row_id)
 
@@ -3387,7 +4137,7 @@ class SafeDealActionView(discord.ui.View):
         super().__init__(timeout=86400)
         self.deal_row_id = int(deal["id"])
 
-    @discord.ui.button(label="✏️ Edit Deal", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="✏️ Edit Deal", style=discord.ButtonStyle.primary, custom_id="safe_edit")
     async def edit(self, interaction: discord.Interaction, button: discord.ui.Button):
         deal = await get_deal_by_id(self.deal_row_id)
         if not deal:
@@ -3398,7 +4148,7 @@ class SafeDealActionView(discord.ui.View):
             return
         await interaction.response.send_modal(EditDealModal(deal, force=True))
 
-    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.danger, custom_id="safe_cancel")
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         deal = await get_deal_by_id(self.deal_row_id)
         if not deal:
@@ -3409,7 +4159,7 @@ class SafeDealActionView(discord.ui.View):
             return
         await interaction.response.send_modal(CancelDealModal(self.deal_row_id))
 
-    @discord.ui.button(label="⚠️ Dispute", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="⚠️ Dispute", style=discord.ButtonStyle.secondary, custom_id="safe_dispute")
     async def dispute(self, interaction: discord.Interaction, button: discord.ui.Button):
         await _open_dispute_modal(interaction, self.deal_row_id)
 
@@ -3507,15 +4257,15 @@ class VouchView(discord.ui.View):
         progress_message_id = getattr(getattr(interaction, "message", None), "id", None) or deal.get("vouchProgressMessageId")
         await interaction.response.send_modal(VouchModal(self.deal_row_id, target_role, progress_message_id))
 
-    @discord.ui.button(label="⭐ Vouch Buyer", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="⭐ Vouch Buyer", style=discord.ButtonStyle.primary, custom_id="vouch_buyer")
     async def vouch_buyer(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._open_vouch(interaction, "Buyer")
 
-    @discord.ui.button(label="⭐ Vouch Seller", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="⭐ Vouch Seller", style=discord.ButtonStyle.primary, custom_id="vouch_seller")
     async def vouch_seller(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._open_vouch(interaction, "Seller")
 
-    @discord.ui.button(label="⭐ Vouch Middleman", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="⭐ Vouch Middleman", style=discord.ButtonStyle.primary, custom_id="vouch_middleman")
     async def vouch_middleman(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._open_vouch(interaction, "Middleman")
 
@@ -3554,7 +4304,7 @@ async def _buyer_confirm(interaction: discord.Interaction, deal_row_id: int):
         seller_display = await format_user_display(interaction.client, interaction.guild, deal.get("sellerId"))
         await interaction.channel.send(
             f"{seller_display} silakan isi data pencairan dana untuk proses transfer dari middleman.",
-            embed=_seller_payout_instruction_embed(),
+            embed=_seller_payout_instruction_embed(deal),
             view=BuyerConfirmedView(deal["id"]),
         )
         await _send_deal_log(interaction, deal, "Deal: Buyer Confirm", "Buyer mengonfirmasi item/data sudah diterima sesuai deal.")
@@ -3637,6 +4387,8 @@ class DealFormModal(discord.ui.Modal, title="Form Middleman Deal"):
 
             msg = await interaction.followup.send(embed=await _summary_embed(deal, interaction.guild, interaction.client), view=DealSummaryView(deal["id"]), wait=True)
             await set_deal_summary_message(deal["id"], msg.id)
+            deal = await get_deal_by_id(deal["id"]) or deal
+            await _send_or_update_payment_instruction(interaction.guild, interaction.channel, deal)
         finally:
             _release_action_lock(lock_key)
 
@@ -3666,19 +4418,19 @@ class DealStartView(discord.ui.View):
             else:
                 await interaction.followup.send("Form gagal dibuka. Silakan klik tombol Form lagi.", ephemeral=True)
 
-    @discord.ui.button(label="⚠️ Ketentuan", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="⚠️ Ketentuan", style=discord.ButtonStyle.secondary, custom_id="deal_start_terms")
     async def ketentuan(self, interaction: discord.Interaction, button: discord.ui.Button):
         deal = await get_deal_by_id(self.deal_row_id)
         if not deal:
             await interaction.response.send_message("Data deal tidak ditemukan.", ephemeral=True)
             return
-        await interaction.response.edit_message(embed=_terms_embed(), view=DealTermsView(deal))
+        await interaction.response.edit_message(embed=_terms_embed(deal), view=DealTermsView(deal))
 
-    @discord.ui.button(label="📋 Form", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="📋 Form", style=discord.ButtonStyle.primary, custom_id="deal_start_form")
     async def form(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._open_form(interaction)
 
-    @discord.ui.button(label="❌ Cancel Request", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="❌ Cancel Request", style=discord.ButtonStyle.danger, custom_id="deal_start_cancel")
     async def cancel_request(self, interaction: discord.Interaction, button: discord.ui.Button):
         deal = await get_deal_by_id(self.deal_row_id)
         if not deal:
@@ -3703,12 +4455,12 @@ class DealTermsView(discord.ui.View):
         self.deal = deal
         self.middleman_id = int(deal["middlemanId"])
 
-    @discord.ui.button(label="Back", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Back", style=discord.ButtonStyle.secondary, custom_id="deal_terms_back")
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
         fresh = await get_deal_by_id(self.deal["id"]) or self.deal
         await interaction.response.edit_message(embed=await _warning_embed(fresh, interaction.guild, interaction.client), view=DealStartView(fresh))
 
-    @discord.ui.button(label="📋 Form", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="📋 Form", style=discord.ButtonStyle.primary, custom_id="deal_terms_form")
     async def form(self, interaction: discord.Interaction, button: discord.ui.Button):
         fresh = await get_deal_by_id(self.deal["id"]) or self.deal
         if not get_deal_participant_role(fresh, interaction.user.id):
@@ -3732,7 +4484,7 @@ class PrefixEditDealView(discord.ui.View):
         self.deal_id = str(deal_id).strip().upper()
         self.force = bool(force)
 
-    @discord.ui.button(label="Buka Form Edit", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Buka Form Edit", style=discord.ButtonStyle.primary, custom_id="prefix_edit_deal")
     async def open_edit_modal(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await _require_deal_phase(interaction, 4):
             return
@@ -3760,6 +4512,395 @@ class PrefixEditDealView(discord.ui.View):
         await interaction.response.send_modal(EditDealModal(deal))
 
 
+RECOVER_BUTTON_SCOPES = {"all", "active-deals", "panels", "reviews"}
+
+
+def _recovery_counts():
+    return {"refreshed": 0, "recovered": 0, "skipped": 0, "missing": 0, "failed": 0}
+
+
+def _merge_recovery_counts(total, partial):
+    for key in total:
+        total[key] += int((partial or {}).get(key, 0))
+    return total
+
+
+def _recovery_report(scope, counts, *, startup=False, manual_scan=False):
+    label = "Startup recovery" if startup else "Recovery tombol"
+    lines = [
+        f"**{label}** scope `{scope}` selesai.",
+        f"Refreshed: `{counts['refreshed']}`",
+        f"Recovered: `{counts['recovered']}`",
+        f"Skipped: `{counts['skipped']}`",
+        f"Missing: `{counts['missing']}`",
+        f"Failed: `{counts['failed']}`",
+    ]
+    if startup:
+        lines.append("Startup hanya memperbaiki message ID yang tersimpan.")
+    if manual_scan:
+        lines.append("Scan manual vouch review hanya dilakukan oleh command staff.")
+    return "\n".join(lines)
+
+
+async def _recover_fetch_channel(guild, channel_id):
+    if not guild or not channel_id:
+        return None
+    try:
+        channel = guild.get_channel(int(channel_id))
+        if channel:
+            return channel
+        return await guild.fetch_channel(int(channel_id))
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException, TypeError, ValueError):
+        return None
+
+
+async def _recover_fetch_message(guild, channel_id, message_id):
+    channel = await _recover_fetch_channel(guild, channel_id)
+    if not channel or not message_id:
+        return None, "missing"
+    try:
+        return await channel.fetch_message(int(message_id)), None
+    except discord.NotFound:
+        return None, "missing"
+    except (discord.Forbidden, discord.HTTPException, TypeError, ValueError):
+        return None, "failed"
+
+
+async def _recover_edit_message(guild, channel_id, message_id, *, embed=None, view=None):
+    message, error = await _recover_fetch_message(guild, channel_id, message_id)
+    if not message:
+        return error or "missing"
+    try:
+        await message.edit(embed=embed, view=view)
+        return "refreshed"
+    except discord.NotFound:
+        return "missing"
+    except (discord.Forbidden, discord.HTTPException):
+        return "failed"
+
+
+def _recover_active_deal_view(deal):
+    if deal.get("status") not in DEAL_ACTIVE_STATUSES:
+        return None
+    return _view_for_deal_status(deal)
+
+
+async def _recover_single_active_deal(guild, deal):
+    counts = _recovery_counts()
+    channel_id = deal.get("ticketChannelId")
+
+    if deal.get("warningMessageId"):
+        view = DealStartView(deal["id"]) if deal.get("status") == DEAL_STATUS_PENDING_FORM else None
+        result = await _recover_edit_message(
+            guild,
+            channel_id,
+            deal.get("warningMessageId"),
+            embed=await _warning_embed(deal, guild, client),
+            view=view,
+        )
+        counts["refreshed" if result == "refreshed" else result] += 1
+    else:
+        counts["skipped"] += 1
+
+    if deal.get("summaryMessageId"):
+        result = await _recover_edit_message(
+            guild,
+            channel_id,
+            deal.get("summaryMessageId"),
+            embed=await _summary_embed(deal, guild, client),
+            view=_recover_active_deal_view(deal),
+        )
+        counts["refreshed" if result == "refreshed" else result] += 1
+    else:
+        counts["skipped"] += 1
+
+    if deal.get("paymentInstructionMessageId"):
+        channel = await _recover_fetch_channel(guild, channel_id)
+        if channel:
+            try:
+                result = await _send_or_update_payment_instruction(guild, channel, deal, force=True)
+                if result == "created":
+                    counts["recovered"] += 1
+                elif result in ("updated", "unchanged"):
+                    counts["refreshed"] += 1
+                elif result == "skipped":
+                    counts["skipped"] += 1
+                else:
+                    counts["failed"] += 1
+            except Exception:
+                logging.exception("payment instruction recovery failed")
+                counts["failed"] += 1
+        else:
+            counts["missing"] += 1
+    else:
+        counts["skipped"] += 1
+
+    if deal.get("paymentProofConfirmationMessageId"):
+        view = PaymentProofActionView(deal["id"]) if deal.get("status") == DEAL_STATUS_WAITING_FUNDS else None
+        result = await _recover_edit_message(
+            guild,
+            channel_id,
+            deal.get("paymentProofConfirmationMessageId"),
+            embed=await _payment_proof_embed(deal, guild, client),
+            view=view,
+        )
+        counts["refreshed" if result == "refreshed" else result] += 1
+    else:
+        counts["skipped"] += 1
+
+    if deal.get("vouchProgressMessageId"):
+        if deal.get("status") == DEAL_STATUS_COMPLETED and deal.get("isVouchEligible"):
+            embed, complete = await _vouch_progress_embed(deal)
+            view = VouchView(deal["id"], disabled=complete)
+        else:
+            embed = None
+            view = None
+        result = await _recover_edit_message(
+            guild,
+            channel_id,
+            deal.get("vouchProgressMessageId"),
+            embed=embed,
+            view=view,
+        )
+        counts["refreshed" if result == "refreshed" else result] += 1
+    else:
+        counts["skipped"] += 1
+    return counts
+
+
+async def _recover_active_deal_messages(guild):
+    counts = _recovery_counts()
+    if not guild:
+        counts["missing"] += 1
+        return counts
+    deals = await list_active_deals(guild.id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            f"""
+            SELECT {DEAL_SELECT}
+            FROM Deal
+            WHERE guildId=? AND status=?
+              AND vouchProgressMessageId IS NOT NULL AND vouchProgressMessageId!=''
+            ORDER BY updatedAt DESC, id DESC
+            """,
+            (str(guild.id), DEAL_STATUS_COMPLETED),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    deals.extend(_deal_row_to_dict(row) for row in rows)
+    seen = set()
+    for deal in deals:
+        if not deal or deal.get("id") in seen:
+            continue
+        seen.add(deal.get("id"))
+        _merge_recovery_counts(counts, await _recover_single_active_deal(guild, deal))
+    return counts
+
+
+async def _send_or_update_manual_vouch_panel_recovery(guild, channel):
+    config = await get_manual_vouch_panel_config(guild.id)
+    embed = _manual_vouch_panel_embed()
+    view = ManualVouchPanelView()
+    if config and config.get("messageId") and str(config.get("channelId")) == str(channel.id):
+        try:
+            old_message = await channel.fetch_message(int(config["messageId"]))
+            await old_message.edit(embed=embed, view=view)
+            await set_manual_vouch_panel_config(guild.id, channel.id, old_message.id, enabled=True)
+            return old_message
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError, TypeError):
+            pass
+    message = await channel.send(embed=embed, view=view)
+    await set_manual_vouch_panel_config(guild.id, channel.id, message.id, enabled=True)
+    return message
+
+
+async def _send_or_update_scam_report_panel_recovery(guild, channel):
+    config = await get_scam_report_panel_config(guild.id)
+    embed = _scam_report_panel_embed()
+    view = ScamReportPanelView()
+    if config and config.get("messageId") and str(config.get("channelId")) == str(channel.id):
+        try:
+            old_message = await channel.fetch_message(int(config["messageId"]))
+            await old_message.edit(embed=embed, view=view)
+            await set_scam_report_panel_config(guild.id, channel.id, old_message.id, enabled=True)
+            return old_message
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError, TypeError):
+            pass
+    message = await channel.send(embed=embed, view=view)
+    await set_scam_report_panel_config(guild.id, channel.id, message.id, enabled=True)
+    return message
+
+
+async def _recover_panel_messages(guild):
+    counts = _recovery_counts()
+    if not guild:
+        counts["missing"] += 1
+        return counts
+
+    manual_config = await get_manual_vouch_panel_config(guild.id)
+    if manual_config and manual_config.get("enabled") and manual_config.get("channelId"):
+        channel = await _recover_fetch_channel(guild, manual_config.get("channelId"))
+        if channel:
+            try:
+                await _send_or_update_manual_vouch_panel_recovery(guild, channel)
+                counts["recovered"] += 1
+            except Exception:
+                logging.exception("manual vouch panel recovery failed")
+                counts["failed"] += 1
+        else:
+            counts["missing"] += 1
+    else:
+        counts["skipped"] += 1
+
+    scam_config = await get_scam_report_panel_config(guild.id)
+    if scam_config and scam_config.get("enabled") and scam_config.get("channelId"):
+        channel = await _recover_fetch_channel(guild, scam_config.get("channelId"))
+        if channel:
+            try:
+                await _send_or_update_scam_report_panel_recovery(guild, channel)
+                counts["recovered"] += 1
+            except Exception:
+                logging.exception("scam report panel recovery failed")
+                counts["failed"] += 1
+        else:
+            counts["missing"] += 1
+    else:
+        counts["skipped"] += 1
+
+    for config in await list_enabled_deal_panel_configs(guild.id):
+        panel_type = config.get("panelType")
+        if panel_type not in REFRESHABLE_DEAL_PANEL_TYPES:
+            counts["skipped"] += 1
+            continue
+        _message, status = await refresh_deal_panel(guild, panel_type, force=True)
+        if status in ("updated", "unchanged"):
+            counts["refreshed"] += 1
+        elif status == "created":
+            counts["recovered"] += 1
+        elif status in ("disabled", "not_refreshable"):
+            counts["skipped"] += 1
+        elif status == "missing_channel":
+            counts["missing"] += 1
+        else:
+            counts["failed"] += 1
+    return counts
+
+
+async def _recover_scam_review_messages(guild):
+    counts = _recovery_counts()
+    if not guild:
+        counts["missing"] += 1
+        return counts
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            f"""
+            SELECT {SCAM_REPORT_SELECT}
+            FROM scammerReports
+            WHERE guildId=? AND reviewChannelId IS NOT NULL AND reviewChannelId!=''
+              AND reviewMessageId IS NOT NULL AND reviewMessageId!=''
+            ORDER BY updatedAt DESC, id DESC
+            """,
+            (str(guild.id),),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    for row in rows:
+        report = _scam_report_row_to_dict(row)
+        if not report:
+            counts["skipped"] += 1
+            continue
+        view = None if report.get("status") in SCAM_REPORT_FINAL_STATUSES else ScammerReportReviewView(report["id"])
+        result = await _recover_edit_message(
+            guild,
+            report.get("reviewChannelId"),
+            report.get("reviewMessageId"),
+            embed=await _scam_report_review_embed(report, guild, client),
+            view=view,
+        )
+        counts["refreshed" if result == "refreshed" else result] += 1
+    return counts
+
+
+def _extract_embed_int_field(message, field_name):
+    for embed in getattr(message, "embeds", []) or []:
+        for field in getattr(embed, "fields", []) or []:
+            if str(getattr(field, "name", "")).strip().lower() == field_name.lower():
+                return _parse_positive_int(getattr(field, "value", None))
+    return None
+
+
+async def _recover_manual_vouch_review_scan(guild, scan_limit=100):
+    counts = _recovery_counts()
+    if not guild:
+        counts["missing"] += 1
+        return counts
+    config = await get_manual_vouch_review_config(guild.id)
+    if not config or not config.get("enabled") or not config.get("reviewChannelId"):
+        counts["skipped"] += 1
+        return counts
+    channel = await _recover_fetch_channel(guild, config.get("reviewChannelId"))
+    if not channel:
+        counts["missing"] += 1
+        return counts
+    try:
+        limit = max(1, min(int(scan_limit or 100), 500))
+    except (TypeError, ValueError):
+        limit = 100
+    try:
+        async for message in channel.history(limit=limit):
+            if not getattr(message.author, "bot", False):
+                continue
+            vouch_id = _extract_embed_int_field(message, "Vouch ID")
+            if not vouch_id:
+                counts["skipped"] += 1
+                continue
+            vouch = await get_vouch_by_id(guild.id, vouch_id)
+            if not vouch or vouch.get("vouchType") != "manual" or vouch.get("approvalStatus") != "pending":
+                counts["skipped"] += 1
+                continue
+            try:
+                await message.edit(
+                    embed=await _manual_vouch_review_embed(vouch, guild, client),
+                    view=ManualVouchReviewView(vouch["id"]),
+                )
+                counts["recovered"] += 1
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                counts["failed"] += 1
+    except (discord.Forbidden, discord.HTTPException):
+        counts["failed"] += 1
+    return counts
+
+
+async def recover_deal_buttons(guild, scope="all", scan_limit=100, *, manual=False):
+    scope = str(scope or "all").strip().lower()
+    if scope not in RECOVER_BUTTON_SCOPES:
+        scope = "all"
+    counts = _recovery_counts()
+    if scope in ("all", "active-deals"):
+        _merge_recovery_counts(counts, await _recover_active_deal_messages(guild))
+    if scope in ("all", "panels"):
+        _merge_recovery_counts(counts, await _recover_panel_messages(guild))
+    if scope in ("all", "reviews"):
+        _merge_recovery_counts(counts, await _recover_scam_review_messages(guild))
+        if manual:
+            _merge_recovery_counts(counts, await _recover_manual_vouch_review_scan(guild, scan_limit))
+    return counts
+
+
+async def _startup_recover_tracked_buttons(client_obj):
+    global _STARTUP_RECOVERY_DONE
+    if _STARTUP_RECOVERY_DONE:
+        return
+    await client_obj.wait_until_ready()
+    if _STARTUP_RECOVERY_DONE:
+        return
+    _STARTUP_RECOVERY_DONE = True
+    try:
+        for guild in list(getattr(client_obj, "guilds", []) or []):
+            counts = await recover_deal_buttons(guild, "all", manual=False)
+            logging.info(_recovery_report("all", counts, startup=True))
+    except Exception as e:
+        logging.exception(f"Startup tracked button recovery failed: {e}")
+
+
 def setup(tree, client):
     deal_group = app_commands.Group(name="deal", description="Sistem middleman deal")
     config_group = app_commands.Group(name="config", description="Konfigurasi middleman deal")
@@ -3772,11 +4913,65 @@ def setup(tree, client):
     scam_review_group = app_commands.Group(name="scam-report-review-channel", description="Channel review report scammer")
     scam_panel_group = app_commands.Group(name="scam-report-panel", description="Panel report scammer")
     trust_status_group = app_commands.Group(name="trust-status", description="Moderasi trust status user")
+    payment_config_group = app_commands.Group(name="payment-config", description="Payment profile per middleman/admin")
+    
+    # Register only truly persistent views (timeout=None with stable custom_id)
+    # These views are designed to survive bot restarts
     try:
         client.add_view(ManualVouchPanelView())
+        logging.info("Registered persistent view: ManualVouchPanelView")
+    except Exception as e:
+        logging.error(f"Failed to register ManualVouchPanelView: {e}")
+    
+    try:
         client.add_view(ScamReportPanelView())
-    except Exception:
-        pass
+        logging.info("Registered persistent view: ScamReportPanelView")
+    except Exception as e:
+        logging.error(f"Failed to register ScamReportPanelView: {e}")
+    
+    try:
+        client.add_view(GlobalDealViewDispatcher())
+        logging.info("Registered persistent view: GlobalDealViewDispatcher")
+    except Exception as e:
+        logging.error(f"Failed to register GlobalDealViewDispatcher: {e}")
+
+    try:
+        client.add_view(DealStartRestartFallbackView())
+        logging.info("Registered persistent view: DealStartRestartFallbackView")
+    except Exception as e:
+        logging.error(f"Failed to register DealStartRestartFallbackView: {e}")
+
+    try:
+        client.add_view(ReviewRestartFallbackView())
+        logging.info("Registered persistent view: ReviewRestartFallbackView")
+    except Exception as e:
+        logging.error(f"Failed to register ReviewRestartFallbackView: {e}")
+
+    try:
+        client.add_view(ProofSessionExpiredFallbackView())
+        logging.info("Registered persistent view: ProofSessionExpiredFallbackView")
+    except Exception as e:
+        logging.error(f"Failed to register ProofSessionExpiredFallbackView: {e}")
+
+    try:
+        client.add_view(MiscDealExpiredFallbackView())
+        logging.info("Registered persistent view: MiscDealExpiredFallbackView")
+    except Exception as e:
+        logging.error(f"Failed to register MiscDealExpiredFallbackView: {e}")
+    
+    # GlobalDealViewDispatcher catches stable button custom_id after restart, while this
+    # listener repairs tracked old messages whose stored IDs are available in the database.
+    global _STARTUP_RECOVERY_LISTENER_REGISTERED
+    if not _STARTUP_RECOVERY_LISTENER_REGISTERED:
+        async def _deal_button_recovery_on_ready():
+            await _startup_recover_tracked_buttons(client)
+
+        try:
+            register_ready_startup_task(_deal_button_recovery_on_ready)
+            _STARTUP_RECOVERY_LISTENER_REGISTERED = True
+            logging.info("Registered startup tracked button recovery task")
+        except Exception as e:
+            logging.error(f"Failed to register startup tracked button recovery task: {e}")
 
     async def _prefix_send(message, text):
         await message.reply(text, delete_after=10)
@@ -3849,6 +5044,39 @@ def setup(tree, client):
             "Klik tombol di bawah untuk membuka form edit deal.",
             view=PrefixEditDealView(deal_id, force=force),
         )
+
+    async def _prefix_payment_image_attachment(message):
+        if message.attachments:
+            return message.attachments[0]
+        ref = getattr(message, "reference", None)
+        if not ref:
+            return None
+        ref_message = getattr(ref, "resolved", None)
+        if not ref_message and getattr(ref, "message_id", None):
+            try:
+                ref_message = await message.channel.fetch_message(ref.message_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                ref_message = None
+        attachments = getattr(ref_message, "attachments", None) or []
+        return attachments[0] if attachments else None
+
+    async def _prefix_payment_profile_show(message):
+        interaction = FakeInteraction(message)
+        if not await _require_payment_config_permission(interaction):
+            return
+        profile = await get_deal_payment_profile(message.guild.id, message.author.id)
+        embed = _payment_profile_preview_embed(profile, message.author)
+        try:
+            await message.author.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+            await message.reply("Preview payment profile dikirim lewat DM.", delete_after=10)
+        except discord.HTTPException:
+            redacted = _payment_profile_preview_embed(profile, message.author, redacted=True)
+            await message.reply(
+                "DM gagal. Preview di bawah sudah disensor; detail lengkap hanya lewat slash ephemeral atau private deal channel.",
+                embed=redacted,
+                allowed_mentions=discord.AllowedMentions.none(),
+                delete_after=30,
+            )
 
     async def deal_prefix_dispatcher(message, args):
         if not message.guild:
@@ -3936,6 +5164,53 @@ def setup(tree, client):
                 await _run_prefix_command(deal_archive_backfill, interaction)
                 return
             await _prefix_send(message, "Command archive tidak dikenal.")
+            return
+
+        if subcommand == "recover-buttons":
+            scope = args[1].lower() if len(args) >= 2 else "all"
+            if scope not in RECOVER_BUTTON_SCOPES:
+                await _prefix_send(message, "Format salah. Gunakan: w!deal recover-buttons [all|active-deals|panels|reviews] [scan_limit]")
+                return
+            scan_limit = 100
+            if len(args) >= 3:
+                try:
+                    scan_limit = int(args[2])
+                except (TypeError, ValueError):
+                    await _prefix_send(message, "Scan limit harus angka.")
+                    return
+            await _run_prefix_command(recover_buttons, interaction, scope, scan_limit)
+            return
+
+        if subcommand == "payment-config":
+            if len(args) < 2:
+                await _prefix_send(message, "Format salah. Gunakan: w!deal payment-config set|image|show|enable|disable|clear-image")
+                return
+            payment_cmd = args[1].lower()
+            if payment_cmd == "set":
+                if not await _require_payment_config_permission(interaction):
+                    return
+                await _prefix_send(message, "Gunakan /deal payment-config set untuk membuka modal setup payment.")
+                return
+            if payment_cmd == "image":
+                attachment = await _prefix_payment_image_attachment(message)
+                if not attachment:
+                    await _prefix_send(message, "Attach image atau reply ke message berisi image. Format: w!deal payment-config image")
+                    return
+                await _run_prefix_command(payment_config_image, interaction, attachment)
+                return
+            if payment_cmd == "show":
+                await _prefix_payment_profile_show(message)
+                return
+            if payment_cmd == "enable":
+                await _run_prefix_command(payment_config_enable, interaction)
+                return
+            if payment_cmd == "disable":
+                await _run_prefix_command(payment_config_disable, interaction)
+                return
+            if payment_cmd == "clear-image":
+                await _run_prefix_command(payment_config_clear_image, interaction)
+                return
+            await _prefix_send(message, "Command payment-config tidak dikenal.")
             return
 
         if subcommand == "panel":
@@ -4744,6 +6019,101 @@ def setup(tree, client):
             ephemeral=True,
         )
 
+    @payment_config_group.command(name="set", description="Setup payment profile milik kamu")
+    async def payment_config_set(interaction: discord.Interaction):
+        if not await _require_payment_config_permission(interaction):
+            return
+        profile = await get_deal_payment_profile(interaction.guild.id, interaction.user.id)
+        await interaction.response.send_modal(PaymentProfileSetupModal(profile))
+
+    @payment_config_group.command(name="image", description="Set QRIS/payment image milik kamu")
+    async def payment_config_image(interaction: discord.Interaction, attachment: discord.Attachment):
+        if not await _require_payment_config_permission(interaction):
+            return
+        valid, error = _attachment_is_valid_payment_image(attachment)
+        if not valid:
+            await _safe_respond(interaction, error or "Attachment image tidak valid.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        profile, _error = await save_deal_payment_profile(
+            interaction.guild.id,
+            interaction.user.id,
+            imageUrl=attachment.url,
+            imageFilename=getattr(attachment, "filename", None),
+        )
+        await interaction.followup.send(
+            "QRIS/payment image berhasil disimpan untuk profile kamu."
+            if deal_payment_profile_is_valid(profile)
+            else "Image disimpan, tetapi profile belum valid.",
+            ephemeral=True,
+        )
+
+    @payment_config_group.command(name="show", description="Preview payment profile milik kamu")
+    async def payment_config_show(interaction: discord.Interaction):
+        if not await _require_payment_config_permission(interaction):
+            return
+        profile = await get_deal_payment_profile(interaction.guild.id, interaction.user.id)
+        await interaction.response.send_message(
+            embed=_payment_profile_preview_embed(profile, interaction.user),
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    @payment_config_group.command(name="enable", description="Aktifkan payment profile milik kamu")
+    async def payment_config_enable(interaction: discord.Interaction):
+        if not await _require_payment_config_permission(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+        _profile, error = await set_deal_payment_profile_enabled(interaction.guild.id, interaction.user.id, True)
+        if error == "invalid_profile":
+            await interaction.followup.send("Profile belum valid. Isi Payment Text atau upload QRIS/payment image dulu.", ephemeral=True)
+            return
+        await interaction.followup.send("Payment profile kamu diaktifkan.", ephemeral=True)
+
+    @payment_config_group.command(name="disable", description="Nonaktifkan payment profile milik kamu")
+    async def payment_config_disable(interaction: discord.Interaction):
+        if not await _require_payment_config_permission(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+        await set_deal_payment_profile_enabled(interaction.guild.id, interaction.user.id, False)
+        await interaction.followup.send("Payment profile kamu dinonaktifkan.", ephemeral=True)
+
+    @payment_config_group.command(name="clear-image", description="Hapus QRIS/payment image milik kamu")
+    async def payment_config_clear_image(interaction: discord.Interaction):
+        if not await _require_payment_config_permission(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+        await clear_deal_payment_profile_image(interaction.guild.id, interaction.user.id)
+        await interaction.followup.send("QRIS/payment image dihapus dari profile kamu.", ephemeral=True)
+
+    RECOVER_SCOPE_CHOICES = [
+        app_commands.Choice(name="all", value="all"),
+        app_commands.Choice(name="active-deals", value="active-deals"),
+        app_commands.Choice(name="panels", value="panels"),
+        app_commands.Choice(name="reviews", value="reviews"),
+    ]
+
+    @deal_group.command(name="recover-buttons", description="Recovery tombol deal/vouch/panel yang tersimpan")
+    @app_commands.choices(scope=RECOVER_SCOPE_CHOICES)
+    async def recover_buttons(interaction: discord.Interaction, scope: str = "all", scan_limit: int = 100):
+        if not await _can_configure_audit_log(interaction):
+            await interaction.response.send_message("Kamu tidak punya permission untuk recovery tombol deal.", ephemeral=True)
+            return
+        scope_value = str(scope or "all").strip().lower()
+        if scope_value not in RECOVER_BUTTON_SCOPES:
+            await interaction.response.send_message("Scope harus all, active-deals, panels, atau reviews.", ephemeral=True)
+            return
+        try:
+            scan_limit_value = max(1, min(int(scan_limit or 100), 500))
+        except (TypeError, ValueError):
+            scan_limit_value = 100
+        await interaction.response.defer(ephemeral=True)
+        counts = await recover_deal_buttons(interaction.guild, scope_value, scan_limit_value, manual=True)
+        await interaction.followup.send(
+            _recovery_report(scope_value, counts, manual_scan=scope_value in ("all", "reviews")),
+            ephemeral=True,
+        )
+
     async def _send_or_update_manual_vouch_panel(guild, channel):
         config = await get_manual_vouch_panel_config(guild.id)
         embed = _manual_vouch_panel_embed()
@@ -5220,6 +6590,57 @@ def setup(tree, client):
             return
         await _panel_disable(interaction, panel_type)
 
+    PANEL_ACTION_CHOICES = [
+        app_commands.Choice(name="set", value="set"),
+        app_commands.Choice(name="refresh", value="refresh"),
+        app_commands.Choice(name="disable", value="disable"),
+        app_commands.Choice(name="status", value="status"),
+    ]
+    PANEL_FEED_ACTION_CHOICES = [
+        app_commands.Choice(name="set", value="set"),
+        app_commands.Choice(name="disable", value="disable"),
+        app_commands.Choice(name="status", value="status"),
+    ]
+
+    async def _panel_compat_action(interaction: discord.Interaction, panel_type: str, action: str, channel: discord.TextChannel = None):
+        action_value = str(action or "").strip().lower()
+        if action_value == "set":
+            if not channel:
+                await interaction.response.send_message("Channel wajib diisi untuk action set.", ephemeral=True)
+                return
+            await _panel_set(interaction, panel_type, channel)
+            return
+        if action_value == "refresh":
+            await _panel_refresh(interaction, panel_type)
+            return
+        if action_value == "disable":
+            await _panel_disable(interaction, panel_type)
+            return
+        if action_value == "status":
+            await _panel_status(interaction, panel_type)
+            return
+        await interaction.response.send_message("Action panel tidak valid.", ephemeral=True)
+
+    @panel_group.command(name="leaderboard", description="Compat: leaderboard action set/refresh/disable/status")
+    @app_commands.choices(action=PANEL_ACTION_CHOICES)
+    async def panel_leaderboard_compat(interaction: discord.Interaction, action: str, channel: discord.TextChannel = None):
+        await _panel_compat_action(interaction, "vouch_leaderboard", action, channel)
+
+    @panel_group.command(name="stats", description="Compat: stats action set/refresh/disable/status")
+    @app_commands.choices(action=PANEL_ACTION_CHOICES)
+    async def panel_stats_compat(interaction: discord.Interaction, action: str, channel: discord.TextChannel = None):
+        await _panel_compat_action(interaction, "trust_stats", action, channel)
+
+    @panel_group.command(name="recent-vouches", description="Compat: recent-vouches action set/disable/status")
+    @app_commands.choices(action=PANEL_FEED_ACTION_CHOICES)
+    async def panel_recent_vouches_compat(interaction: discord.Interaction, action: str, channel: discord.TextChannel = None):
+        await _panel_compat_action(interaction, "recent_vouches", action, channel)
+
+    @panel_group.command(name="completed-deals", description="Compat: completed-deals action set/disable/status")
+    @app_commands.choices(action=PANEL_FEED_ACTION_CHOICES)
+    async def panel_completed_deals_compat(interaction: discord.Interaction, action: str, channel: discord.TextChannel = None):
+        await _panel_compat_action(interaction, "completed_deals", action, channel)
+
     @panel_group.command(name="refresh", description="Refresh panel trust/staff")
     @app_commands.choices(panel=PANEL_REFRESH_CHOICES)
     async def panel_refresh(interaction: discord.Interaction, panel: app_commands.Choice[str]):
@@ -5596,6 +7017,7 @@ def setup(tree, client):
     deal_group.add_command(scam_review_group)
     deal_group.add_command(scam_panel_group)
     deal_group.add_command(trust_status_group)
+    deal_group.add_command(payment_config_group)
     deal_group.add_command(config_group)
     tree.add_command(deal_group)
 

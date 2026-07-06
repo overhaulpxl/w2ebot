@@ -87,8 +87,12 @@ Boss spawns hourly (20% chance) or via admin API. Pets add bonus damage.
 ### Middleman & Trust System
 `deal`, `vouches`, `trust_leaderboard`
 
-- **Secure Transactions**: Full-featured middleman system to securely handle deals between buyer and seller.
+- **Secure Transactions & Access Model**: Full-featured middleman system to securely handle deals between buyer, seller, and staff. Uses a participant-based access model allowing authorized buyers and sellers to cancel or edit their own deals directly.
 - **Workflow & Proofs**: Integrated fee calculation, proof of payment/transfer upload, and step-by-step confirmation.
+- **Payment Profile Config (`/deal payment-config`)**: Allows admins and middlemen to configure persistent payment info, including QRIS images and custom payment instructions, automatically sent to private deal channels when a deal is ready for payment.
+- **Public Trust Panels (`/deal panel`)**: Set up public tracking boards including trusted vouch leaderboards, server trust stats, recent vouches feed, completed deals feed, middleman status panels, active deal queues, and dispute boards.
+- **Vouch & Scam Panels**: Public vouch submission panel (`/deal vouch-panel setup`) and scam reporting panel (`/deal scam-report-panel setup`).
+- **Button Recovery (`/deal recover-buttons`)**: Recovers interactive buttons on active deal channels, trust panels, or review channels after bot restarts.
 - **Trust Profile**: Earn verified vouches from successful deals, increase Trust Score, and climb the Trust Rank ladder.
 - **Admin & Safety**: Review manual vouches, resolve disputes, and monitor active deals.
 
@@ -200,6 +204,16 @@ SQLite (`w2ebot.db`) with tables:
 - `Giveaway` — persisted giveaways (survive restart)
 - `AuditLog` — admin action audit trail
 - `json_store` — key-value blob storage for JSON data files
+- **Middleman & Reputation Tables**:
+  - `Deal`, `DealLog`, `DealConfig`, `dealAuditLogConfig` — Core deal details, logs, configs, and audit channel settings
+  - `dealPaymentProfiles` — Persistent payment configurations (payment instructions & QRIS images) per middleman/admin
+  - `Vouch`, `VouchReport`, `UserReputation`, `trustModerationStatus` — User reputation details, vouches, vouch/reputation reports, and moderation settings
+  - `dealPanels`, `dealPanelEvents`, `middlemanStatus` — Settings and state events for public trust boards & active middleman queue
+  - `manualVouchReviewConfig`, `manualVouchPanelConfig` — Settings for manual vouch submission panels & review flows
+  - `scammerReports`, `scamReportReviewConfig`, `scamReportPanelConfig` — Scam reports and review/submission panel configurations
+  - `DealNote`, `DealReminderLog` — Staff notes and reminder dispatch logs for deals
+  - `dealArchives` — Archival storage for ended/canceled deals
+  - `rateLimitEvents` — Track rate limits to prevent reputation review spam
 
 ---
 
