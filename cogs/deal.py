@@ -209,6 +209,75 @@ def _attachment_is_valid_proof(attachment):
     return any(filename.endswith(ext) for ext in ALLOWED_PROOF_EXTENSIONS)
 
 
+async def handle_deal_message(client, message: discord.Message) -> bool:
+    if message.author.bot:
+        return False
+    if not message.guild or not isinstance(message.channel, (discord.TextChannel, discord.Thread)):
+        return False
+    if not message.attachments:
+        return False
+
+    try:
+        deal = await find_active_deal_for_channel(message.guild.id, message.channel.id)
+        if not deal:
+            return False
+            
+        if deal.get("status") != DEAL_STATUS_WAITING_FUNDS:
+            return False
+            
+        if str(message.author.id) != str(deal.get("buyerId")):
+            return False
+            
+        valid_attachment = None
+        for att in message.attachments:
+            if _attachment_is_valid_proof(att):
+                valid_attachment = att
+                break
+                
+        if not valid_attachment:
+            await message.reply("Mohon kirim gambar (bukan file lain) untuk bukti pembayaran.")
+            return True
+            
+        now = _now()
+        fields = {
+            "paymentProofUrl": valid_attachment.url,
+            "paymentProofMessageId": str(message.id),
+            "paymentProofChannelId": str(message.channel.id),
+            "paymentProofSubmittedById": str(message.author.id),
+            "paymentProofSubmittedAt": now,
+        }
+        
+        updated, error = await update_deal_payment_proof_atomic(
+            deal["id"],
+            message.author.id,
+            fields,
+            "deal_payment_proof_submitted",
+            message.jump_url,
+        )
+        
+        if error:
+            if error == "invalid_status":
+                await message.reply("Gagal menyimpan bukti: Status deal sudah berubah.")
+            else:
+                await message.reply("Gagal menyimpan bukti. Coba lagi nanti.")
+            return True
+            
+        try:
+            await message.add_reaction("✅")
+        except discord.HTTPException:
+            pass
+            
+        await message.channel.send(
+            embed=await _payment_proof_embed(updated, message.guild, client, valid_attachment),
+            view=PaymentProofActionView(updated["id"]),
+        )
+        await _update_summary_message(message.guild, updated)
+        return True
+    except Exception as e:
+        logging.exception(f"Error in handle_deal_message: {e}")
+        return False
+
+
 def _manual_vouch_session_key(guild_id, channel_id, user_id):
     return (str(guild_id), str(channel_id), str(user_id))
 
@@ -323,6 +392,12 @@ def _terms_embed():
 
 async def _summary_embed(deal, guild=None, bot=None):
     embed = discord.Embed(title="📋 Middleman Deal Created", color=0x57F287)
+    if deal.get("status") == DEAL_STATUS_WAITING_FUNDS:
+        if deal.get("paymentProofMessageId"):
+            embed.description = "📎 **Bukti pembayaran telah diterima. Menunggu konfirmasi Dana Masuk oleh Middleman.**"
+        else:
+            embed.description = "📣 **Buyer, silakan kirim gambar/PDF bukti pembayaran langsung di channel ini.**"
+
     fields = [
         ("Deal ID", deal["dealId"]),
         ("Buyer", await format_user_display(bot, guild, deal.get("buyerId"))),
@@ -2668,8 +2743,11 @@ class EditDealModal(discord.ui.Modal, title="Edit Deal"):
             if not await _can_admin_override(interaction):
                 await interaction.response.send_message("Hanya admin atau owner role yang bisa force-edit deal.", ephemeral=True)
                 return
-        elif not await _can_manage_deal(interaction, deal=deal):
-            await interaction.response.send_message("Hanya middleman atau admin yang bisa edit deal.", ephemeral=True)
+        elif not (_is_participant(interaction, deal) or await _can_manage_deal(interaction, deal=deal)):
+            await interaction.response.send_message(
+                "Kamu tidak memiliki akses untuk mengedit deal ini. Hanya buyer, seller, dan middleman yang bisa mengedit.",
+                ephemeral=True,
+            )
             return
         updated, error = await update_deal_editable_fields(
             self.deal_row_id,
@@ -2708,54 +2786,73 @@ class CancelDealModal(discord.ui.Modal, title="Cancel Deal"):
     async def on_submit(self, interaction: discord.Interaction):
         deal = await get_deal_by_id(self.deal_row_id)
         if not deal:
-            await interaction.response.send_message("Data deal tidak ditemukan.", ephemeral=True)
+            await _safe_respond(interaction, "Data deal tidak ditemukan.", ephemeral=True)
             return
         if deal.get("status") == DEAL_STATUS_DISPUTED and not self.allow_disputed:
-            await interaction.response.send_message(
+            await _safe_respond(
+                interaction,
                 "Deal ini sedang dalam status dispute. Selesaikan dispute terlebih dahulu sebelum melanjutkan.",
                 ephemeral=True,
             )
             return
-        if await _can_manage_deal(interaction, deal=deal):
-            lock_key = _acquire_action_lock("deal_cancel", interaction.guild.id, self.deal_row_id, interaction.user.id)
-            if not lock_key:
-                await _send_lock_collision_audit(interaction, "deal_cancel", self.deal_row_id)
-                await interaction.response.send_message("Action ini sedang diproses. Coba lagi sebentar.", ephemeral=True)
-                return
-            try:
-                cancelled, error = await cancel_deal(self.deal_row_id, interaction.user.id, str(self.reason.value).strip())
-                if error:
-                    await _send_abuse_guard_audit(interaction.guild, "Critical Action Duplicate Blocked", actor=interaction.user, note=f"deal_cancel:{self.deal_row_id}")
-                    await interaction.response.send_message("Deal ini tidak bisa dibatalkan.", ephemeral=True)
+
+        reason = str(self.reason.value).strip()
+        is_manager = await _can_manage_deal(interaction, deal=deal)
+        is_part = _is_participant(interaction, deal)
+
+        if is_manager or is_part:
+            is_pre_payment = deal.get("status") in (DEAL_STATUS_PENDING_FORM, DEAL_STATUS_WAITING_FUNDS)
+            if is_manager or is_pre_payment:
+                lock_key = _acquire_action_lock("deal_cancel", interaction.guild.id, self.deal_row_id, interaction.user.id)
+                if not lock_key:
+                    await _send_lock_collision_audit(interaction, "deal_cancel", self.deal_row_id)
+                    await _safe_respond(interaction, "Action ini sedang diproses. Coba lagi sebentar.", ephemeral=True)
                     return
-                _clear_deal_upload_sessions(self.deal_row_id)
-                await interaction.response.send_message(embed=await _cancel_embed(cancelled, interaction.guild, interaction.client))
-                await send_deal_audit_log(
-                    interaction.guild,
-                    "Deal Cancelled",
-                    actor=interaction.user,
-                    target=await _deal_audit_target(cancelled, interaction.guild, interaction.client),
-                    deal_id=cancelled.get("dealId"),
-                    reason=str(self.reason.value).strip(),
-                )
-            finally:
-                _release_action_lock(lock_key)
-            return
-        if _is_participant(interaction, deal):
-            config = await get_deal_config(interaction.guild.id)
-            if config and not config.get("allowUserCancelRequest"):
-                await interaction.response.send_message("Request cancel dari buyer/seller sedang dinonaktifkan.", ephemeral=True)
+                try:
+                    cancelled, error = await cancel_deal(self.deal_row_id, interaction.user.id, reason)
+                    if error:
+                        await _send_abuse_guard_audit(interaction.guild, "Critical Action Duplicate Blocked", actor=interaction.user, note=f"deal_cancel:{self.deal_row_id}")
+                        await _safe_respond(interaction, "Deal ini tidak bisa dibatalkan.", ephemeral=True)
+                        return
+                    _clear_deal_upload_sessions(self.deal_row_id)
+                    await _safe_respond(interaction, embed=await _cancel_embed(cancelled, interaction.guild, interaction.client))
+                    await send_deal_audit_log(
+                        interaction.guild,
+                        "Deal Cancelled",
+                        actor=interaction.user,
+                        target=await _deal_audit_target(cancelled, interaction.guild, interaction.client),
+                        deal_id=cancelled.get("dealId"),
+                        reason=reason,
+                    )
+                finally:
+                    _release_action_lock(lock_key)
                 return
-            requested, error = await request_deal_cancel(self.deal_row_id, interaction.user.id, str(self.reason.value).strip())
-            if error:
-                await interaction.response.send_message("Cancel request gagal dibuat.", ephemeral=True)
+            else:
+                config = await get_deal_config(interaction.guild.id)
+                if not config.get("allowUserCancelRequest", True):
+                    await _safe_respond(interaction, "Pengajuan pembatalan oleh user dinonaktifkan di server ini. Silakan hubungi staff/middleman.", ephemeral=True)
+                    return
+
+                if deal["status"] in (DEAL_STATUS_COMPLETED, "Cancelled", "Voided/Duplicate"):
+                    await _safe_respond(interaction, "Deal ini tidak bisa dibatalkan.", ephemeral=True)
+                    return
+
+                lock_key = _acquire_action_lock("deal_cancel_request", interaction.guild.id, self.deal_row_id, interaction.user.id)
+                if not lock_key:
+                    await _send_lock_collision_audit(interaction, "deal_cancel_request", self.deal_row_id)
+                    await _safe_respond(interaction, "Action ini sedang diproses. Coba lagi sebentar.", ephemeral=True)
+                    return
+                try:
+                    requested, error = await request_deal_cancel(self.deal_row_id, interaction.user.id, reason)
+                    if error:
+                        await _safe_respond(interaction, "Gagal mengajukan pembatalan deal.", ephemeral=True)
+                        return
+                    await _safe_respond(interaction, f"✅ Permintaan pembatalan deal `{deal['dealId']}` telah diajukan. Menunggu konfirmasi dari staff atau middleman.", ephemeral=False)
+                finally:
+                    _release_action_lock(lock_key)
                 return
-            await interaction.response.send_message(
-                f"Permintaan cancel untuk deal `{requested['dealId']}` sudah dicatat. Middleman/staff harus konfirmasi.",
-                ephemeral=False,
-            )
-            return
-        await interaction.response.send_message("Kamu tidak punya akses untuk cancel deal ini.", ephemeral=True)
+        await _safe_respond(interaction, "Kamu tidak punya akses untuk cancel deal ini.", ephemeral=True)
+
 
 
 class DisputeDealModal(discord.ui.Modal, title="Dispute Deal"):
@@ -2955,35 +3052,6 @@ class DealSummaryView(discord.ui.View):
         super().__init__(timeout=86400)
         self.deal_row_id = deal_row_id
 
-    @discord.ui.button(label="📎 Kirim Bukti Payment", style=discord.ButtonStyle.primary)
-    async def kirim_bukti_payment(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await _require_deal_phase(interaction, 2):
-            return
-        deal = await get_deal_by_id(self.deal_row_id)
-        if not deal:
-            await interaction.response.send_message("Data deal tidak ditemukan.", ephemeral=True)
-            return
-        if await _block_if_disputed(interaction, deal):
-            return
-        if not _is_buyer(interaction, deal):
-            await interaction.response.send_message("Hanya buyer yang terkunci di deal ini yang bisa mengirim bukti payment.", ephemeral=True)
-            return
-        if deal.get("paymentProofMessageId"):
-            await interaction.response.send_message("Action ini sudah diproses.", ephemeral=True)
-            return
-        if deal["status"] != DEAL_STATUS_WAITING_FUNDS:
-            await interaction.response.send_message("Deal ini tidak berada di status Menunggu Dana Masuk.", ephemeral=True)
-            return
-        result = await _wait_for_proof_upload(interaction, deal, proof_type="payment")
-        if not result:
-            return
-        updated, _message, attachment = result
-        await interaction.channel.send(
-            embed=await _payment_proof_embed(updated, interaction.guild, interaction.client, attachment),
-            view=PaymentProofActionView(updated["id"]),
-        )
-        await _update_summary_message(interaction.guild, updated)
-
     @discord.ui.button(label="✅ Dana Masuk", style=discord.ButtonStyle.success)
     async def dana_masuk(self, interaction: discord.Interaction, button: discord.ui.Button):
         await _handle_dana_masuk(interaction, self.deal_row_id, DealSummaryView(self.deal_row_id))
@@ -3001,8 +3069,11 @@ class DealSummaryView(discord.ui.View):
             return
         if await _block_if_disputed(interaction, deal):
             return
-        if not await _can_manage_deal(interaction, deal=deal):
-            await interaction.response.send_message("Hanya middleman atau admin yang bisa edit deal.", ephemeral=True)
+        if not (_is_participant(interaction, deal) or await _can_manage_deal(interaction, deal=deal)):
+            await interaction.response.send_message(
+                "Kamu tidak memiliki akses untuk mengedit deal ini. Hanya buyer, seller, dan middleman yang bisa mengedit.",
+                ephemeral=True,
+            )
             return
         if deal["status"] != DEAL_STATUS_WAITING_FUNDS:
             await interaction.response.send_message("Deal hanya bisa diedit sebelum Dana Masuk.", ephemeral=True)
@@ -3655,8 +3726,11 @@ class PrefixEditDealView(discord.ui.View):
             return
         if not await _require_matching_deal_channel(interaction, deal):
             return
-        if not await _can_manage_deal(interaction, deal=deal):
-            await interaction.response.send_message("Hanya middleman atau admin yang bisa edit deal.", ephemeral=True)
+        if not (_is_participant(interaction, deal) or await _can_manage_deal(interaction, deal=deal)):
+            await interaction.response.send_message(
+                "Kamu tidak memiliki akses untuk mengedit deal ini. Hanya buyer, seller, dan middleman yang bisa mengedit.",
+                ephemeral=True,
+            )
             return
         if deal["status"] != DEAL_STATUS_WAITING_FUNDS:
             await interaction.response.send_message("Deal hanya bisa diedit sebelum Dana Masuk.", ephemeral=True)
@@ -4395,8 +4469,11 @@ def setup(tree, client):
             return
         if not await _require_matching_deal_channel(interaction, deal):
             return
-        if not await _can_manage_deal(interaction, deal=deal):
-            await interaction.response.send_message("Hanya middleman atau admin yang bisa edit deal.", ephemeral=True)
+        if not (_is_participant(interaction, deal) or await _can_manage_deal(interaction, deal=deal)):
+            await interaction.response.send_message(
+                "Kamu tidak memiliki akses untuk mengedit deal ini. Hanya buyer, seller, dan middleman yang bisa mengedit.",
+                ephemeral=True,
+            )
             return
         if deal["status"] != DEAL_STATUS_WAITING_FUNDS:
             await interaction.response.send_message("Deal hanya bisa diedit sebelum Dana Masuk.", ephemeral=True)
@@ -4415,34 +4492,62 @@ def setup(tree, client):
             return
         if await _block_if_disputed(interaction, deal):
             return
-        if await _can_manage_deal(interaction, deal=deal):
-            cancelled, error = await cancel_deal(deal["id"], interaction.user.id, reason)
-            if error:
-                await interaction.response.send_message("Deal ini tidak bisa dibatalkan.", ephemeral=True)
+        is_manager = await _can_manage_deal(interaction, deal=deal)
+        is_part = _is_participant(interaction, deal)
+
+        if is_manager or is_part:
+            is_pre_payment = deal.get("status") in (DEAL_STATUS_PENDING_FORM, DEAL_STATUS_WAITING_FUNDS)
+            if is_manager or is_pre_payment:
+                lock_key = _acquire_action_lock("deal_cancel", interaction.guild.id, deal["id"], interaction.user.id)
+                if not lock_key:
+                    await _send_lock_collision_audit(interaction, "deal_cancel", deal["id"])
+                    await _safe_respond(interaction, "Action ini sedang diproses. Coba lagi sebentar.", ephemeral=True)
+                    return
+                try:
+                    cancelled, error = await cancel_deal(deal["id"], interaction.user.id, reason)
+                    if error:
+                        await _send_abuse_guard_audit(interaction.guild, "Critical Action Duplicate Blocked", actor=interaction.user, note=f"deal_cancel:{deal['id']}")
+                        await _safe_respond(interaction, "Deal ini tidak bisa dibatalkan.", ephemeral=True)
+                        return
+                    _clear_deal_upload_sessions(deal["id"])
+                    await _safe_respond(interaction, embed=await _cancel_embed(cancelled, interaction.guild, interaction.client), ephemeral=False)
+                    await send_deal_audit_log(
+                        interaction.guild,
+                        "Deal Cancelled",
+                        actor=interaction.user,
+                        target=await _deal_audit_target(cancelled, interaction.guild, interaction.client),
+                        deal_id=cancelled.get("dealId"),
+                        reason=reason,
+                    )
+                finally:
+                    _release_action_lock(lock_key)
                 return
-            _clear_deal_upload_sessions(deal["id"])
-            await interaction.response.send_message(embed=await _cancel_embed(cancelled, interaction.guild, interaction.client))
-            await send_deal_audit_log(
-                interaction.guild,
-                "Deal Cancelled",
-                actor=interaction.user,
-                target=await _deal_audit_target(cancelled, interaction.guild, interaction.client),
-                deal_id=cancelled.get("dealId"),
-                reason=reason,
-            )
-            return
-        if _is_participant(interaction, deal):
-            config = await get_deal_config(interaction.guild.id)
-            if config and not config.get("allowUserCancelRequest"):
-                await interaction.response.send_message("Request cancel dari buyer/seller sedang dinonaktifkan.", ephemeral=True)
+            else:
+                config = await get_deal_config(interaction.guild.id)
+                if not config.get("allowUserCancelRequest", True):
+                    await _safe_respond(interaction, "Pengajuan pembatalan oleh user dinonaktifkan di server ini. Silakan hubungi staff/middleman.", ephemeral=True)
+                    return
+
+                if deal["status"] in (DEAL_STATUS_COMPLETED, "Cancelled", "Voided/Duplicate"):
+                    await _safe_respond(interaction, "Deal ini tidak bisa dibatalkan.", ephemeral=True)
+                    return
+
+                lock_key = _acquire_action_lock("deal_cancel_request", interaction.guild.id, deal["id"], interaction.user.id)
+                if not lock_key:
+                    await _send_lock_collision_audit(interaction, "deal_cancel_request", deal["id"])
+                    await _safe_respond(interaction, "Action ini sedang diproses. Coba lagi sebentar.", ephemeral=True)
+                    return
+                try:
+                    requested, error = await request_deal_cancel(deal["id"], interaction.user.id, reason)
+                    if error:
+                        await _safe_respond(interaction, "Gagal mengajukan pembatalan deal.", ephemeral=True)
+                        return
+                    await _safe_respond(interaction, f"✅ Permintaan pembatalan deal `{deal['dealId']}` telah diajukan. Menunggu konfirmasi dari staff atau middleman.", ephemeral=False)
+                finally:
+                    _release_action_lock(lock_key)
                 return
-            requested, error = await request_deal_cancel(deal["id"], interaction.user.id, reason)
-            if error:
-                await interaction.response.send_message("Cancel request gagal dibuat.", ephemeral=True)
-                return
-            await interaction.response.send_message(f"Permintaan cancel untuk deal `{requested['dealId']}` sudah dicatat. Middleman/staff harus konfirmasi.")
-            return
-        await interaction.response.send_message("Kamu tidak punya akses untuk cancel deal ini.", ephemeral=True)
+        await _safe_respond(interaction, "Kamu tidak punya akses untuk cancel deal ini.", ephemeral=True)
+
 
     @deal_group.command(name="dispute", description="Buka dispute untuk deal")
     async def deal_dispute(interaction: discord.Interaction, deal_id: str, reason: str, proof: str = None):
@@ -4771,19 +4876,26 @@ def setup(tree, client):
 
     @archive_group.command(name="info", description="Lihat archive aman untuk deal final")
     async def deal_archive_info(interaction: discord.Interaction, deal_id: str):
-        if not await _can_configure_audit_log(interaction):
-            await interaction.response.send_message("Kamu tidak punya permission untuk melihat archive deal.", ephemeral=True)
-            return
         archive = await get_deal_archive(interaction.guild.id, deal_id)
         if not archive:
             await interaction.response.send_message("Archive deal tidak ditemukan.", ephemeral=True)
+            return
+        is_participant = (
+            str(interaction.user.id) in (
+                str(archive.get("buyerId")),
+                str(archive.get("sellerId")),
+                str(archive.get("middlemanId"))
+            )
+        )
+        if not (is_participant or await _can_configure_audit_log(interaction)):
+            await interaction.response.send_message("Kamu tidak punya permission untuk melihat archive deal.", ephemeral=True)
             return
         await _send_archive_embed_response(interaction, await _deal_archive_embed(archive, interaction.guild, interaction.client))
 
     @archive_group.command(name="search", description="Cari archive aman berdasarkan user")
     async def deal_archive_search(interaction: discord.Interaction, user: discord.Member):
-        if not await _can_configure_audit_log(interaction):
-            await interaction.response.send_message("Kamu tidak punya permission untuk melihat archive deal.", ephemeral=True)
+        if not (user.id == interaction.user.id or await _can_configure_audit_log(interaction)):
+            await interaction.response.send_message("Kamu tidak punya permission untuk melihat archive deal user lain.", ephemeral=True)
             return
         archives = await search_deal_archives_for_user(interaction.guild.id, user.id, limit=10)
         embed = await _deal_archive_list_embed(f"🧾 Deal Archive Search — {user.display_name}", archives, interaction.guild, interaction.client)
