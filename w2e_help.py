@@ -127,8 +127,21 @@ def get_help_embed(category: str, guild=None) -> discord.Embed:
         embed.add_field(
             name="Deal Flow",
             value=(
-                "Form -> Kirim Bukti Payment -> Dana Masuk -> Item Sent -> Buyer Confirm -> "
-                "Kirim Data Pencairan -> Done & Transfer Sukses"
+                "Form -> Payment Instruction -> Kirim Bukti Payment -> Dana Masuk -> "
+                "Buyer Confirm -> Kirim Data Pencairan -> Done & Transfer Sukses\n\n"
+                "Tahap Item Sent sudah dihapus. Buyer Confirm dapat diproses oleh buyer atau middleman/staff. "
+                "Gunakan tombol seperti biasa. Jika tombol error atau tidak bisa ditekan, gunakan `/deal status` "
+                "untuk melihat posisi transaksi, lalu gunakan `/deal next` atau `/deal action`."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Button Fallback",
+            value=(
+                "`/deal status` | `/deal next` | `/deal action`\n"
+                "`/deal refresh` | `/deal recover`\n"
+                f"`{BOT_PREFIX}deal status` | `{BOT_PREFIX}deal next` | `{BOT_PREFIX}deal action <action>`\n\n"
+                "`refresh` memperbaiki tampilan deal. `recover` melakukan targeted recovery tanpa membocorkan data sensitif."
             ),
             inline=False,
         )
@@ -145,8 +158,10 @@ def get_help_embed(category: str, guild=None) -> discord.Embed:
         embed.add_field(
             name="Dispute",
             value=(
-                "`/deal dispute deal_id:<id> reason:<reason>`\n"
-                "`/deal resolve-dispute`\n"
+                "`/deal action action:dispute deal_id:<id> reason:<reason>`\n"
+                "`/deal action action:resolve-dispute deal_id:<id>`\n"
+                f"`{BOT_PREFIX}deal action dispute <deal_id> <reason>`\n"
+                f"`{BOT_PREFIX}deal action resolve-dispute <deal_id>`\n"
                 f"`{BOT_PREFIX}deal resolve-dispute <deal_id> <resolution>`\n\n"
                 "Dispute hanya dibuka oleh middleman/staff. Buyer/seller jelaskan kendala di ticket."
             ),

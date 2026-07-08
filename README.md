@@ -88,7 +88,7 @@ Boss spawns hourly (20% chance) or via admin API. Pets add bonus damage.
 `deal`, `vouches`, `trust_leaderboard`
 
 - **Secure Transactions & Access Model**: Full-featured middleman system to securely handle deals between buyer, seller, and staff. Uses a participant-based access model allowing authorized buyers and sellers to cancel or edit their own deals directly.
-- **Workflow & Proofs**: Integrated fee calculation, proof of payment/transfer upload, and step-by-step confirmation.
+- **Workflow & Proofs (Simplified)**: Integrated fee calculation, proof of payment upload, and direct buyer confirmation (skipping the legacy "Item Sent" step). Supports command-based fallbacks (`/deal status`, `/deal next`, `/deal action`) if interactive buttons fail.
 - **Payment Profile Config (`/deal payment-config`)**: Allows admins and middlemen to configure persistent payment info, including QRIS images and custom payment instructions, automatically sent to private deal channels when a deal is ready for payment.
 - **Public Trust Panels (`/deal panel`)**: Set up public tracking boards including trusted vouch leaderboards, server trust stats, recent vouches feed, completed deals feed, middleman status panels, active deal queues, and dispute boards.
 - **Vouch & Scam Panels**: Public vouch submission panel (`/deal vouch-panel setup`) and scam reporting panel (`/deal scam-report-panel setup`).

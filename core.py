@@ -266,6 +266,7 @@ def _init_db():
             itemSentAt TEXT,
             buyerConfirmedById TEXT,
             buyerConfirmedAt TEXT,
+            buyerConfirmationSource TEXT,
             completedById TEXT,
             completedAt TEXT,
             isVouchEligible INTEGER DEFAULT 0,
@@ -307,6 +308,7 @@ def _init_db():
         "itemSentAt": "TEXT",
         "buyerConfirmedById": "TEXT",
         "buyerConfirmedAt": "TEXT",
+        "buyerConfirmationSource": "TEXT",
         "completedById": "TEXT",
         "completedAt": "TEXT",
         "isVouchEligible": "INTEGER DEFAULT 0",
@@ -3364,6 +3366,7 @@ DEAL_STATUS_ITEM_SENT = "Item Sent"
 DEAL_STATUS_BUYER_CONFIRMED = "Buyer Confirmed"
 DEAL_STATUS_COMPLETED = "Completed"
 DEAL_STATUS_DISPUTED = "Disputed"
+DEAL_STATUS_CANCELLED = "Cancelled"
 DEAL_ACTIVE_STATUSES = (
     DEAL_STATUS_PENDING_FORM,
     DEAL_STATUS_WAITING_FUNDS,
@@ -3372,7 +3375,7 @@ DEAL_ACTIVE_STATUSES = (
     DEAL_STATUS_BUYER_CONFIRMED,
     DEAL_STATUS_DISPUTED,
 )
-DEAL_CLOSED_STATUSES = ("Completed", "Cancelled", "Expired", "Voided/Duplicate")
+DEAL_CLOSED_STATUSES = ("Completed", DEAL_STATUS_CANCELLED, "Expired", "Voided/Duplicate")
 DEAL_REQUIRED_PERMISSION_NAMES = (
     "view_channel",
     "send_messages",
@@ -3424,7 +3427,7 @@ DEAL_COLUMNS = (
     "sellerPayoutSubmittedAt", "formSubmittedById", "formSubmittedAt", "fundsReceivedNotes",
     "paymentInstructionOwnerId", "paymentInstructionMessageId", "paymentInstructionSentAt",
     "paymentInstructionPayloadHash", "fundsReceivedById", "fundsReceivedAt", "itemSentById", "itemSentAt",
-    "buyerConfirmedById", "buyerConfirmedAt", "completedById", "completedAt",
+    "buyerConfirmedById", "buyerConfirmedAt", "buyerConfirmationSource", "completedById", "completedAt",
     "isVouchEligible", "createdAt", "updatedAt",
 )
 DEAL_SELECT = ", ".join(DEAL_COLUMNS)
@@ -4031,7 +4034,7 @@ def _deal_next_step(status):
     return {
         DEAL_STATUS_PENDING_FORM: "Isi form deal",
         DEAL_STATUS_WAITING_FUNDS: "Menunggu payment / dana masuk",
-        DEAL_STATUS_FUNDS_RECEIVED: "Seller kirim item",
+        DEAL_STATUS_FUNDS_RECEIVED: "Buyer confirm",
         DEAL_STATUS_ITEM_SENT: "Buyer confirm",
         DEAL_STATUS_BUYER_CONFIRMED: "Data pencairan / transfer final",
         DEAL_STATUS_DISPUTED: "Staff review dispute",
@@ -4868,10 +4871,14 @@ async def update_deal_status(deal_row_id, expected_statuses, new_status, actor_i
         fields["updatedAt"] = now
         set_clause = ", ".join(f"{key}=?" for key in fields.keys())
         values = [str(v) if key.endswith("Id") and v is not None else v for key, v in fields.items()]
-        await db.execute(
-            f"UPDATE Deal SET {set_clause} WHERE id=?",
-            (*values, int(deal_row_id)),
+        expected_placeholders = ",".join("?" for _ in expected)
+        cursor = await db.execute(
+            f"UPDATE Deal SET {set_clause} WHERE id=? AND status IN ({expected_placeholders})",
+            (*values, int(deal_row_id), *expected),
         )
+        if cursor.rowcount == 0:
+            await db.rollback()
+            return deal, "invalid_status"
         await db.execute(
             """
             INSERT INTO DealLog (guildId, dealId, action, actorId, oldValue, newValue, reason, createdAt)
@@ -6208,25 +6215,31 @@ async def cancel_deal(deal_row_id, actor_id, reason):
         if deal["status"] in (DEAL_STATUS_COMPLETED, "Cancelled", "Voided/Duplicate"):
             await db.rollback()
             return deal, "invalid_status"
-        await db.execute(
+        cursor = await db.execute(
             """
             UPDATE Deal
-            SET status='Cancelled', cancelledById=?, cancelledAt=?, cancelReason=?,
+            SET status=?, cancelledById=?, cancelledAt=?, cancelReason=?,
                 isVouchEligible=0, updatedAt=?
-            WHERE id=?
+            WHERE id=? AND status NOT IN (?, ?, ?)
             """,
-            (str(actor_id), now, reason, now, int(deal_row_id)),
+            (
+                DEAL_STATUS_CANCELLED, str(actor_id), now, reason, now, int(deal_row_id),
+                DEAL_STATUS_COMPLETED, DEAL_STATUS_CANCELLED, "Voided/Duplicate",
+            ),
         )
+        if cursor.rowcount == 0:
+            await db.rollback()
+            return deal, "invalid_status"
         await db.execute(
             """
             INSERT INTO DealLog (guildId, dealId, action, actorId, oldValue, newValue, reason, createdAt)
-            VALUES (?, ?, 'deal_cancel', ?, ?, 'Cancelled', ?, ?)
+            VALUES (?, ?, 'deal_cancel', ?, ?, ?, ?, ?)
             """,
-            (deal["guildId"], deal["dealId"], str(actor_id), deal["status"], reason, now),
+            (deal["guildId"], deal["dealId"], str(actor_id), deal["status"], DEAL_STATUS_CANCELLED, reason, now),
         )
         await db.commit()
     await write_audit("deal_cancel", deal_row_id, reason, source="deal")
-    await archive_deal_if_final(deal_row_id, "Cancelled", actor_id, reason=reason)
+    await archive_deal_if_final(deal_row_id, DEAL_STATUS_CANCELLED, actor_id, reason=reason)
     await refresh_staff_operation_panels(deal["guildId"], {"active_deals", "middleman_status", "dispute_board"})
     return await get_deal_by_id(deal_row_id), None
 
@@ -6261,19 +6274,23 @@ async def dispute_deal(deal_row_id, actor_id, reason, proof_url=None):
         if deal["status"] in (DEAL_STATUS_COMPLETED, "Cancelled", "Voided/Duplicate", DEAL_STATUS_DISPUTED):
             await db.rollback()
             return deal, "invalid_status"
-        await db.execute(
+        cursor = await db.execute(
             """
             UPDATE Deal
             SET status=?, disputedById=?, disputedAt=?, disputeReason=?, disputeProofUrl=?,
                 disputePreviousStatus=?, statusBeforeDispute=?, isVouchEligible=0, updatedAt=?
-            WHERE id=?
+            WHERE id=? AND status NOT IN (?, ?, ?, ?)
             """,
             (
                 DEAL_STATUS_DISPUTED, str(actor_id), now, reason,
                 str(proof_url).strip() if proof_url else None,
                 deal["status"], deal["status"], now, int(deal_row_id),
+                DEAL_STATUS_COMPLETED, DEAL_STATUS_CANCELLED, "Voided/Duplicate", DEAL_STATUS_DISPUTED,
             ),
         )
+        if cursor.rowcount == 0:
+            await db.rollback()
+            return deal, "invalid_status"
         await db.execute(
             """
             INSERT INTO DealLog (guildId, dealId, action, actorId, oldValue, newValue, reason, createdAt)
@@ -6292,15 +6309,15 @@ def infer_dispute_restore_status(deal):
     if not deal:
         return DEAL_STATUS_PENDING_FORM
     if deal.get("statusBeforeDispute"):
-        return deal["statusBeforeDispute"]
+        return DEAL_STATUS_FUNDS_RECEIVED if deal["statusBeforeDispute"] == DEAL_STATUS_ITEM_SENT else deal["statusBeforeDispute"]
     if deal.get("disputePreviousStatus"):
-        return deal["disputePreviousStatus"]
+        return DEAL_STATUS_FUNDS_RECEIVED if deal["disputePreviousStatus"] == DEAL_STATUS_ITEM_SENT else deal["disputePreviousStatus"]
     if deal.get("completedAt"):
         return None
     if deal.get("buyerConfirmedAt"):
         return DEAL_STATUS_BUYER_CONFIRMED
     if deal.get("itemSentAt"):
-        return DEAL_STATUS_ITEM_SENT
+        return DEAL_STATUS_FUNDS_RECEIVED
     if deal.get("fundsReceivedAt"):
         return DEAL_STATUS_FUNDS_RECEIVED
     if deal.get("formSubmittedAt") or deal.get("dealId"):
@@ -6329,14 +6346,17 @@ async def resolve_deal_dispute(deal_row_id, actor_id, resolution):
             await db.rollback()
             return deal, "missing_previous_status"
         new_status = previous
-        await db.execute(
+        cursor = await db.execute(
             """
             UPDATE Deal
             SET status=?, disputeResolvedById=?, disputeResolvedAt=?, disputeResolution=?, updatedAt=?
-            WHERE id=?
+            WHERE id=? AND status=?
             """,
-            (new_status, str(actor_id), now, resolution, now, int(deal_row_id)),
+            (new_status, str(actor_id), now, resolution, now, int(deal_row_id), DEAL_STATUS_DISPUTED),
         )
+        if cursor.rowcount == 0:
+            await db.rollback()
+            return deal, "invalid_status"
         await db.execute(
             """
             INSERT INTO DealLog (guildId, dealId, action, actorId, oldValue, newValue, reason, createdAt)
@@ -6649,7 +6669,10 @@ async def update_deal_fields(deal_row_id, actor_id, fields, action, reason=None)
             return None, "not_found"
         set_clause = ", ".join(f"{key}=?" for key in fields.keys())
         values = [str(v) if key.endswith("Id") and v is not None else v for key, v in fields.items()]
-        await db.execute(f"UPDATE Deal SET {set_clause} WHERE id=?", (*values, int(deal_row_id)))
+        cursor = await db.execute(f"UPDATE Deal SET {set_clause} WHERE id=?", (*values, int(deal_row_id)))
+        if cursor.rowcount == 0:
+            await db.rollback()
+            return deal, "not_found"
         await db.execute(
             """
             INSERT INTO DealLog (guildId, dealId, action, actorId, oldValue, newValue, reason, createdAt)
