@@ -1014,31 +1014,25 @@ async def handle_deal_message(client, message: discord.Message) -> bool:
         except discord.HTTPException:
             pass
 
-        prior_msg_id = deal.get("paymentProofConfirmationMessageId")
-        edited = False
-        if prior_msg_id:
-            try:
-                conf_msg = await message.channel.fetch_message(int(prior_msg_id))
-                await conf_msg.edit(
-                    embed=await _payment_proof_embed(updated, message.guild, client, valid_attachment),
-                    view=PaymentProofActionView(updated["id"]),
-                )
-                edited = True
-            except Exception:
-                pass
-
-        if not edited:
-            conf_msg = await message.channel.send(
-                embed=await _payment_proof_embed(updated, message.guild, client, valid_attachment),
-                view=PaymentProofActionView(updated["id"]),
+        repaired, _repair_status = await _repair_payment_proof_action_message(
+            message.guild,
+            updated,
+            attachment=valid_attachment,
+            recreate=True,
+        )
+        if repaired:
+            updated = await get_deal_by_id(updated["id"]) or updated
+        else:
+            logging.warning(
+                "Payment proof action view repair failed "
+                "(guild_id=%s, channel_id=%s, row_id=%s, deal_id=%s, stage=%s, result=%s)",
+                message.guild.id,
+                message.channel.id,
+                updated.get("id"),
+                updated.get("dealId"),
+                get_deal_operational_stage(updated),
+                _repair_status,
             )
-            await update_deal_fields(
-                updated["id"],
-                message.author.id,
-                {"paymentProofConfirmationMessageId": str(conf_msg.id)},
-                "deal_payment_proof_conf_msg_updated",
-            )
-            updated = await get_deal_by_id(updated["id"])
             
         await _update_summary_message(message.guild, updated)
         return True
@@ -3166,10 +3160,58 @@ async def _safe_deal_message_exists(guild, deal):
     return False
 
 
+async def _repair_payment_proof_action_message(guild, deal, *, attachment=None, recreate=True):
+    if get_deal_operational_stage(deal) != DEAL_STAGE_WAITING_FUNDS_CONFIRMATION:
+        return False, "not_applicable"
+    channel = await _original_deal_channel(guild, deal)
+    if not channel or not _channel_is_private(guild, channel):
+        return False, "public_or_missing_channel"
+
+    embed = await _payment_proof_embed(deal, guild, client, attachment)
+    view = _view_for_deal_status(deal)
+    message_id = deal.get("paymentProofConfirmationMessageId")
+    if message_id:
+        try:
+            message = await channel.fetch_message(int(message_id))
+            await message.edit(embed=embed, view=view)
+            return True, "updated"
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException, TypeError, ValueError):
+            pass
+
+    if not recreate:
+        return False, "missing"
+    try:
+        message = await channel.send(
+            embed=embed,
+            view=view,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        await set_deal_payment_proof_confirmation_message(deal["id"], message.id)
+        return True, "created"
+    except discord.HTTPException:
+        return False, "failed"
+
+
+async def _clear_payment_proof_action_view(guild, deal):
+    message_id = deal.get("paymentProofConfirmationMessageId")
+    channel = await _original_deal_channel(guild, deal)
+    if not message_id or not channel:
+        return
+    try:
+        message = await channel.fetch_message(int(message_id))
+        await message.edit(view=None)
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException, TypeError, ValueError):
+        pass
+
+
 async def _refresh_current_deal_view(guild, deal, *, recreate=True):
     channel = await _original_deal_channel(guild, deal)
     if not channel or not _channel_is_private(guild, channel):
         return False, "public_or_missing_channel"
+    if get_deal_operational_stage(deal) == DEAL_STAGE_WAITING_FUNDS_CONFIRMATION:
+        return await _repair_payment_proof_action_message(guild, deal, recreate=recreate)
+
+    await _clear_payment_proof_action_view(guild, deal)
     view = _view_for_deal_status(deal)
     embed = await _summary_embed(deal, guild, client)
     message_id = deal.get("summaryMessageId")
@@ -5213,6 +5255,21 @@ def _recover_active_deal_view(deal):
 
 async def _recover_single_active_deal(guild, deal):
     counts = _recovery_counts()
+    if not deal or not deal.get("id"):
+        counts["failed"] += 1
+        return counts
+    lock_key = _acquire_action_lock("ui", guild.id, deal["id"], None, ttl=20)
+    if not lock_key:
+        counts["failed"] += 1
+        return counts
+    try:
+        return await _recover_single_active_deal_unlocked(guild, deal)
+    finally:
+        _release_action_lock(lock_key)
+
+
+async def _recover_single_active_deal_unlocked(guild, deal):
+    counts = _recovery_counts()
     deal = await _normalize_legacy_item_sent_deal(deal)
     channel_id = deal.get("ticketChannelId")
 
@@ -5262,14 +5319,21 @@ async def _recover_single_active_deal(guild, deal):
     else:
         counts["skipped"] += 1
 
-    if deal.get("paymentProofConfirmationMessageId"):
-        view = PaymentProofActionView(deal["id"]) if deal.get("status") == DEAL_STATUS_WAITING_FUNDS else None
+    if get_deal_operational_stage(deal) == DEAL_STAGE_WAITING_FUNDS_CONFIRMATION:
+        repaired, result = await _repair_payment_proof_action_message(guild, deal, recreate=True)
+        if repaired:
+            counts["recovered" if result == "created" else "refreshed"] += 1
+        elif result == "missing":
+            counts["missing"] += 1
+        else:
+            counts["failed"] += 1
+    elif deal.get("paymentProofConfirmationMessageId"):
         result = await _recover_edit_message(
             guild,
             channel_id,
             deal.get("paymentProofConfirmationMessageId"),
             embed=await _payment_proof_embed(deal, guild, client),
-            view=view,
+            view=None,
         )
         counts["refreshed" if result == "refreshed" else result] += 1
     else:
@@ -5658,7 +5722,11 @@ async def _process_refresh_or_recover(interaction, deal, *, recover=False):
         if recover and latest.get("status") == DEAL_STATUS_ITEM_SENT:
             latest = await _normalize_legacy_item_sent_deal(latest, interaction.user.id)
             counts["recovered"] += 1
-        if recover and latest.get("status") == DEAL_STATUS_WAITING_FUNDS:
+        if (
+            recover
+            and latest.get("status") == DEAL_STATUS_WAITING_FUNDS
+            and get_deal_operational_stage(latest) != DEAL_STAGE_WAITING_FUNDS_CONFIRMATION
+        ):
             try:
                 payment_result = await _send_or_update_payment_instruction(interaction.guild, channel, latest, force=False)
                 if payment_result in ("created", "updated"):

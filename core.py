@@ -4820,6 +4820,15 @@ async def set_deal_summary_message(deal_row_id, message_id):
         await db.commit()
 
 
+async def set_deal_payment_proof_confirmation_message(deal_row_id, message_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE Deal SET paymentProofConfirmationMessageId=?, updatedAt=? WHERE id=?",
+            (str(message_id), _deal_now(), int(deal_row_id)),
+        )
+        await db.commit()
+
+
 async def set_deal_vouch_progress_message(deal_row_id, message_id):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
