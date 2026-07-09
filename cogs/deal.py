@@ -1,5 +1,6 @@
 import discord
 from discord import app_commands
+from collections.abc import Mapping
 from datetime import datetime
 from dataclasses import dataclass
 from core import *
@@ -4921,6 +4922,19 @@ async def _buyer_confirm(interaction: discord.Interaction, deal_row_id: int):
     await _send_deal_action_result(interaction, result, ephemeral=not result.ok)
 
 
+async def _clear_pending_form_view(guild, deal):
+    message_id = deal.get("warningMessageId")
+    channel = await _original_deal_channel(guild, deal)
+    if not message_id or not channel:
+        return False
+    try:
+        message = await channel.fetch_message(int(message_id))
+        await message.edit(view=None)
+        return True
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException, TypeError, ValueError):
+        return False
+
+
 class DealFormModal(discord.ui.Modal, title="Form Middleman Deal"):
     payment_penjual = discord.ui.TextInput(label="Payment Penjual", max_length=200)
     payment_pembeli = discord.ui.TextInput(label="Payment Pembeli", max_length=200)
@@ -4994,6 +5008,7 @@ class DealFormModal(discord.ui.Modal, title="Form Middleman Deal"):
                 await interaction.followup.send("Form deal ini sudah diisi.", ephemeral=True)
                 return
 
+            await _clear_pending_form_view(interaction.guild, deal)
             msg = await interaction.followup.send(embed=await _summary_embed(deal, interaction.guild, interaction.client), view=_view_for_deal_status(deal), wait=True)
             await set_deal_summary_message(deal["id"], msg.id)
             deal = await get_deal_by_id(deal["id"]) or deal
@@ -5003,7 +5018,9 @@ class DealFormModal(discord.ui.Modal, title="Form Middleman Deal"):
 
 
 class DealStartView(discord.ui.View):
-    def __init__(self, deal):
+    def __init__(self, deal: Mapping[str, object]):
+        if not isinstance(deal, Mapping):
+            raise TypeError("DealStartView membutuhkan mapping deal lengkap.")
         super().__init__(timeout=86400)
         self.deal_row_id = int(deal["id"])
         self.middleman_id = int(deal["middlemanId"])
@@ -5200,7 +5217,7 @@ async def _recover_single_active_deal(guild, deal):
     channel_id = deal.get("ticketChannelId")
 
     if deal.get("warningMessageId"):
-        view = DealStartView(deal["id"]) if deal.get("status") == DEAL_STATUS_PENDING_FORM else None
+        view = DealStartView(deal) if deal.get("status") == DEAL_STATUS_PENDING_FORM else None
         result = await _recover_edit_message(
             guild,
             channel_id,
