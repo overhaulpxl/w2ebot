@@ -7,10 +7,132 @@ from core import *
 from core import _deal_row_to_dict, _scam_report_row_to_dict
 import logging
 import asyncio
+import time
+import uuid
 
 
 _STARTUP_RECOVERY_DONE = False
 _STARTUP_RECOVERY_LISTENER_REGISTERED = False
+DEAL_RUNTIME_PATCH_VERSION = "global-thinking-hotfix-v1"
+DANA_MASUK_UI_TIMEOUT_SECONDS = 8
+DANA_MASUK_RESPONSE_TIMEOUT_SECONDS = 8
+DEAL_RESOLUTION_TIMEOUT_SECONDS = 6
+DEAL_READ_HANDLER_TIMEOUT_SECONDS = 10
+DEAL_UI_HANDLER_TIMEOUT_SECONDS = 20
+
+
+@dataclass
+class DealInvocationContext:
+    invocation_id: str
+    command_name: str
+    source: str
+    started_at: float
+    finalized: bool = False
+
+
+def _new_deal_invocation(interaction, command_name, source):
+    invocation = DealInvocationContext(
+        invocation_id=uuid.uuid4().hex[:12],
+        command_name=str(command_name),
+        source=str(source),
+        started_at=time.monotonic(),
+    )
+    try:
+        interaction._deal_invocation_id = invocation.invocation_id
+    except Exception:
+        pass
+    return invocation
+
+
+def _deal_invocation_log(
+    invocation,
+    interaction,
+    phase,
+    *,
+    deal=None,
+    deal_row_id=None,
+    result_code=None,
+    exception=None,
+):
+    logging.info(
+        "DealInvocation invocation_id=%s command=%s source=%s phase=%s guild_id=%s "
+        "channel_id=%s actor_id=%s row_id=%s custom_id=%s result=%s exception=%s elapsed_ms=%s",
+        invocation.invocation_id,
+        invocation.command_name,
+        invocation.source,
+        phase,
+        getattr(getattr(interaction, "guild", None), "id", None),
+        getattr(getattr(interaction, "channel", None), "id", None),
+        getattr(getattr(interaction, "user", None), "id", None),
+        (deal or {}).get("id") or deal_row_id,
+        _interaction_custom_id(interaction),
+        result_code,
+        type(exception).__name__ if exception else None,
+        int(max(0, (time.monotonic() - invocation.started_at) * 1000)),
+    )
+
+
+async def _safe_defer_deal_interaction(interaction, invocation, *, ephemeral=True):
+    _deal_invocation_log(invocation, interaction, "defer_started")
+    try:
+        if not interaction.response.is_done():
+            await asyncio.wait_for(
+                interaction.response.defer(ephemeral=ephemeral, thinking=True),
+                timeout=3,
+            )
+        _deal_invocation_log(invocation, interaction, "defer_completed")
+        return True
+    except Exception as exc:
+        _deal_invocation_log(invocation, interaction, "callback_exception", exception=exc)
+        return bool(interaction.response.is_done())
+
+
+async def _finalize_deal_invocation(
+    interaction,
+    invocation,
+    content,
+    *,
+    result_code="success",
+    deal=None,
+    ephemeral=True,
+):
+    if invocation.finalized:
+        return False
+    invocation.finalized = True
+    _deal_invocation_log(
+        invocation,
+        interaction,
+        "response_finalize_started",
+        deal=deal,
+        result_code=result_code,
+    )
+    responded = False
+    if interaction.response.is_done() and hasattr(interaction, "edit_original_response"):
+        try:
+            await asyncio.wait_for(
+                interaction.edit_original_response(content=str(content)[:1900]),
+                timeout=DANA_MASUK_RESPONSE_TIMEOUT_SECONDS,
+            )
+            responded = True
+        except Exception:
+            responded = False
+    if not responded:
+        try:
+            responded = await asyncio.wait_for(
+                _safe_respond(interaction, str(content)[:1900], ephemeral=ephemeral),
+                timeout=DANA_MASUK_RESPONSE_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            _deal_invocation_log(invocation, interaction, "callback_exception", deal=deal, exception=exc)
+            responded = False
+    _deal_invocation_log(
+        invocation,
+        interaction,
+        "response_finalize_completed",
+        deal=deal,
+        result_code=result_code if responded else f"{result_code}:response_failed",
+    )
+    return responded
 
 
 async def _safe_respond(interaction: discord.Interaction, content=None, *, embed=None, view=None, ephemeral=False):
@@ -20,14 +142,59 @@ async def _safe_respond(interaction: discord.Interaction, content=None, *, embed
             await interaction.followup.send(content=content, embed=embed, view=view, ephemeral=ephemeral)
         else:
             await interaction.response.send_message(content=content, embed=embed, view=view, ephemeral=ephemeral)
+        return True
     except discord.InteractionResponded:
         # Fallback if response is already sent but .is_done() didn't catch it
         try:
             await interaction.followup.send(content=content, embed=embed, view=view, ephemeral=ephemeral)
+            return True
         except Exception as e:
             logging.error(f"Failed to send followup after InteractionResponded: {e}")
     except Exception as e:
         logging.error(f"Failed to respond to interaction: {e}")
+    return False
+
+
+def _dana_masuk_source(source):
+    return {
+        "button": "canonical_button",
+        "canonical_button": "canonical_button",
+        "legacy_button": "legacy_button",
+        "slash_command": "slash",
+        "prefix_command": "prefix",
+    }.get(str(source or ""), str(source or "unknown"))
+
+
+def _dana_masuk_phase_log(
+    interaction,
+    phase,
+    *,
+    deal=None,
+    deal_row_id=None,
+    source=None,
+    started_at=None,
+    result_code=None,
+    exception=None,
+):
+    elapsed_ms = int(max(0, (time.monotonic() - (started_at or time.monotonic())) * 1000))
+    logging.info(
+        "DanaMasuk invocation_id=%s phase=%s guild_id=%s channel_id=%s row_id=%s deal_id=%s "
+        "actor_id=%s custom_id=%s source=%s stage=%s result=%s exception=%s elapsed_ms=%s patch=%s",
+        getattr(interaction, "_deal_invocation_id", None),
+        phase,
+        getattr(getattr(interaction, "guild", None), "id", None),
+        getattr(getattr(interaction, "channel", None), "id", None),
+        (deal or {}).get("id") or deal_row_id,
+        (deal or {}).get("dealId"),
+        getattr(getattr(interaction, "user", None), "id", None),
+        _interaction_custom_id(interaction),
+        _dana_masuk_source(source),
+        get_deal_operational_stage(deal) if deal else None,
+        result_code,
+        type(exception).__name__ if exception else None,
+        elapsed_ms,
+        DEAL_RUNTIME_PATCH_VERSION,
+    )
 
 
 async def _handle_stale_view_interaction(interaction: discord.Interaction, view_name: str):
@@ -127,7 +294,7 @@ class GlobalDealViewDispatcher(discord.ui.View):
         deal_row_id = await self._deal_row_id(interaction)
         if not deal_row_id:
             return
-        await _handle_dana_masuk(interaction, deal_row_id, None)
+        await _handle_dana_masuk(interaction, deal_row_id, source="legacy_button")
 
     @discord.ui.button(label="Dispute", style=discord.ButtonStyle.secondary, custom_id="deal_dispute")
     async def payment_dispute(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -141,7 +308,7 @@ class GlobalDealViewDispatcher(discord.ui.View):
         deal_row_id = await self._deal_row_id(interaction)
         if not deal_row_id:
             return
-        await _handle_dana_masuk(interaction, deal_row_id, None)
+        await _handle_dana_masuk(interaction, deal_row_id, source="canonical_button")
 
     @discord.ui.button(label="Edit Deal", style=discord.ButtonStyle.primary, custom_id="deal_summary_edit")
     async def summary_edit(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -546,6 +713,7 @@ DEAL_ACTION_RESOLVE_DISPUTE = "resolve-dispute"
 DEAL_ACTION_ADD_NOTE = "add-note"
 DEAL_ACTION_REFRESH = "refresh"
 DEAL_ACTION_RECOVER = "recover"
+DEAL_VISIBLE_ACTION_EDIT = "edit"
 
 DEAL_ACTION_CHOICES = [
     app_commands.Choice(name="dana-masuk", value=DEAL_ACTION_DANA_MASUK),
@@ -653,8 +821,8 @@ def get_deal_operational_stage(deal):
 
 def get_visible_deal_actions(deal):
     stage = get_deal_operational_stage(deal)
-    if stage == DEAL_STAGE_WAITING_PAYMENT_PROOF:
-        return [DEAL_ACTION_CANCEL, DEAL_ACTION_DISPUTE]
+    if stage in (DEAL_STAGE_WAITING_PAYMENT_INSTRUCTION, DEAL_STAGE_WAITING_PAYMENT_PROOF):
+        return [DEAL_VISIBLE_ACTION_EDIT, DEAL_ACTION_CANCEL, DEAL_ACTION_DISPUTE]
     if stage == DEAL_STAGE_WAITING_FUNDS_CONFIRMATION:
         return [DEAL_ACTION_DANA_MASUK, DEAL_ACTION_CANCEL, DEAL_ACTION_DISPUTE]
     if stage == DEAL_STAGE_WAITING_BUYER_CONFIRM:
@@ -712,7 +880,7 @@ async def get_available_deal_actions(deal, actor):
     elif stage == DEAL_STAGE_WAITING_PAYMENT_PROOF and is_manager:
         actions.extend([DEAL_ACTION_CANCEL, DEAL_ACTION_DISPUTE])
     elif stage == DEAL_STAGE_WAITING_PAYMENT_INSTRUCTION and is_manager:
-        actions.extend([DEAL_ACTION_RECOVER, DEAL_ACTION_CANCEL])
+        actions.extend([DEAL_ACTION_RECOVER, DEAL_ACTION_CANCEL, DEAL_ACTION_DISPUTE])
     elif stage == DEAL_STAGE_WAITING_BUYER_CONFIRM:
         if is_buyer or is_manager:
             actions.append(DEAL_ACTION_BUYER_CONFIRM)
@@ -3079,7 +3247,13 @@ async def _deal_payment_profile_for_stage(deal):
     return await get_deal_payment_profile(deal.get("guildId"), owner_id)
 
 
-async def _resolve_deal_for_command(interaction, deal_id=None, *, allow_participant_channel=True):
+async def _resolve_deal_for_command(
+    interaction,
+    deal_id=None,
+    *,
+    allow_participant_channel=True,
+    invocation=None,
+):
     guild = interaction.guild
     if not guild:
         return None, "Command ini hanya bisa digunakan di server."
@@ -3114,7 +3288,11 @@ async def _resolve_deal_for_command(interaction, deal_id=None, *, allow_particip
             return None, "Ada lebih dari satu deal aktif di channel ini. Masukkan Deal ID."
         deal = deals[0]
 
+    if invocation:
+        _deal_invocation_log(invocation, interaction, "permission_check_started", deal=deal)
     is_manager = await _can_manage_deal(interaction, deal=deal)
+    if invocation:
+        _deal_invocation_log(invocation, interaction, "permission_check_completed", deal=deal)
     in_original_channel = str(getattr(interaction.channel, "id", "")) == str(deal.get("ticketChannelId"))
     if explicit and not is_manager:
         return None, "Kamu tidak punya permission untuk menjalankan aksi deal ini."
@@ -3122,6 +3300,68 @@ async def _resolve_deal_for_command(interaction, deal_id=None, *, allow_particip
         if not allow_participant_channel or not in_original_channel or not _is_participant(interaction, deal):
             return None, "Kamu tidak punya permission untuk menjalankan aksi deal ini."
     return deal, None
+
+
+async def _resolve_deal_for_command_bounded(
+    interaction,
+    deal_id=None,
+    *,
+    allow_participant_channel=True,
+    invocation,
+    timeout=None,
+):
+    _deal_invocation_log(invocation, interaction, "deal_resolution_started")
+    _deal_invocation_log(invocation, interaction, "database_operation_started")
+    try:
+        result = await asyncio.wait_for(
+            _resolve_deal_for_command(
+                interaction,
+                deal_id,
+                allow_participant_channel=allow_participant_channel,
+                invocation=invocation,
+            ),
+            timeout=timeout or DEAL_RESOLUTION_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        _deal_invocation_log(
+            invocation,
+            interaction,
+            "database_operation_completed",
+            result_code="timeout",
+        )
+        _deal_invocation_log(
+            invocation,
+            interaction,
+            "deal_resolution_completed",
+            result_code="timeout",
+        )
+        return None, "Gagal membaca data deal dalam batas waktu. Silakan coba lagi."
+    except Exception as exc:
+        _deal_invocation_log(
+            invocation,
+            interaction,
+            "database_operation_completed",
+            result_code="failed",
+            exception=exc,
+        )
+        _deal_invocation_log(invocation, interaction, "callback_exception", exception=exc)
+        return None, "Gagal membaca data deal. Silakan coba lagi."
+    deal, error = result
+    _deal_invocation_log(
+        invocation,
+        interaction,
+        "database_operation_completed",
+        deal=deal,
+        result_code="success" if not error else "validation_failed",
+    )
+    _deal_invocation_log(
+        invocation,
+        interaction,
+        "deal_resolution_completed",
+        deal=deal,
+        result_code="success" if not error else "validation_failed",
+    )
+    return deal, error
 
 
 def _channel_is_private(guild, channel):
@@ -3232,9 +3472,69 @@ async def _refresh_current_deal_view(guild, deal, *, recreate=True):
         return False, "failed"
 
 
-async def _send_deal_action_result(interaction, result: DealActionResult, *, ephemeral=False):
+async def _send_deal_action_result(
+    interaction,
+    result: DealActionResult,
+    *,
+    ephemeral=False,
+    action=None,
+    source=None,
+    started_at=None,
+):
     message = result.user_message or "Action selesai."
-    await _safe_respond(interaction, message, ephemeral=ephemeral)
+    is_dana_masuk = action == DEAL_ACTION_DANA_MASUK
+    if not is_dana_masuk:
+        return await _safe_respond(interaction, message, ephemeral=ephemeral)
+    if is_dana_masuk:
+        _dana_masuk_phase_log(
+            interaction,
+            "result_response_started",
+            deal=result.deal,
+            source=source,
+            started_at=started_at,
+            result_code=result.code,
+        )
+    responded = False
+    try:
+        responded = await asyncio.wait_for(
+            _safe_respond(interaction, message, ephemeral=ephemeral),
+            timeout=DANA_MASUK_RESPONSE_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        if is_dana_masuk:
+            logging.warning(
+                "Dana Masuk result response timed out (guild_id=%s, row_id=%s, result=%s)",
+                getattr(getattr(interaction, "guild", None), "id", None),
+                (result.deal or {}).get("id"),
+                result.code,
+            )
+    if not responded and is_dana_masuk and hasattr(interaction, "edit_original_response"):
+        try:
+            await asyncio.wait_for(
+                interaction.edit_original_response(content=message, embed=None, view=None),
+                timeout=DANA_MASUK_RESPONSE_TIMEOUT_SECONDS,
+            )
+            responded = True
+        except Exception as exc:
+            _dana_masuk_phase_log(
+                interaction,
+                "callback_exception",
+                deal=result.deal,
+                source=source,
+                started_at=started_at,
+                result_code=result.code,
+                exception=exc,
+            )
+    if is_dana_masuk:
+        _dana_masuk_phase_log(
+            interaction,
+            "result_response_finished",
+            deal=result.deal,
+            source=source,
+            started_at=started_at,
+            result_code=result.code if responded else f"{result.code}:response_failed",
+        )
+    return responded
 
 
 async def _can_open_dispute(interaction: discord.Interaction, deal):
@@ -3511,6 +3811,8 @@ async def _dispute_resolved_embed(deal, resolution, guild=None, bot=None):
 def _view_for_deal_status(deal):
     visible_actions = set(get_visible_deal_actions(deal))
     status = deal.get("status")
+    if get_deal_operational_stage(deal) in (DEAL_STAGE_COMPLETED, DEAL_STAGE_CANCELLED):
+        return None
     if status == DEAL_STATUS_WAITING_FUNDS:
         return DealSummaryView(deal["id"], visible_actions=visible_actions)
     if DEAL_ACTION_BUYER_CONFIRM in visible_actions and status == DEAL_STATUS_FUNDS_RECEIVED:
@@ -3680,23 +3982,126 @@ def _funds_received_embed(deal=None):
     )
 
 
-async def _handle_dana_masuk(interaction: discord.Interaction, deal_row_id: int, source_view=None):
+async def _handle_dana_masuk(interaction: discord.Interaction, deal_row_id: int, *, source="canonical_button"):
+    invocation = _new_deal_invocation(interaction, "deal button dana-masuk", _dana_masuk_source(source))
+    started_at = time.monotonic()
+    _deal_invocation_log(
+        invocation,
+        interaction,
+        "callback_received",
+        deal_row_id=deal_row_id,
+    )
+    _dana_masuk_phase_log(
+        interaction,
+        "interaction_received",
+        deal_row_id=deal_row_id,
+        source=source,
+        started_at=started_at,
+    )
     if not deal_phase_at_least(2):
         await _safe_respond(interaction, DEAL_V1_PLACEHOLDER_MESSAGE, ephemeral=True)
         return
-    if not interaction.response.is_done():
-        await interaction.response.defer(thinking=True)
-    deal = await get_deal_by_id(deal_row_id)
-    if not deal:
-        await _safe_respond(interaction, "Data deal tidak ditemukan.", ephemeral=True)
-        return
-    result = await process_deal_action(
-        interaction=interaction,
-        deal=deal,
-        action=DEAL_ACTION_DANA_MASUK,
-        source="button",
+    try:
+        if not interaction.response.is_done():
+            _deal_invocation_log(invocation, interaction, "defer_started", deal_row_id=deal_row_id)
+            await interaction.response.defer(thinking=True)
+            _deal_invocation_log(invocation, interaction, "defer_completed", deal_row_id=deal_row_id)
+        _dana_masuk_phase_log(
+            interaction,
+            "interaction_deferred",
+            deal_row_id=deal_row_id,
+            source=source,
+            started_at=started_at,
+        )
+        deal = await get_deal_by_id(deal_row_id)
+        if not deal:
+            result = _result("validation_failed", "Data deal tidak ditemukan.", retryable=True)
+        else:
+            _dana_masuk_phase_log(
+                interaction,
+                "deal_resolved",
+                deal=deal,
+                source=source,
+                started_at=started_at,
+            )
+            result = await process_deal_action(
+                interaction=interaction,
+                deal=deal,
+                action=DEAL_ACTION_DANA_MASUK,
+                source=source,
+                trace_started_at=started_at,
+            )
+    except Exception as exc:
+        fresh = None
+        try:
+            fresh = await get_deal_by_id(deal_row_id)
+        except Exception:
+            pass
+        state_changed = bool(fresh and fresh.get("status") == DEAL_STATUS_FUNDS_RECEIVED)
+        _dana_masuk_phase_log(
+            interaction,
+            "callback_exception",
+            deal=fresh,
+            deal_row_id=deal_row_id,
+            source=source,
+            started_at=started_at,
+            exception=exc,
+        )
+        logging.exception(
+            "Dana Masuk callback failed (guild_id=%s, row_id=%s, actor_id=%s, source=%s)",
+            getattr(getattr(interaction, "guild", None), "id", None),
+            deal_row_id,
+            getattr(getattr(interaction, "user", None), "id", None),
+            _dana_masuk_source(source),
+        )
+        if state_changed:
+            result = _result(
+                "state_changed_ui_failed",
+                "Dana Masuk berhasil diproses, tetapi tampilan gagal diperbarui. Gunakan `/deal refresh`.",
+                ok=True,
+                deal=fresh,
+                state_changed=True,
+                new_status=fresh.get("status"),
+                retryable=False,
+            )
+        else:
+            result = _result(
+                "failed_before_state_change",
+                "Terjadi kesalahan saat memproses Dana Masuk. Status deal belum diubah. "
+                "Silakan coba lagi atau gunakan `/deal action action:dana-masuk`.",
+                deal=fresh,
+                retryable=True,
+            )
+    _deal_invocation_log(
+        invocation,
+        interaction,
+        "result_received",
+        deal=result.deal,
+        result_code=result.code,
     )
-    await _send_deal_action_result(interaction, result, ephemeral=not result.ok)
+    _deal_invocation_log(
+        invocation,
+        interaction,
+        "response_finalize_started",
+        deal=result.deal,
+        result_code=result.code,
+    )
+    responded = await _send_deal_action_result(
+        interaction,
+        result,
+        ephemeral=not result.ok,
+        action=DEAL_ACTION_DANA_MASUK,
+        source=source,
+        started_at=started_at,
+    )
+    invocation.finalized = True
+    _deal_invocation_log(
+        invocation,
+        interaction,
+        "response_finalize_completed",
+        deal=result.deal,
+        result_code=result.code if responded else f"{result.code}:response_failed",
+    )
 
 
 async def _completed_embed(deal, guild=None, bot=None, attachment=None):
@@ -3785,24 +4190,82 @@ def _same_payout_payload(deal, platform, account, account_name):
     )
 
 
-async def _post_transition_ui(guild, deal):
+async def _post_transition_ui(guild, deal, *, interaction=None, source=None, started_at=None):
     lock_key = None
     try:
+        if interaction:
+            _dana_masuk_phase_log(
+                interaction,
+                "ui_lock_requested",
+                deal=deal,
+                source=source,
+                started_at=started_at,
+            )
         lock_key = _acquire_action_lock("ui", guild.id, deal["id"], None, ttl=20)
         if not lock_key:
             return False, "locked"
+        if interaction:
+            _dana_masuk_phase_log(
+                interaction,
+                "ui_lock_acquired",
+                deal=deal,
+                source=source,
+                started_at=started_at,
+            )
         latest = await get_deal_by_id(deal["id"]) or deal
-        return await _refresh_current_deal_view(guild, latest)
-    except Exception:
+        if interaction:
+            _dana_masuk_phase_log(
+                interaction,
+                "latest_state_refetched",
+                deal=latest,
+                source=source,
+                started_at=started_at,
+            )
+        try:
+            result = await asyncio.wait_for(
+                _refresh_current_deal_view(guild, latest),
+                timeout=DANA_MASUK_UI_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            result = (False, "timeout")
+        if interaction:
+            _dana_masuk_phase_log(
+                interaction,
+                "ui_update_finished",
+                deal=latest,
+                source=source,
+                started_at=started_at,
+                result_code=result[1],
+            )
+        return result
+    except Exception as exc:
         logging.exception(
             "Deal UI refresh failed after transition (guild_id=%s, deal_id=%s, row_id=%s)",
             getattr(guild, "id", None),
             deal.get("dealId"),
             deal.get("id"),
         )
+        if interaction:
+            _dana_masuk_phase_log(
+                interaction,
+                "ui_update_finished",
+                deal=deal,
+                source=source,
+                started_at=started_at,
+                result_code="failed",
+                exception=exc,
+            )
         return False, "failed"
     finally:
         _release_action_lock(lock_key)
+        if interaction:
+            _dana_masuk_phase_log(
+                interaction,
+                "ui_lock_released",
+                deal=deal,
+                source=source,
+                started_at=started_at,
+            )
 
 
 def _ui_result_message(default_message, ui_updated):
@@ -3821,6 +4284,7 @@ async def process_deal_action(
     note=None,
     payout_data=None,
     allow_buyer_confirm=False,
+    trace_started_at=None,
 ):
     actor = interaction.user
     guild = interaction.guild
@@ -3828,6 +4292,15 @@ async def process_deal_action(
     if not latest or str(latest.get("guildId")) != str(guild.id):
         return _result("validation_failed", "Data deal tidak ditemukan.", retryable=True)
     deal = latest
+    if action == DEAL_ACTION_DANA_MASUK and trace_started_at is None:
+        trace_started_at = time.monotonic()
+        _dana_masuk_phase_log(
+            interaction,
+            "interaction_received",
+            deal=deal,
+            source=source,
+            started_at=trace_started_at,
+        )
     old_status = deal.get("status")
     stage = get_deal_operational_stage(deal)
     allowed = await get_available_deal_actions(deal, actor)
@@ -3840,6 +4313,14 @@ async def process_deal_action(
             return _result("already_processed", "Aksi ini sudah diproses atau status deal sudah berubah.", deal=deal)
         else:
             return _result("unauthorized", "Kamu tidak punya permission untuk menjalankan aksi deal ini.")
+    if action == DEAL_ACTION_DANA_MASUK:
+        _dana_masuk_phase_log(
+            interaction,
+            "permission_validated",
+            deal=deal,
+            source=source,
+            started_at=trace_started_at,
+        )
     if stage == DEAL_STAGE_DISPUTED and action not in (DEAL_ACTION_RESOLVE_DISPUTE, DEAL_ACTION_ADD_NOTE, DEAL_ACTION_CANCEL):
         return _result("disputed", "Deal ini sedang dalam status dispute.")
     if stage in (DEAL_STAGE_COMPLETED, DEAL_STAGE_CANCELLED):
@@ -3848,15 +4329,39 @@ async def process_deal_action(
     lock_key = None
     try:
         if action in (DEAL_ACTION_DANA_MASUK, DEAL_ACTION_BUYER_CONFIRM, DEAL_ACTION_CANCEL, DEAL_ACTION_DISPUTE, DEAL_ACTION_RESOLVE_DISPUTE, DEAL_ACTION_DONE):
+            if action == DEAL_ACTION_DANA_MASUK:
+                _dana_masuk_phase_log(
+                    interaction,
+                    "transition_lock_requested",
+                    deal=deal,
+                    source=source,
+                    started_at=trace_started_at,
+                )
             lock_key = _acquire_action_lock("transition", guild.id, deal["id"], actor.id)
             if not lock_key:
                 await _send_lock_collision_audit(interaction, "transition", deal["id"])
-                return _result("lock_held", "Aksi ini sedang diproses. Coba lagi beberapa saat.")
+                return _result("lock_held", "Aksi ini sedang diproses. Coba lagi beberapa saat.", deal=deal)
+            if action == DEAL_ACTION_DANA_MASUK:
+                _dana_masuk_phase_log(
+                    interaction,
+                    "transition_lock_acquired",
+                    deal=deal,
+                    source=source,
+                    started_at=trace_started_at,
+                )
             deal = await get_deal_by_id(deal["id"])
             if not deal:
                 return _result("validation_failed", "Data deal tidak ditemukan.", retryable=True)
             stage = get_deal_operational_stage(deal)
             allowed = await get_available_deal_actions(deal, actor)
+            if action == DEAL_ACTION_DANA_MASUK:
+                _dana_masuk_phase_log(
+                    interaction,
+                    "post_lock_refetch_complete",
+                    deal=deal,
+                    source=source,
+                    started_at=trace_started_at,
+                )
             if action not in allowed and not (action == DEAL_ACTION_BUYER_CONFIRM and allow_buyer_confirm and _is_buyer(interaction, deal) and stage == DEAL_STAGE_WAITING_BUYER_CONFIRM):
                 if await _can_manage_deal(interaction, deal=deal):
                     return _result("already_processed", "Aksi ini sudah diproses atau status deal sudah berubah.", deal=deal)
@@ -3868,6 +4373,13 @@ async def process_deal_action(
             config = await get_deal_config(guild.id)
             if config and config.get("requirePaymentProof") and not _has_payment_proof(deal):
                 return _result("validation_failed", "Buyer belum mengirim bukti payment.", deal=deal, retryable=True)
+            _dana_masuk_phase_log(
+                interaction,
+                "atomic_update_started",
+                deal=deal,
+                source=source,
+                started_at=trace_started_at,
+            )
             updated, error = await update_deal_status(
                 deal["id"],
                 (DEAL_STATUS_WAITING_FUNDS,),
@@ -3876,12 +4388,34 @@ async def process_deal_action(
                 "deal_funds_received",
                 {"fundsReceivedById": str(actor.id), "fundsReceivedAt": _now()},
                 reason="payment proof submitted" if _has_payment_proof(deal) else None,
+                bounded_post_commit=True,
+            )
+            _dana_masuk_phase_log(
+                interaction,
+                "atomic_update_finished",
+                deal=updated or deal,
+                source=source,
+                started_at=trace_started_at,
+                result_code=error or "changed",
             )
             if error:
                 return _result("already_processed", "Aksi ini sudah diproses atau status deal sudah berubah.", deal=updated or deal)
             _release_action_lock(lock_key)
             lock_key = None
-            ui_updated, _ui_status = await _post_transition_ui(guild, updated)
+            _dana_masuk_phase_log(
+                interaction,
+                "transition_lock_released",
+                deal=updated,
+                source=source,
+                started_at=trace_started_at,
+            )
+            ui_updated, _ui_status = await _post_transition_ui(
+                guild,
+                updated,
+                interaction=interaction,
+                source=source,
+                started_at=trace_started_at,
+            )
             return _result(
                 "success" if ui_updated else "state_changed_ui_failed",
                 _ui_result_message("Dana Masuk berhasil diproses.", ui_updated),
@@ -4076,7 +4610,7 @@ async def process_deal_action(
             )
 
         return _result("validation_failed", "Action belum tersedia.", deal=deal, retryable=True)
-    except Exception:
+    except Exception as exc:
         logging.exception(
             "Deal action failed before/after state change (guild_id=%s, deal_id=%s, row_id=%s, action=%s, source=%s)",
             getattr(guild, "id", None),
@@ -4085,6 +4619,38 @@ async def process_deal_action(
             action,
             source,
         )
+        if action == DEAL_ACTION_DANA_MASUK:
+            fresh = None
+            try:
+                fresh = await get_deal_by_id(deal["id"])
+            except Exception:
+                pass
+            _dana_masuk_phase_log(
+                interaction,
+                "callback_exception",
+                deal=fresh or deal,
+                source=source,
+                started_at=trace_started_at,
+                exception=exc,
+            )
+            if fresh and fresh.get("status") == DEAL_STATUS_FUNDS_RECEIVED:
+                return _result(
+                    "state_changed_ui_failed",
+                    "Dana Masuk berhasil diproses, tetapi tampilan gagal diperbarui. Gunakan `/deal refresh`.",
+                    ok=True,
+                    deal=fresh,
+                    state_changed=True,
+                    old_status=old_status,
+                    new_status=fresh.get("status"),
+                    retryable=False,
+                )
+            return _result(
+                "failed_before_state_change",
+                "Terjadi kesalahan saat memproses Dana Masuk. Status deal belum diubah. "
+                "Silakan coba lagi atau gunakan `/deal action action:dana-masuk`.",
+                deal=fresh or deal,
+                retryable=True,
+            )
         return _result(
             "failed_before_state_change",
             "Terjadi kesalahan saat memproses tombol. Status deal belum diubah. Silakan coba lagi atau gunakan command fallback.\nGunakan `/deal status`, lalu jalankan `/deal action` sesuai aksi yang tersedia.",
@@ -4092,6 +4658,14 @@ async def process_deal_action(
             retryable=True,
         )
     finally:
+        if action == DEAL_ACTION_DANA_MASUK and lock_key:
+            _dana_masuk_phase_log(
+                interaction,
+                "transition_lock_released",
+                deal=deal,
+                source=source,
+                started_at=trace_started_at,
+            )
         _release_action_lock(lock_key)
 
 
@@ -4311,9 +4885,9 @@ class EditDealModal(discord.ui.Modal, title="Edit Deal"):
             if not await _can_admin_override(interaction):
                 await _safe_respond(interaction, "Hanya admin atau owner role yang bisa force-edit deal.", ephemeral=True)
                 return
-        elif not (_is_participant(interaction, deal) or await _can_manage_deal(interaction, deal=deal)):
+        elif not await _can_manage_deal(interaction, deal=deal):
             await _safe_respond(interaction,
-                "Kamu tidak memiliki akses untuk mengedit deal ini. Hanya buyer, seller, dan middleman yang bisa mengedit.",
+                "Kamu tidak punya permission untuk mengedit deal ini.",
                 ephemeral=True,
             )
             return
@@ -4485,7 +5059,7 @@ class PaymentProofActionView(discord.ui.View):
         if not deal_row_id:
             await _safe_respond(interaction, "Data deal tidak ditemukan. Button sudah kadaluarsa.", ephemeral=True)
             return
-        await _handle_dana_masuk(interaction, deal_row_id, PaymentProofActionView(deal_row_id))
+        await _handle_dana_masuk(interaction, deal_row_id, source="legacy_button")
 
     @discord.ui.button(label="⚠️ Dispute", style=discord.ButtonStyle.secondary, custom_id="deal_dispute")
     async def dispute(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -4523,6 +5097,8 @@ class DealSummaryView(discord.ui.View):
         self.deal_row_id = deal_row_id
         if visible_actions is not None:
             allowed_custom_ids = set()
+            if DEAL_VISIBLE_ACTION_EDIT in visible_actions:
+                allowed_custom_ids.add("deal_summary_edit")
             if DEAL_ACTION_DANA_MASUK in visible_actions:
                 allowed_custom_ids.add("deal_summary_dana_masuk")
             if DEAL_ACTION_CANCEL in visible_actions:
@@ -4539,7 +5115,7 @@ class DealSummaryView(discord.ui.View):
         if not deal_row_id:
             await _safe_respond(interaction, "Data deal tidak ditemukan. Button sudah kadaluarsa.", ephemeral=True)
             return
-        await _handle_dana_masuk(interaction, deal_row_id, DealSummaryView(deal_row_id))
+        await _handle_dana_masuk(interaction, deal_row_id, source="canonical_button")
 
     @discord.ui.button(label="✏️ Edit Deal", style=discord.ButtonStyle.primary, custom_id="deal_summary_edit")
     async def edit_deal(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -4559,9 +5135,9 @@ class DealSummaryView(discord.ui.View):
             return
         if await _block_if_disputed(interaction, deal):
             return
-        if not (_is_participant(interaction, deal) or await _can_manage_deal(interaction, deal=deal)):
+        if not await _can_manage_deal(interaction, deal=deal):
             await _safe_respond(interaction,
-                "Kamu tidak memiliki akses untuk mengedit deal ini. Hanya buyer, seller, dan middleman yang bisa mengedit.",
+                "Kamu tidak punya permission untuk mengedit deal ini.",
                 ephemeral=True,
             )
             return
@@ -5168,11 +5744,8 @@ class PrefixEditDealView(discord.ui.View):
             return
         if not await _require_matching_deal_channel(interaction, deal):
             return
-        if not (_is_participant(interaction, deal) or await _can_manage_deal(interaction, deal=deal)):
-            await interaction.response.send_message(
-                "Kamu tidak memiliki akses untuk mengedit deal ini. Hanya buyer, seller, dan middleman yang bisa mengedit.",
-                ephemeral=True,
-            )
+        if not await _can_manage_deal(interaction, deal=deal):
+            await interaction.response.send_message("Kamu tidak punya permission untuk mengedit deal ini.", ephemeral=True)
             return
         if deal["status"] != DEAL_STATUS_WAITING_FUNDS:
             await interaction.response.send_message("Deal hanya bisa diedit sebelum Dana Masuk.", ephemeral=True)
@@ -5625,7 +6198,20 @@ async def recover_deal_buttons(guild, scope="all", scan_limit=100, *, manual=Fal
 
 
 async def _deal_button_found_text(guild, deal):
-    return "Ya" if await _safe_deal_message_exists(guild, deal) else "Tidak"
+    try:
+        found = await asyncio.wait_for(_safe_deal_message_exists(guild, deal), timeout=3)
+    except Exception:
+        found = False
+    return "Ya" if found else "Tidak"
+
+
+def _cached_deal_user_display(guild, user_id):
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return "Unknown User"
+    member = guild.get_member(uid) if guild else None
+    return member.mention if member else f"<@{uid}>"
 
 
 async def _deal_status_lines(interaction, deal):
@@ -5659,9 +6245,9 @@ async def _deal_status_lines(interaction, deal):
             slash_lines = ["`/deal recover`"]
             prefix_lines = ["`w!deal recover`"]
 
-    buyer = await format_user_display(interaction.client, interaction.guild, deal.get("buyerId"))
-    seller = await format_user_display(interaction.client, interaction.guild, deal.get("sellerId"))
-    middleman = await format_user_display(interaction.client, interaction.guild, deal.get("middlemanId"))
+    buyer = _cached_deal_user_display(interaction.guild, deal.get("buyerId"))
+    seller = _cached_deal_user_display(interaction.guild, deal.get("sellerId"))
+    middleman = _cached_deal_user_display(interaction.guild, deal.get("middlemanId"))
     lines = [
         "**Status Transaksi**",
         f"Deal ID: `{deal.get('dealId') or deal.get('id')}`",
@@ -5691,7 +6277,7 @@ async def _deal_status_lines(interaction, deal):
     return lines
 
 
-async def _send_deal_status(interaction, deal, *, next_only=False, ephemeral=True):
+async def _build_deal_status_text(interaction, deal, *, next_only=False):
     lines = await _deal_status_lines(interaction, deal)
     if next_only:
         stage_line = next((line for line in lines if line.startswith("Status saat ini:")), "")
@@ -5702,20 +6288,35 @@ async def _send_deal_status(interaction, deal, *, next_only=False, ephemeral=Tru
         except ValueError:
             action_lines = []
         lines = [stage_line, actor_line, "", "Aksi utama dan fallback:", *action_lines]
-    await _safe_respond(interaction, "\n".join(lines)[:1900], ephemeral=ephemeral)
+    return "\n".join(lines)[:1900]
 
 
-async def _process_refresh_or_recover(interaction, deal, *, recover=False):
+async def _process_refresh_or_recover(interaction, deal, *, recover=False, invocation=None):
     if not await _can_manage_deal(interaction, deal=deal):
         return _result("unauthorized", "Kamu tidak punya permission untuk menjalankan aksi deal ini.", deal=deal)
+    if invocation:
+        _deal_invocation_log(invocation, interaction, "ui_lock_requested", deal=deal)
     lock_key = _acquire_action_lock("ui", interaction.guild.id, deal["id"], interaction.user.id, ttl=20)
     if not lock_key:
         return _result("lock_held", "Aksi UI/recovery sedang diproses. Coba lagi beberapa saat.", deal=deal)
+    if invocation:
+        _deal_invocation_log(invocation, interaction, "ui_lock_acquired", deal=deal)
     try:
         latest = await get_deal_by_id(deal["id"])
         if not latest:
             return _result("validation_failed", "Data deal tidak ditemukan.", retryable=True)
-        channel = await _original_deal_channel(interaction.guild, latest)
+        try:
+            channel = await asyncio.wait_for(
+                _original_deal_channel(interaction.guild, latest),
+                timeout=DANA_MASUK_UI_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            return _result(
+                "validation_failed",
+                "Operasi UI deal melewati batas waktu. Gunakan `/deal refresh` untuk mencoba lagi.",
+                deal=latest,
+                retryable=True,
+            )
         if not channel or not _channel_is_private(interaction.guild, channel):
             return _result("validation_failed", "Deal hanya bisa diproses di channel ticket/private karena channel ini masih bisa dilihat publik.", deal=latest)
         counts = {"refreshed": 0, "recovered": 0, "skipped": 0, "missing": 0, "failed": 0}
@@ -5728,7 +6329,10 @@ async def _process_refresh_or_recover(interaction, deal, *, recover=False):
             and get_deal_operational_stage(latest) != DEAL_STAGE_WAITING_FUNDS_CONFIRMATION
         ):
             try:
-                payment_result = await _send_or_update_payment_instruction(interaction.guild, channel, latest, force=False)
+                payment_result = await asyncio.wait_for(
+                    _send_or_update_payment_instruction(interaction.guild, channel, latest, force=False),
+                    timeout=DANA_MASUK_UI_TIMEOUT_SECONDS,
+                )
                 if payment_result in ("created", "updated"):
                     counts["recovered"] += 1
                     latest = await get_deal_by_id(latest["id"]) or latest
@@ -5736,7 +6340,13 @@ async def _process_refresh_or_recover(interaction, deal, *, recover=False):
                     counts["skipped"] += 1
                 elif payment_result == "profile_not_ready":
                     counts["skipped"] += 1
-                    ui_updated, ui_status = await _refresh_current_deal_view(interaction.guild, latest)
+                    try:
+                        ui_updated, ui_status = await asyncio.wait_for(
+                            _refresh_current_deal_view(interaction.guild, latest),
+                            timeout=DANA_MASUK_UI_TIMEOUT_SECONDS,
+                        )
+                    except asyncio.TimeoutError:
+                        ui_updated, ui_status = False, "timeout"
                     if ui_updated:
                         counts["refreshed"] += 1
                     elif ui_status == "missing":
@@ -5752,7 +6362,13 @@ async def _process_refresh_or_recover(interaction, deal, *, recover=False):
                     return _result("validation_failed", message, deal=latest, ui_updated=ui_updated)
                 elif payment_result == "missing_owner":
                     counts["failed"] += 1
-                    ui_updated, ui_status = await _refresh_current_deal_view(interaction.guild, latest)
+                    try:
+                        ui_updated, ui_status = await asyncio.wait_for(
+                            _refresh_current_deal_view(interaction.guild, latest),
+                            timeout=DANA_MASUK_UI_TIMEOUT_SECONDS,
+                        )
+                    except asyncio.TimeoutError:
+                        ui_updated, ui_status = False, "timeout"
                     if ui_updated:
                         counts["refreshed"] += 1
                     elif ui_status == "missing":
@@ -5769,21 +6385,171 @@ async def _process_refresh_or_recover(interaction, deal, *, recover=False):
             except Exception:
                 logging.exception("targeted payment instruction recovery failed (guild_id=%s, deal_id=%s)", interaction.guild.id, latest.get("dealId"))
                 counts["failed"] += 1
-        ui_updated, ui_status = await _refresh_current_deal_view(interaction.guild, latest)
+        try:
+            ui_updated, ui_status = await asyncio.wait_for(
+                _refresh_current_deal_view(interaction.guild, latest),
+                timeout=DANA_MASUK_UI_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            ui_updated, ui_status = False, "timeout"
         if ui_updated:
             counts["refreshed"] += 1
         elif ui_status == "missing":
             counts["missing"] += 1
         else:
             counts["failed"] += 1
-        message = (
-            "Targeted recover selesai. "
-            if recover
-            else "Tampilan deal berhasil diperbarui. "
-        ) + f"Refreshed: `{counts['refreshed']}`, Recovered: `{counts['recovered']}`, Skipped: `{counts['skipped']}`, Missing: `{counts['missing']}`, Failed: `{counts['failed']}`"
+        if ui_status == "timeout":
+            summary = "Operasi UI deal melewati batas waktu. Silakan coba lagi. "
+        elif counts["failed"]:
+            summary = "Operasi UI deal selesai dengan kegagalan. Silakan coba lagi. "
+        else:
+            summary = "Targeted recover selesai. " if recover else "Tampilan deal berhasil diperbarui. "
+        message = summary + f"Refreshed: `{counts['refreshed']}`, Recovered: `{counts['recovered']}`, Skipped: `{counts['skipped']}`, Missing: `{counts['missing']}`, Failed: `{counts['failed']}`"
         return _result("success" if counts["failed"] == 0 else "validation_failed", message, ok=counts["failed"] == 0, deal=latest, ui_updated=ui_updated)
     finally:
         _release_action_lock(lock_key)
+        if invocation:
+            _deal_invocation_log(invocation, interaction, "ui_lock_released", deal=deal)
+
+
+async def _run_deal_status_invocation(interaction, deal_id, *, next_only):
+    command_name = "deal next" if next_only else "deal status"
+    source = "prefix" if isinstance(interaction, FakeInteraction) else "slash"
+    invocation = _new_deal_invocation(interaction, command_name, source)
+    _deal_invocation_log(invocation, interaction, "command_received")
+    await _safe_defer_deal_interaction(interaction, invocation, ephemeral=True)
+    deal = None
+    try:
+        deal, error = await _resolve_deal_for_command_bounded(
+            interaction,
+            deal_id,
+            allow_participant_channel=True,
+            invocation=invocation,
+        )
+        if error:
+            return await _finalize_deal_invocation(
+                interaction,
+                invocation,
+                error,
+                result_code="validation_failed",
+                deal=deal,
+            )
+        _deal_invocation_log(invocation, interaction, "handler_started", deal=deal)
+        try:
+            content = await asyncio.wait_for(
+                _build_deal_status_text(interaction, deal, next_only=next_only),
+                timeout=DEAL_READ_HANDLER_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            content = "Gagal membaca data deal dalam batas waktu. Silakan coba lagi."
+            result_code = "timeout"
+        else:
+            result_code = "success"
+        _deal_invocation_log(
+            invocation,
+            interaction,
+            "handler_completed",
+            deal=deal,
+            result_code=result_code,
+        )
+        _deal_invocation_log(
+            invocation,
+            interaction,
+            "result_received",
+            deal=deal,
+            result_code=result_code,
+        )
+        return await _finalize_deal_invocation(
+            interaction,
+            invocation,
+            content,
+            result_code=result_code,
+            deal=deal,
+        )
+    except Exception as exc:
+        _deal_invocation_log(invocation, interaction, "callback_exception", deal=deal, exception=exc)
+        return await _finalize_deal_invocation(
+            interaction,
+            invocation,
+            "Terjadi kesalahan saat membaca status deal. Silakan coba lagi.",
+            result_code="failed",
+            deal=deal,
+        )
+
+
+async def _run_deal_ui_invocation(interaction, deal_id, *, recover):
+    command_name = "deal recover" if recover else "deal refresh"
+    source = "prefix" if isinstance(interaction, FakeInteraction) else "slash"
+    invocation = _new_deal_invocation(interaction, command_name, source)
+    _deal_invocation_log(invocation, interaction, "command_received")
+    await _safe_defer_deal_interaction(interaction, invocation, ephemeral=True)
+    deal = None
+    try:
+        deal, error = await _resolve_deal_for_command_bounded(
+            interaction,
+            deal_id,
+            allow_participant_channel=False,
+            invocation=invocation,
+        )
+        if error:
+            return await _finalize_deal_invocation(
+                interaction,
+                invocation,
+                error,
+                result_code="validation_failed",
+                deal=deal,
+            )
+        _deal_invocation_log(invocation, interaction, "handler_started", deal=deal)
+        _deal_invocation_log(invocation, interaction, "ui_refresh_started", deal=deal)
+        try:
+            result = await asyncio.wait_for(
+                _process_refresh_or_recover(interaction, deal, recover=recover, invocation=invocation),
+                timeout=DEAL_UI_HANDLER_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            result = _result(
+                "validation_failed",
+                "Operasi UI deal melewati batas waktu. Silakan coba lagi.",
+                deal=deal,
+                retryable=True,
+            )
+        _deal_invocation_log(
+            invocation,
+            interaction,
+            "ui_refresh_completed",
+            deal=result.deal or deal,
+            result_code=result.code,
+        )
+        _deal_invocation_log(
+            invocation,
+            interaction,
+            "handler_completed",
+            deal=result.deal or deal,
+            result_code=result.code,
+        )
+        _deal_invocation_log(
+            invocation,
+            interaction,
+            "result_received",
+            deal=result.deal or deal,
+            result_code=result.code,
+        )
+        return await _finalize_deal_invocation(
+            interaction,
+            invocation,
+            result.user_message,
+            result_code=result.code,
+            deal=result.deal or deal,
+        )
+    except Exception as exc:
+        _deal_invocation_log(invocation, interaction, "callback_exception", deal=deal, exception=exc)
+        return await _finalize_deal_invocation(
+            interaction,
+            invocation,
+            "Terjadi kesalahan saat memperbarui tampilan deal. Silakan coba lagi.",
+            result_code="failed",
+            deal=deal,
+        )
 
 
 async def _prefix_resolve_optional_deal_id(guild, token):
@@ -5830,6 +6596,11 @@ async def _startup_recover_tracked_buttons(client_obj):
 
 
 def setup(tree, client):
+    logging.info(
+        "[Deal Runtime] patch=%s canonical_funds_view=deal_summary_dana_masuk,"
+        "deal_summary_cancel,deal_summary_dispute",
+        DEAL_RUNTIME_PATCH_VERSION,
+    )
     deal_group = app_commands.Group(name="deal", description="Sistem middleman deal")
     config_group = app_commands.Group(name="config", description="Konfigurasi middleman deal")
     audit_group = app_commands.Group(name="audit-log", description="Audit log staff untuk deal")
@@ -6111,16 +6882,37 @@ def setup(tree, client):
 
         if subcommand == "action":
             action, deal_id, tail = await _parse_prefix_action(message, args)
+            invocation = _new_deal_invocation(interaction, f"deal action {action}", "prefix")
+            _deal_invocation_log(invocation, interaction, "command_received")
+            trace_started_at = time.monotonic() if action == DEAL_ACTION_DANA_MASUK else None
+            if trace_started_at is not None:
+                _dana_masuk_phase_log(
+                    interaction,
+                    "interaction_received",
+                    source="prefix_command",
+                    started_at=trace_started_at,
+                )
             if not action:
                 await _prefix_send(message, "Format salah. Gunakan: w!deal action <action> [deal_id] [reason]")
                 return
             if action == DEAL_ACTION_PAYOUT:
                 await _prefix_send(message, "Gunakan `/deal action action:payout` untuk membuka modal data pencairan.")
                 return
-            deal, error = await _resolve_deal_for_command(interaction, deal_id, allow_participant_channel=False)
+            deal, error = await _resolve_deal_for_command_bounded(
+                interaction,
+                deal_id,
+                allow_participant_channel=False,
+                invocation=invocation,
+            )
             if error:
-                await _prefix_send(message, error)
-                return
+                return await _finalize_deal_invocation(
+                    interaction,
+                    invocation,
+                    error,
+                    result_code="validation_failed",
+                    deal=deal,
+                    ephemeral=False,
+                )
             if not await _can_manage_deal(interaction, deal=deal):
                 await _prefix_send(message, "Kamu tidak punya permission untuk menjalankan aksi deal ini.")
                 return
@@ -6139,21 +6931,29 @@ def setup(tree, client):
                 proofed_deal, _message, _attachment = result
                 result = await process_deal_action(interaction=interaction, deal=proofed_deal, action=action, source="prefix_command", reason=tail)
             else:
-                result = await process_deal_action(interaction=interaction, deal=deal, action=action, source="prefix_command", reason=tail)
-            await _send_deal_action_result(interaction, result, ephemeral=False)
-            return
+                result = await process_deal_action(
+                    interaction=interaction,
+                    deal=deal,
+                    action=action,
+                    source="prefix_command",
+                    reason=tail,
+                    trace_started_at=trace_started_at,
+                )
+            return await _finalize_deal_invocation(
+                interaction,
+                invocation,
+                result.user_message,
+                result_code=result.code,
+                deal=result.deal or deal,
+                ephemeral=False,
+            )
 
         if subcommand in ("status", "next", "refresh", "recover"):
             deal_id = args[1] if len(args) >= 2 else None
-            deal, error = await _resolve_deal_for_command(interaction, deal_id, allow_participant_channel=True)
-            if error:
-                await _prefix_send(message, error)
-                return
             if subcommand in ("status", "next"):
-                await _send_deal_status(interaction, deal, next_only=subcommand == "next", ephemeral=False)
+                await _run_deal_status_invocation(interaction, deal_id, next_only=subcommand == "next")
                 return
-            result = await _process_refresh_or_recover(interaction, deal, recover=subcommand == "recover")
-            await _send_deal_action_result(interaction, result, ephemeral=False)
+            await _run_deal_ui_invocation(interaction, deal_id, recover=subcommand == "recover")
             return
 
         if subcommand == "payment-config":
@@ -7087,85 +7887,156 @@ def setup(tree, client):
     @deal_group.command(name="action", description="Fallback action deal jika tombol bermasalah")
     @app_commands.choices(action=DEAL_ACTION_CHOICES)
     async def deal_action(interaction: discord.Interaction, action: str, deal_id: str = None, reason: str = None):
+        invocation = _new_deal_invocation(interaction, f"deal action {action}", "slash")
+        _deal_invocation_log(invocation, interaction, "command_received")
         if not await _require_deal_phase(interaction, 2):
             return
-        deal, error = await _resolve_deal_for_command(interaction, deal_id, allow_participant_channel=False)
+        modal_or_session = (
+            action == DEAL_ACTION_PAYOUT
+            or (action in (DEAL_ACTION_CANCEL, DEAL_ACTION_DISPUTE, DEAL_ACTION_ADD_NOTE) and not str(reason or "").strip())
+            or action == DEAL_ACTION_DONE
+        )
+        if not modal_or_session:
+            await _safe_defer_deal_interaction(interaction, invocation, ephemeral=True)
+        deal, error = await _resolve_deal_for_command_bounded(
+            interaction,
+            deal_id,
+            allow_participant_channel=False,
+            invocation=invocation,
+            timeout=2.5 if modal_or_session else None,
+        )
         if error:
-            await interaction.response.send_message(error, ephemeral=True)
-            return
+            return await _finalize_deal_invocation(
+                interaction,
+                invocation,
+                error,
+                result_code="validation_failed",
+                deal=deal,
+            )
         if not await _can_manage_deal(interaction, deal=deal):
-            await interaction.response.send_message("Kamu tidak punya permission untuk menjalankan aksi deal ini.", ephemeral=True)
-            return
+            return await _finalize_deal_invocation(
+                interaction,
+                invocation,
+                "Kamu tidak punya permission untuk menjalankan aksi deal ini.",
+                result_code="unauthorized",
+                deal=deal,
+            )
         if action == DEAL_ACTION_PAYOUT:
             stage = get_deal_operational_stage(deal)
             allowed = await get_available_deal_actions(deal, interaction.user)
             if stage not in (DEAL_STAGE_WAITING_SELLER_PAYOUT, DEAL_STAGE_WAITING_SELLER_TRANSFER) or DEAL_ACTION_PAYOUT not in allowed:
-                await interaction.response.send_message("Deal ini belum berada di tahap data pencairan.", ephemeral=True)
-                return
+                return await _finalize_deal_invocation(
+                    interaction,
+                    invocation,
+                    "Deal ini belum berada di tahap data pencairan.",
+                    result_code="invalid_status",
+                    deal=deal,
+                )
+            _deal_invocation_log(invocation, interaction, "response_finalize_started", deal=deal)
             await interaction.response.send_modal(SellerPayoutModal(deal["id"]))
+            invocation.finalized = True
+            _deal_invocation_log(invocation, interaction, "response_finalize_completed", deal=deal, result_code="modal")
             return
         if action == DEAL_ACTION_CANCEL and not str(reason or "").strip():
+            _deal_invocation_log(invocation, interaction, "response_finalize_started", deal=deal)
             await interaction.response.send_modal(CancelDealModal(deal["id"]))
+            invocation.finalized = True
+            _deal_invocation_log(invocation, interaction, "response_finalize_completed", deal=deal, result_code="modal")
             return
         if action == DEAL_ACTION_DISPUTE and not str(reason or "").strip():
+            _deal_invocation_log(invocation, interaction, "response_finalize_started", deal=deal)
             await interaction.response.send_modal(DisputeDealModal(deal["id"]))
+            invocation.finalized = True
+            _deal_invocation_log(invocation, interaction, "response_finalize_completed", deal=deal, result_code="modal")
             return
         if action == DEAL_ACTION_ADD_NOTE and not str(reason or "").strip():
+            _deal_invocation_log(invocation, interaction, "response_finalize_started", deal=deal)
             await interaction.response.send_modal(AddDealNoteModal(deal["id"]))
+            invocation.finalized = True
+            _deal_invocation_log(invocation, interaction, "response_finalize_completed", deal=deal, result_code="modal")
             return
         if action == DEAL_ACTION_DONE and not _has_transfer_proof(deal):
             if int(deal["id"]) in TRANSFER_PROOF_SESSIONS:
-                await interaction.response.send_message("Sesi upload bukti transfer masih aktif.", ephemeral=True)
-                return
+                return await _finalize_deal_invocation(
+                    interaction,
+                    invocation,
+                    "Sesi upload bukti transfer masih aktif.",
+                    result_code="lock_held",
+                    deal=deal,
+                )
             result = await _wait_for_proof_upload(interaction, deal, proof_type="transfer")
             if not result:
+                invocation.finalized = True
                 return
             proofed_deal, _message, _attachment = result
             result = await process_deal_action(interaction=interaction, deal=proofed_deal, action=action, source="slash_command", reason=reason)
-            await _send_deal_action_result(interaction, result, ephemeral=not result.ok)
-            return
-        await interaction.response.defer(ephemeral=True, thinking=True)
+            return await _finalize_deal_invocation(
+                interaction,
+                invocation,
+                result.user_message,
+                result_code=result.code,
+                deal=result.deal or proofed_deal,
+            )
+        if not interaction.response.is_done():
+            await _safe_defer_deal_interaction(interaction, invocation, ephemeral=True)
+        trace_started_at = time.monotonic() if action == DEAL_ACTION_DANA_MASUK else None
+        if trace_started_at is not None:
+            _dana_masuk_phase_log(
+                interaction,
+                "interaction_received",
+                deal=deal,
+                source="slash_command",
+                started_at=trace_started_at,
+            )
+        _deal_invocation_log(invocation, interaction, "handler_started", deal=deal)
         if action == DEAL_ACTION_ADD_NOTE:
             result = await process_deal_add_note(interaction, deal, reason)
         else:
-            result = await process_deal_action(interaction=interaction, deal=deal, action=action, source="slash_command", reason=reason)
-        await _send_deal_action_result(interaction, result, ephemeral=True)
+            result = await process_deal_action(
+                interaction=interaction,
+                deal=deal,
+                action=action,
+                source="slash_command",
+                reason=reason,
+                trace_started_at=trace_started_at,
+            )
+        _deal_invocation_log(
+            invocation,
+            interaction,
+            "handler_completed",
+            deal=result.deal or deal,
+            result_code=result.code,
+        )
+        _deal_invocation_log(
+            invocation,
+            interaction,
+            "result_received",
+            deal=result.deal or deal,
+            result_code=result.code,
+        )
+        return await _finalize_deal_invocation(
+            interaction,
+            invocation,
+            result.user_message,
+            result_code=result.code,
+            deal=result.deal or deal,
+        )
 
     @deal_group.command(name="status", description="Lihat posisi transaksi deal saat ini")
     async def deal_status(interaction: discord.Interaction, deal_id: str = None):
-        deal, error = await _resolve_deal_for_command(interaction, deal_id, allow_participant_channel=True)
-        if error:
-            await interaction.response.send_message(error, ephemeral=True)
-            return
-        await _send_deal_status(interaction, deal, next_only=False, ephemeral=True)
+        await _run_deal_status_invocation(interaction, deal_id, next_only=False)
 
     @deal_group.command(name="next", description="Lihat aksi berikutnya untuk deal")
     async def deal_next(interaction: discord.Interaction, deal_id: str = None):
-        deal, error = await _resolve_deal_for_command(interaction, deal_id, allow_participant_channel=True)
-        if error:
-            await interaction.response.send_message(error, ephemeral=True)
-            return
-        await _send_deal_status(interaction, deal, next_only=True, ephemeral=True)
+        await _run_deal_status_invocation(interaction, deal_id, next_only=True)
 
     @deal_group.command(name="refresh", description="Perbaiki tampilan UI deal saat ini")
     async def deal_refresh(interaction: discord.Interaction, deal_id: str = None):
-        deal, error = await _resolve_deal_for_command(interaction, deal_id, allow_participant_channel=False)
-        if error:
-            await interaction.response.send_message(error, ephemeral=True)
-            return
-        await interaction.response.defer(ephemeral=True)
-        result = await _process_refresh_or_recover(interaction, deal, recover=False)
-        await _send_deal_action_result(interaction, result, ephemeral=True)
+        await _run_deal_ui_invocation(interaction, deal_id, recover=False)
 
     @deal_group.command(name="recover", description="Targeted recovery untuk satu deal")
     async def deal_recover(interaction: discord.Interaction, deal_id: str = None):
-        deal, error = await _resolve_deal_for_command(interaction, deal_id, allow_participant_channel=False)
-        if error:
-            await interaction.response.send_message(error, ephemeral=True)
-            return
-        await interaction.response.defer(ephemeral=True)
-        result = await _process_refresh_or_recover(interaction, deal, recover=True)
-        await _send_deal_action_result(interaction, result, ephemeral=True)
+        await _run_deal_ui_invocation(interaction, deal_id, recover=True)
 
     RECOVER_SCOPE_CHOICES = [
         app_commands.Choice(name="all", value="all"),

@@ -43,6 +43,14 @@ ALLOWED_ORIGINS=              # Comma-separated CORS whitelist. Empty = allow al
 AI_AUTO_REPLY_CHANNEL_ID=0    # Channel where bot auto-replies without prefix. 0 = disabled.
 ```
 
+### Repository Hygiene
+Local runtime files are intentionally ignored by git:
+- `.env` and `.env.*` except `.env.example`
+- SQLite runtime files such as `w2ebot.db`, `*.db-wal`, and `*.db-shm`
+- logs, backups, Python caches, dashboard build output, and local agent/editor folders
+
+Do not commit production tokens, live databases, proof/payment images, or bot logs.
+
 ---
 
 ## Architecture
@@ -60,9 +68,9 @@ AI_AUTO_REPLY_CHANNEL_ID=0    # Channel where bot auto-replies without prefix. 0
 
 ---
 
-## Features (59 commands)
+## Features
 
-Every command works as both **Slash** (`/daily`) and **Prefix** (`w!daily`).
+Most commands work as both **Slash** (`/daily`) and **Prefix** (`w!daily`) through the FakeInteraction dispatcher. Middleman fallback commands stay under `/deal ...` and `w!deal ...` so RPG and trust command ownership remains clear.
 
 ### RPG & Economy
 `daily`, `weekly`, `work`, `profile`, `shop`, `buy`, `sell`, `inventory`, `rob`, `transfer`, `top`, `pray`, `curse`, `quest`
@@ -85,14 +93,15 @@ All bets use atomic `try_spend` (no double-spend via concurrent commands). Minig
 Boss spawns hourly (20% chance) or via admin API. Pets add bonus damage.
 
 ### Middleman & Trust System
-`deal`, `vouches`, `trust_leaderboard`
+`deal`, `vouches`, `vouchleaderboard`, `w!deal leaderboard`, `w!deal rank`
 
-- **Secure Transactions & Access Model**: Full-featured middleman system to securely handle deals between buyer, seller, and staff. Uses a participant-based access model allowing authorized buyers and sellers to cancel or edit their own deals directly.
-- **Workflow & Proofs (Simplified)**: Integrated fee calculation, proof of payment upload, and direct buyer confirmation (skipping the legacy "Item Sent" step). Supports command-based fallbacks (`/deal status`, `/deal next`, `/deal action`) if interactive buttons fail.
-- **Payment Profile Config (`/deal payment-config`)**: Allows admins and middlemen to configure persistent payment info, including QRIS images and custom payment instructions, automatically sent to private deal channels when a deal is ready for payment.
+- **Secure Transactions & Access Model**: Full-featured middleman system for buyer, seller, assigned middleman, staff, admin, and owner-role workflows. Buttons remain the normal shared UI, while command fallback exists for stale/deleted/broken button messages.
+- **Workflow & Proofs (Simplified)**: Deal form -> private payment instruction -> buyer payment proof -> Dana Masuk -> Buyer Confirm -> seller payout data -> transfer proof/Done. The legacy "Item Sent" stage is skipped for new deals and only retained for old-row compatibility.
+- **Button + Command Fallbacks**: Staff can inspect or continue a deal with `/deal status`, `/deal next`, `/deal action`, `/deal refresh`, and `/deal recover`; prefix equivalents are available as `w!deal status`, `w!deal next`, `w!deal action`, `w!deal refresh`, and `w!deal recover`.
+- **Per-User Payment Profile Config (`/deal payment-config`)**: Each middleman/admin configures their own payment profile by guild + user. Payment instructions can contain text, QRIS/image, or image-only details and are only posted in private deal channels or staff-only/ephemeral/DM previews.
 - **Public Trust Panels (`/deal panel`)**: Set up public tracking boards including trusted vouch leaderboards, server trust stats, recent vouches feed, completed deals feed, middleman status panels, active deal queues, and dispute boards.
 - **Vouch & Scam Panels**: Public vouch submission panel (`/deal vouch-panel setup`) and scam reporting panel (`/deal scam-report-panel setup`).
-- **Button Recovery (`/deal recover-buttons`)**: Recovers interactive buttons on active deal channels, trust panels, or review channels after bot restarts.
+- **Button Recovery**: `/deal recover-buttons` performs broad recovery, while `/deal recover` targets one deal and repairs the current canonical UI without exposing payment, proof, payout, credentials, evidence, or notes.
 - **Trust Profile**: Earn verified vouches from successful deals, increase Trust Score, and climb the Trust Rank ladder.
 - **Admin & Safety**: Review manual vouches, resolve disputes, and monitor active deals.
 

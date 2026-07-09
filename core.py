@@ -4860,7 +4860,17 @@ async def add_deal_log(guild_id, deal_id, action, actor_id, old_value=None, new_
         await db.commit()
 
 
-async def update_deal_status(deal_row_id, expected_statuses, new_status, actor_id, action, extra_fields=None, reason=None):
+async def update_deal_status(
+    deal_row_id,
+    expected_statuses,
+    new_status,
+    actor_id,
+    action,
+    extra_fields=None,
+    reason=None,
+    *,
+    bounded_post_commit=False,
+):
     expected = tuple(expected_statuses)
     fields = dict(extra_fields or {})
     now = _deal_now()
@@ -4905,11 +4915,44 @@ async def update_deal_status(deal_row_id, expected_statuses, new_status, actor_i
             ),
         )
         await db.commit()
-    await write_audit(action, deal_row_id, f"{deal['status']} -> {new_status}", source="deal")
+
+    async def run_post_commit(coro, *, label, timeout):
+        if not bounded_post_commit:
+            return await coro
+        try:
+            return await asyncio.wait_for(coro, timeout=timeout)
+        except Exception as exc:
+            logging.warning(
+                "Deal post-commit side effect failed "
+                "(guild_id=%s, row_id=%s, action=%s, phase=%s, exception=%s)",
+                deal["guildId"],
+                deal_row_id,
+                action,
+                label,
+                type(exc).__name__,
+            )
+            return None
+
+    await run_post_commit(
+        write_audit(action, deal_row_id, f"{deal['status']} -> {new_status}", source="deal"),
+        label="audit",
+        timeout=5,
+    )
     if _deal_is_archivable_final_status(new_status):
         archive_reason = None if new_status == DEAL_STATUS_COMPLETED else reason
-        await archive_deal_if_final(deal_row_id, new_status, actor_id, reason=archive_reason)
-    await refresh_staff_operation_panels(deal["guildId"], {"active_deals", "middleman_status", "dispute_board"})
+        await run_post_commit(
+            archive_deal_if_final(deal_row_id, new_status, actor_id, reason=archive_reason),
+            label="archive",
+            timeout=10,
+        )
+    await run_post_commit(
+        refresh_staff_operation_panels(
+            deal["guildId"],
+            {"active_deals", "middleman_status", "dispute_board"},
+        ),
+        label="panel_refresh",
+        timeout=8,
+    )
     return await get_deal_by_id(deal_row_id), None
 
 
@@ -7034,16 +7077,31 @@ async def on_interaction(interaction: discord.Interaction):
 
 @tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
-    logging.error(f'App Command Error: {error}')
+    invocation_id = getattr(interaction, "_deal_invocation_id", None) or os.urandom(6).hex()
+    logging.error(
+        "App Command Error invocation_id=%s command=%s exception=%s",
+        invocation_id,
+        getattr(getattr(interaction, "command", None), "qualified_name", None),
+        type(error).__name__,
+    )
     # Jangan bocorkan detail exception ke user; cukup pesan generik.
     user_msg = '❌ Terjadi kesalahan saat menjalankan perintah. Coba lagi nanti ya.'
+    responded = False
     try:
-        if interaction.response.is_done():
-            await interaction.followup.send(user_msg, ephemeral=True)
+        if interaction.response.is_done() and hasattr(interaction, "edit_original_response"):
+            await asyncio.wait_for(interaction.edit_original_response(content=user_msg), timeout=8)
+        elif interaction.response.is_done():
+            await asyncio.wait_for(interaction.followup.send(user_msg, ephemeral=True), timeout=8)
         else:
-            await interaction.response.send_message(user_msg, ephemeral=True)
-    except Exception:
-        pass
+            await asyncio.wait_for(interaction.response.send_message(user_msg, ephemeral=True), timeout=8)
+        responded = True
+    except Exception as exc:
+        logging.error(
+            "App Command Error finalizer failed invocation_id=%s exception=%s",
+            invocation_id,
+            type(exc).__name__,
+        )
+    logging.info("App Command Error finalized invocation_id=%s responded=%s", invocation_id, responded)
 
 
 # ============================================================================

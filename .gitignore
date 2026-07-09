@@ -1,11 +1,10 @@
-# ── Secrets & environment ──────────────────────────────────────────────
+# Secrets and local environment
 .env
 .env.*
 !.env.example
+.envrc
 
-# ── Runtime data (bot auto-generates these) ────────────────────────────
-# Game data lives in the SQLite json_store table, not loose .json files,
-# so we ignore the DB + the on-disk runtime config rather than all *.json.
+# Runtime database and generated state
 w2ebot.db
 *.db
 *.db-journal
@@ -15,9 +14,18 @@ w2ebot.db
 *.sqlite3
 config.json
 
-# ── Python ─────────────────────────────────────────────────────────────
+# Runtime logs and backups
+logs/
+backups/
+*.log
+*.out
+*.err
+
+# Python cache/build artifacts
 __pycache__/
 *.py[cod]
+*.pyo
+*.pyd
 *.class
 *.egg-info/
 .eggs/
@@ -29,21 +37,31 @@ env/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+htmlcov/
 
-# ── Assets downloaded/generated at runtime ─────────────────────────────
+# Node/dashboard local artifacts
+node_modules/
+dashboard-example/node_modules/
+dashboard-example/.next/
+dashboard-example/out/
+dashboard-example/.env
+dashboard-example/.env.*
+
+# Assets downloaded/generated at runtime
 fonts/
 
-# ── Local tooling / agent config ───────────────────────────────────────
+# Local agent/editor tooling
 .agent/
-
-# ── Editors & OS ───────────────────────────────────────────────────────
+.agents/
+.codex/
+.claude/
 .vscode/
 .idea/
 *.swp
+*.swo
+*.tmp
+
+# OS files
 .DS_Store
 Thumbs.db
-
-# ── Logs & Backups ─────────────────────────────────────────────────────
-logs/
-*.log
-backups/
