@@ -104,6 +104,9 @@ Boss spawns hourly (20% chance) or via admin API. Pets add bonus damage.
 - **Public Trust Panels (`/deal panel`)**: Set up public tracking boards including trusted vouch leaderboards, server trust stats, recent vouches feed, completed deals feed, middleman status panels, active deal queues, and dispute boards.
 - **Vouch & Scam Panels**: Public vouch submission panel (`/deal vouch-panel setup`) and scam reporting panel (`/deal scam-report-panel setup`).
 - **Button Recovery**: `/deal recover-buttons` performs broad recovery, while `/deal recover` targets one deal and repairs the current staged UI without exposing payment, proof, payout, credentials, evidence, or notes.
+- **Edit Deal Safety**: `/deal edit <deal_id>` is available before active payment proof. `/deal force-edit <deal_id> <reason>` is admin/owner-only, uses actor-bound confirmation, atomic updates, proof invalidation when financial data changes, and manual review after Dana Masuk.
+- **One Active Control Message**: each active stage has one canonical control message. Previous-stage buttons are retired only after the replacement UI is ready; terminal corrections never recreate completion, archive, feed, or vouch events.
+- **Failure Recovery**: if the database update succeeds but Discord UI repair fails, the bot reports the committed state and directs staff to `/deal refresh` instead of repeating the mutation.
 - **Trust Profile**: Earn verified vouches from successful deals, increase Trust Score, and climb the Trust Rank ladder.
 - **Admin & Safety**: Review manual vouches, resolve disputes, and monitor active deals.
 
@@ -225,6 +228,18 @@ SQLite (`w2ebot.db`) with tables:
   - `DealNote`, `DealReminderLog` — Staff notes and reminder dispatch logs for deals
   - `dealArchives` — Archival storage for ended/canceled deals
   - `rateLimitEvents` — Track rate limits to prevent reputation review spam
+
+### Sensitive Runtime Data
+
+Runtime databases, environment files, logs, backups, proof uploads, payment images, dashboard build output, and local override files are ignored by git. Keep production tokens, payout destinations, payment instructions, proof URLs, credentials, and staff notes outside tracked source files.
+
+Before publishing changes, verify with:
+
+```bash
+git status --short
+git diff --check
+git check-ignore -v .env w2ebot.db bot.err.log
+```
 
 ---
 

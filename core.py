@@ -4,7 +4,8 @@ from google import genai
 import asyncio
 from discord import FFmpegPCMAudio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
 import random
 import sqlite3
 import gtts
@@ -15,6 +16,7 @@ import json
 import re
 import hmac
 import hashlib
+import unicodedata
 
 import math
 
@@ -246,6 +248,9 @@ def _init_db():
             paymentProofChannelId TEXT,
             paymentProofSubmittedById TEXT,
             paymentProofSubmittedAt TEXT,
+            paymentProofInvalidatedAt TEXT,
+            paymentProofInvalidatedById TEXT,
+            paymentProofInvalidationReason TEXT,
             paymentProofConfirmationMessageId TEXT,
             transferProofUrl TEXT,
             transferProofNotes TEXT,
@@ -288,6 +293,9 @@ def _init_db():
         "paymentProofChannelId": "TEXT",
         "paymentProofSubmittedById": "TEXT",
         "paymentProofSubmittedAt": "TEXT",
+        "paymentProofInvalidatedAt": "TEXT",
+        "paymentProofInvalidatedById": "TEXT",
+        "paymentProofInvalidationReason": "TEXT",
         "paymentProofConfirmationMessageId": "TEXT",
         "fundsReceivedStageMessageId": "TEXT",
         "buyerConfirmStageMessageId": "TEXT",
@@ -3432,7 +3440,9 @@ DEAL_COLUMNS = (
     "disputePreviousStatus", "statusBeforeDispute", "disputeResolvedById", "disputeResolvedAt",
     "disputeResolution", "paymentProofUrl",
     "paymentProofNotes", "paymentProofMessageId", "paymentProofChannelId",
-    "paymentProofSubmittedById", "paymentProofSubmittedAt", "paymentProofConfirmationMessageId", "transferProofUrl",
+    "paymentProofSubmittedById", "paymentProofSubmittedAt",
+    "paymentProofInvalidatedAt", "paymentProofInvalidatedById", "paymentProofInvalidationReason",
+    "paymentProofConfirmationMessageId", "transferProofUrl",
     "transferProofNotes", "transferProofMessageId", "transferProofChannelId",
     "transferProofSubmittedById", "transferProofSubmittedAt", "sellerPayoutPlatform",
     "sellerPayoutAccount", "sellerPayoutName", "sellerPayoutSubmittedById",
@@ -6226,86 +6236,365 @@ async def create_verified_deal_vouch(deal, reviewer_id, target_id, rating, revie
     return vouch, None
 
 
-async def update_deal_editable_fields(deal_row_id, actor_id, *, payment_penjual, payment_pembeli, nominal_item, fee_type, description, force=False):
-    nominal = parse_rupiah_amount(nominal_item)
-    if nominal is None:
-        return None, "invalid_nominal"
-    fee_type = str(fee_type or "").strip().capitalize()
-    if fee_type not in ("Inc", "Exc"):
-        return None, "invalid_fee"
+DEAL_EDIT_MAX_MONEY = 999_999_999_999_999
+DEAL_EDIT_PAYMENT_METHOD_MAX_LENGTH = 200
+DEAL_EDIT_DESCRIPTION_MAX_LENGTH = 1000
+DEAL_FORCE_EDIT_REASON_MAX_LENGTH = 300
+
+
+@dataclass
+class DealEditMutationResult:
+    code: str
+    deal: dict = None
+    committed: bool = False
+    changed_fields: tuple = ()
+    old_status: str = None
+    new_status: str = None
+    deal_log_written: bool = False
+
+
+def _parse_deal_timestamp_utc(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        if text.endswith(("Z", "z")):
+            text = f"{text[:-1]}+00:00"
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def deal_payment_proof_is_active(deal):
+    if not deal:
+        return False
+    has_proof = bool(
+        str(deal.get("paymentProofUrl") or "").strip()
+        or str(deal.get("paymentProofMessageId") or "").strip()
+        or str(deal.get("paymentProofSubmittedAt") or "").strip()
+    )
+    if not has_proof:
+        return False
+    invalidated_raw = str(deal.get("paymentProofInvalidatedAt") or "").strip()
+    if not invalidated_raw:
+        return True
+    submitted = _parse_deal_timestamp_utc(deal.get("paymentProofSubmittedAt"))
+    invalidated = _parse_deal_timestamp_utc(invalidated_raw)
+    if submitted is None or invalidated is None:
+        return False
+    return submitted > invalidated
+
+
+# Compatibility alias for older internal call sites.
+_deal_payment_proof_is_active = deal_payment_proof_is_active
+
+
+def _contains_disallowed_control_characters(value, *, allow_newline=False):
+    for char in value:
+        if allow_newline and char == "\n":
+            continue
+        if unicodedata.category(char).startswith("C"):
+            return True
+    return False
+
+
+def normalize_force_edit_reason(reason):
+    text = str(reason or "").strip()
+    if not text or len(text) > DEAL_FORCE_EDIT_REASON_MAX_LENGTH:
+        return None
+    if "\r" in text or "\n" in text or _contains_disallowed_control_characters(text):
+        return None
+    return " ".join(text.split())
+
+
+def _normalize_deal_edit_single_line(value, *, max_length):
+    text = str(value or "").strip()
+    if not text or len(text) > max_length:
+        return None
+    if "\r" in text or "\n" in text or _contains_disallowed_control_characters(text):
+        return None
+    return text
+
+
+def _normalize_deal_edit_description(value):
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text or len(text) > DEAL_EDIT_DESCRIPTION_MAX_LENGTH:
+        return None
+    if _contains_disallowed_control_characters(text, allow_newline=True):
+        return None
+    return text
+
+
+def _parse_deal_edit_nominal(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        amount = value
+    else:
+        text = str(value or "").strip()
+        text = re.sub(r"(?i)^rp\s*", "", text).strip()
+        if re.fullmatch(r"[0-9]+", text):
+            digits = text
+        elif re.fullmatch(r"[0-9]{1,3}(?:\.[0-9]{3})+", text):
+            digits = text.replace(".", "")
+        elif re.fullmatch(r"[0-9]{1,3}(?:,[0-9]{3})+", text):
+            digits = text.replace(",", "")
+        else:
+            return None
+        if len(digits) > 15:
+            return None
+        try:
+            amount = int(digits)
+        except (TypeError, ValueError, OverflowError):
+            return None
+    if amount <= 0 or amount > DEAL_EDIT_MAX_MONEY:
+        return None
+    return amount
+
+
+def normalize_deal_edit_fields(payment_penjual, payment_pembeli, nominal_item, fee_type, description):
+    payment_penjual = _normalize_deal_edit_single_line(
+        payment_penjual,
+        max_length=DEAL_EDIT_PAYMENT_METHOD_MAX_LENGTH,
+    )
+    payment_pembeli = _normalize_deal_edit_single_line(
+        payment_pembeli,
+        max_length=DEAL_EDIT_PAYMENT_METHOD_MAX_LENGTH,
+    )
+    nominal = _parse_deal_edit_nominal(nominal_item)
+    normalized_fee_type = str(fee_type or "").strip().capitalize()
+    normalized_description = _normalize_deal_edit_description(description)
+    if payment_penjual is None or payment_pembeli is None or nominal is None or normalized_description is None:
+        return None, "invalid_input"
+    if normalized_fee_type not in ("Inc", "Exc"):
+        return None, "invalid_input"
     mm_fee = calculate_middleman_fee(nominal)
-    if fee_type == "Exc":
+    if normalized_fee_type == "Exc":
         buyer_pays = nominal + mm_fee
         seller_receives = nominal
     else:
         buyer_pays = nominal
         seller_receives = nominal - mm_fee
-    if seller_receives < 0:
-        return None, "invalid_nominal"
+    if seller_receives < 0 or buyer_pays > DEAL_EDIT_MAX_MONEY:
+        return None, "invalid_input"
+    return {
+        "paymentPenjual": payment_penjual,
+        "paymentPembeli": payment_pembeli,
+        "nominalItem": nominal,
+        "feeType": normalized_fee_type,
+        "mmFee": mm_fee,
+        "buyerPays": buyer_pays,
+        "sellerReceives": seller_receives,
+        "description": normalized_description,
+    }, None
 
+
+def _canonical_existing_edit_value(field_name, value):
+    if field_name in ("nominalItem", "mmFee", "buyerPays", "sellerReceives"):
+        try:
+            return int(value) if value is not None else None
+        except (TypeError, ValueError, OverflowError):
+            return value
+    if field_name == "feeType":
+        return str(value or "").strip().capitalize()
+    if field_name in ("paymentPenjual", "paymentPembeli"):
+        return str(value or "").strip()
+    if field_name == "description":
+        return str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    return value
+
+
+async def update_deal_editable_fields(
+    deal_row_id,
+    actor_id,
+    *,
+    payment_penjual,
+    payment_pembeli,
+    nominal_item,
+    fee_type,
+    description,
+    force=False,
+    force_reason=None,
+):
+    normalized, validation_error = normalize_deal_edit_fields(
+        payment_penjual,
+        payment_pembeli,
+        nominal_item,
+        fee_type,
+        description,
+    )
+    if validation_error:
+        return DealEditMutationResult(code=validation_error)
+    safe_force_reason = normalize_force_edit_reason(force_reason) if force else None
+    if force and safe_force_reason is None:
+        return DealEditMutationResult(code="invalid_input")
     now = _deal_now()
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("BEGIN IMMEDIATE")
-        async with db.execute(f"SELECT {DEAL_SELECT} FROM Deal WHERE id=?", (int(deal_row_id),)) as cursor:
-            row = await cursor.fetchone()
-        deal = _deal_row_to_dict(row)
-        if not deal:
-            await db.rollback()
-            return None, "not_found"
-        if not force and deal["status"] not in (DEAL_STATUS_PENDING_FORM, DEAL_STATUS_WAITING_FUNDS):
-            await db.rollback()
-            return deal, "invalid_status"
-        old_value = json.dumps({
-            "paymentPenjual": deal.get("paymentPenjual"),
-            "paymentPembeli": deal.get("paymentPembeli"),
-            "nominalItem": deal.get("nominalItem"),
-            "feeType": deal.get("feeType"),
-            "mmFee": deal.get("mmFee"),
-            "buyerPays": deal.get("buyerPays"),
-            "sellerReceives": deal.get("sellerReceives"),
-            "description": deal.get("description"),
-        }, ensure_ascii=False)
-        new_value_obj = {
-            "paymentPenjual": str(payment_penjual).strip(),
-            "paymentPembeli": str(payment_pembeli).strip(),
-            "nominalItem": nominal,
-            "feeType": fee_type,
-            "mmFee": mm_fee,
-            "buyerPays": buyer_pays,
-            "sellerReceives": seller_receives,
-            "description": str(description).strip(),
-        }
-        await db.execute(
-            """
-            UPDATE Deal
-            SET paymentPenjual=?, paymentPembeli=?, nominalItem=?, feeType=?, mmFee=?,
-                buyerPays=?, sellerReceives=?, description=?, updatedAt=?
-            WHERE id=?
-            """,
-            (
-                new_value_obj["paymentPenjual"],
-                new_value_obj["paymentPembeli"],
-                nominal,
-                fee_type,
-                mm_fee,
-                buyer_pays,
-                seller_receives,
-                new_value_obj["description"],
-                now,
-                int(deal_row_id),
-            ),
+    deal = None
+    changed_fields = ()
+    action = "deal_force_edit" if force else "deal_edit"
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(f"SELECT {DEAL_SELECT} FROM Deal WHERE id=?", (int(deal_row_id),)) as cursor:
+                row = await cursor.fetchone()
+            deal = _deal_row_to_dict(row)
+            if not deal:
+                await db.rollback()
+                return DealEditMutationResult(code="not_found")
+            active_payment_proof = deal_payment_proof_is_active(deal)
+            if not force and (deal["status"] != DEAL_STATUS_WAITING_FUNDS or active_payment_proof):
+                await db.rollback()
+                return DealEditMutationResult(code="invalid_status", deal=deal, old_status=deal.get("status"), new_status=deal.get("status"))
+
+            changed_fields = tuple(
+                key for key, value in normalized.items()
+                if _canonical_existing_edit_value(key, deal.get(key)) != value
+            )
+            if not changed_fields:
+                await db.rollback()
+                return DealEditMutationResult(
+                    code="no_change",
+                    deal=deal,
+                    old_status=deal.get("status"),
+                    new_status=deal.get("status"),
+                )
+
+            financial_fields = {
+                "paymentPenjual", "paymentPembeli", "nominalItem", "feeType",
+                "mmFee", "buyerPays", "sellerReceives",
+            }
+            financial_changed = any(field in financial_fields for field in changed_fields)
+            fields = dict(normalized)
+            fields["updatedAt"] = now
+            log_reason = "force edit fields updated" if force else "deal details edited"
+
+            if force and financial_changed and deal["status"] == DEAL_STATUS_WAITING_FUNDS and active_payment_proof:
+                fields.update({
+                    "paymentProofInvalidatedAt": now,
+                    "paymentProofInvalidatedById": str(actor_id),
+                    "paymentProofInvalidationReason": safe_force_reason,
+                })
+                action = "deal_force_edit_proof_invalidated"
+                log_reason = "force financial edit invalidated active payment proof"
+            elif force and financial_changed and deal["status"] == DEAL_STATUS_DISPUTED:
+                previous_status = infer_dispute_restore_status(deal)
+                if previous_status == DEAL_STATUS_WAITING_FUNDS and active_payment_proof:
+                    fields.update({
+                        "paymentProofInvalidatedAt": now,
+                        "paymentProofInvalidatedById": str(actor_id),
+                        "paymentProofInvalidationReason": safe_force_reason,
+                    })
+                action = "deal_force_edit_disputed_record"
+                log_reason = "force financial edit updated disputed deal"
+            elif force and financial_changed and deal["status"] not in (
+                DEAL_STATUS_WAITING_FUNDS,
+                DEAL_STATUS_COMPLETED,
+                DEAL_STATUS_CANCELLED,
+                "Voided/Duplicate",
+                "Expired",
+            ):
+                fields.update({
+                    "status": DEAL_STATUS_DISPUTED,
+                    "disputedById": str(actor_id),
+                    "disputedAt": now,
+                    "disputeReason": safe_force_reason,
+                    "disputeProofUrl": None,
+                    "disputePreviousStatus": deal["status"],
+                    "statusBeforeDispute": deal["status"],
+                    "isVouchEligible": 0,
+                })
+                action = "deal_force_edit_disputed"
+                log_reason = "force financial edit moved deal to manual review"
+
+            set_clause = ", ".join(f"{key}=?" for key in fields.keys())
+            values = [str(v) if key.endswith("Id") and v is not None else v for key, v in fields.items()]
+            cursor = await db.execute(
+                f"UPDATE Deal SET {set_clause} WHERE id=? AND status=?",
+                (*values, int(deal_row_id), deal["status"]),
+            )
+            if cursor.rowcount != 1:
+                await db.rollback()
+                return DealEditMutationResult(
+                    code="stale",
+                    deal=deal,
+                    changed_fields=changed_fields,
+                    old_status=deal.get("status"),
+                    new_status=deal.get("status"),
+                )
+            await db.execute(
+                """
+                INSERT INTO DealLog (guildId, dealId, action, actorId, oldValue, newValue, reason, createdAt)
+                VALUES (?, ?, ?, ?, NULL, ?, ?, ?)
+                """,
+                (
+                    deal["guildId"],
+                    deal["dealId"],
+                    action,
+                    str(actor_id),
+                    json.dumps({"changedFields": list(changed_fields)}, ensure_ascii=False),
+                    log_reason,
+                    now,
+                ),
+            )
+            async with db.execute(f"SELECT {DEAL_SELECT} FROM Deal WHERE id=?", (int(deal_row_id),)) as cursor:
+                updated_row = await cursor.fetchone()
+            updated = _deal_row_to_dict(updated_row)
+            await db.commit()
+    except Exception as exc:
+        logging.warning(
+            "Deal edit database operation failed (row_id=%s, force=%s, exception=%s)",
+            deal_row_id,
+            bool(force),
+            type(exc).__name__,
         )
-        new_value = json.dumps(new_value_obj, ensure_ascii=False)
-        await db.execute(
-            """
-            INSERT INTO DealLog (guildId, dealId, action, actorId, oldValue, newValue, reason, createdAt)
-            VALUES (?, ?, ?, ?, ?, ?, NULL, ?)
-            """,
-            (deal["guildId"], deal["dealId"], "deal_force_edit" if force else "deal_edit", str(actor_id), old_value, new_value, now),
+        return DealEditMutationResult(
+            code="database_failure",
+            deal=deal,
+            changed_fields=changed_fields,
+            old_status=(deal or {}).get("status"),
+            new_status=(deal or {}).get("status"),
         )
-        await db.commit()
-    await write_audit("deal_force_edit" if force else "deal_edit", deal_row_id, "editable fields updated", source="deal")
-    return await get_deal_by_id(deal_row_id), None
+
+    postprocess_failed = False
+    try:
+        await write_audit(
+            action,
+            deal_row_id,
+            f"changed_fields={','.join(changed_fields)}",
+            source="deal",
+        )
+    except Exception as exc:
+        logging.warning(
+            "Deal edit audit failed after commit (guild_id=%s, row_id=%s, action=%s, exception=%s)",
+            deal["guildId"],
+            deal_row_id,
+            action,
+            type(exc).__name__,
+        )
+        postprocess_failed = True
+    try:
+        await refresh_staff_operation_panels(deal["guildId"], {"active_deals", "middleman_status", "dispute_board"})
+    except Exception as exc:
+        logging.warning(
+            "Deal edit panel refresh failed after commit (guild_id=%s, row_id=%s, action=%s, exception=%s)",
+            deal["guildId"],
+            deal_row_id,
+            action,
+            type(exc).__name__,
+        )
+        postprocess_failed = True
+    return DealEditMutationResult(
+        code="committed_postprocess_failed" if postprocess_failed else "changed",
+        deal=updated,
+        committed=True,
+        changed_fields=changed_fields,
+        old_status=deal.get("status"),
+        new_status=(updated or {}).get("status"),
+        deal_log_written=True,
+    )
 
 
 async def cancel_deal(deal_row_id, actor_id, reason):
@@ -6874,11 +7163,22 @@ async def update_deal_payout_atomic(
     return await get_deal_by_id(deal_row_id), None
 
 
-async def update_deal_payment_proof_atomic(deal_row_id, actor_id, fields, action, reason=None):
+async def update_deal_payment_proof_atomic(
+    deal_row_id,
+    actor_id,
+    fields,
+    action,
+    reason=None,
+    *,
+    expected_invalidation_at=None,
+):
     fields = dict(fields or {})
     if not fields:
         return await get_deal_by_id(deal_row_id), None
     now = _deal_now()
+    fields["paymentProofInvalidatedAt"] = None
+    fields["paymentProofInvalidatedById"] = None
+    fields["paymentProofInvalidationReason"] = None
     fields["updatedAt"] = now
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("BEGIN IMMEDIATE")
@@ -6891,6 +7191,11 @@ async def update_deal_payment_proof_atomic(deal_row_id, actor_id, fields, action
         if deal.get("status") != DEAL_STATUS_WAITING_FUNDS:
             await db.rollback()
             return deal, "invalid_status"
+        current_invalidation = str(deal.get("paymentProofInvalidatedAt") or "").strip() or None
+        expected_invalidation = str(expected_invalidation_at or "").strip() or None
+        if current_invalidation != expected_invalidation:
+            await db.rollback()
+            return deal, "stale_proof_context"
         set_clause = ", ".join(f"{key}=?" for key in fields.keys())
         values = [str(v) if key.endswith("Id") and v is not None else v for key, v in fields.items()]
         cursor = await db.execute(f"UPDATE Deal SET {set_clause} WHERE id=? AND status=?", (*values, int(deal_row_id), DEAL_STATUS_WAITING_FUNDS))

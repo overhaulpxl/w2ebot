@@ -14,6 +14,7 @@ w2ebot.db
 *.sqlite
 *.sqlite3
 *.sqlite-*
+*.sqlite-journal
 config.json
 
 # Runtime logs and backups
@@ -30,6 +31,9 @@ payment-images/
 *.pid
 *.bak
 *.backup
+coverage.xml
+*.coverage
+docker-compose.override.yml
 
 # Python cache/build artifacts
 __pycache__/
@@ -71,6 +75,7 @@ fonts/
 *.swp
 *.swo
 *.tmp
+*.local
 
 # OS files
 .DS_Store

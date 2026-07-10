@@ -6,13 +6,20 @@ from datetime import datetime
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from core import *
-from core import _deal_row_to_dict, _scam_report_row_to_dict
+from core import (
+    _deal_row_to_dict,
+    _scam_report_row_to_dict,
+    deal_payment_proof_is_active,
+    normalize_force_edit_reason,
+)
 import logging
 import asyncio
 import math
 import re
 import time
 import uuid
+import hashlib
+import secrets
 
 
 _STARTUP_RECOVERY_DONE = False
@@ -634,6 +641,9 @@ ALLOWED_PROOF_CONTENT_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/we
 ALLOWED_PAYMENT_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 ALLOWED_PAYMENT_IMAGE_CONTENT_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/webp"}
 PAYMENT_IMAGE_MAX_BYTES = 8 * 1024 * 1024
+FORCE_EDIT_CONFIRMATIONS = OrderedDict()
+FORCE_EDIT_CONFIRMATION_TTL_SECONDS = 180
+FORCE_EDIT_CONFIRMATION_CACHE_MAX = 256
 PAYMENT_CONFIG_PERMISSION_MESSAGE = "Kamu tidak punya permission untuk mengatur instruksi pembayaran."
 PAYMENT_INSTRUCTION_DESCRIPTION_LIMIT = 3900
 PAYMENT_INSTRUCTION_TRUNCATED_SUFFIX = "\n\n⚠️ Instruksi terlalu panjang, sebagian teks dipotong. Staff dapat mempersingkat payment profile."
@@ -834,7 +844,7 @@ def _has_payment_instruction_recovery_owner(deal):
 
 
 def _has_payment_proof(deal):
-    return bool(deal.get("paymentProofMessageId") or deal.get("paymentProofSubmittedAt") or deal.get("paymentProofUrl"))
+    return deal_payment_proof_is_active(deal)
 
 
 def _has_transfer_proof(deal):
@@ -1217,10 +1227,11 @@ async def handle_deal_message(client, message: discord.Message) -> bool:
             fields,
             "deal_payment_proof_submitted",
             "payment proof submitted",
+            expected_invalidation_at=deal.get("paymentProofInvalidatedAt"),
         )
         
         if error:
-            if error == "invalid_status":
+            if error in ("invalid_status", "stale_proof_context"):
                 await message.reply("Gagal menyimpan bukti: Status deal sudah berubah.")
             else:
                 await message.reply("Gagal menyimpan bukti. Coba lagi nanti.")
@@ -3432,7 +3443,7 @@ async def _can_manage_deal(interaction: discord.Interaction, deal=None, config=N
 
 async def _can_admin_override(interaction: discord.Interaction):
     config = await get_deal_config(interaction.guild.id)
-    return member_can_admin_override(interaction.user, config)
+    return bool(member_can_admin_override(interaction.user, config) or await _is_bot_owner(interaction.user))
 
 
 async def _can_configure_audit_log(interaction: discord.Interaction):
@@ -3804,6 +3815,7 @@ async def _send_or_update_stage_message(channel, guild, deal, role, *, embed, vi
 
 async def _retire_stage_controls(channel, deal, roles, *, active_role=None):
     retired = 0
+    failed = 0
     for role in roles:
         if role == active_role:
             continue
@@ -3814,8 +3826,9 @@ async def _retire_stage_controls(channel, deal, roles, *, active_role=None):
             await message.edit(view=None, allowed_mentions=discord.AllowedMentions.none())
             retired += 1
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            failed += 1
             continue
-    return retired
+    return retired, failed
 
 
 async def _stage_embed_for_role(role, deal, guild, *, attachment=None, target_channel=None, include_private_payout=False):
@@ -3916,15 +3929,9 @@ async def _repair_payment_proof_action_message(guild, deal, *, attachment=None, 
     channel = await _original_deal_channel(guild, deal)
     if not channel or not _channel_is_private(guild, channel):
         return False, "public_or_missing_channel"
-    await _retire_stage_controls(
-        channel,
-        deal,
-        (DEAL_MSG_ROLE_SUMMARY, DEAL_MSG_ROLE_FUNDS_RECEIVED, DEAL_MSG_ROLE_PAYOUT),
-        active_role=DEAL_MSG_ROLE_PAYMENT_PROOF,
-    )
     embed = await _stage_embed_for_role(DEAL_MSG_ROLE_PAYMENT_PROOF, deal, guild, attachment=attachment)
     view = _build_stage_view(deal, DEAL_MSG_ROLE_PAYMENT_PROOF)
-    return await _send_or_update_stage_message(
+    updated, status = await _send_or_update_stage_message(
         channel,
         guild,
         deal,
@@ -3933,6 +3940,15 @@ async def _repair_payment_proof_action_message(guild, deal, *, attachment=None, 
         view=view,
         recreate=recreate,
     )
+    if not updated or status in ("created_untracked", "adopted_untracked"):
+        return False, status
+    _retired, failed = await _retire_stage_controls(
+        channel,
+        deal,
+        (DEAL_MSG_ROLE_SUMMARY, DEAL_MSG_ROLE_FUNDS_RECEIVED, DEAL_MSG_ROLE_PAYOUT),
+        active_role=DEAL_MSG_ROLE_PAYMENT_PROOF,
+    )
+    return (False, "retire_failed") if failed else (True, status)
 
 
 async def _clear_payment_proof_action_view(guild, deal):
@@ -3971,17 +3987,54 @@ async def _repair_terminal_stage_messages(channel, guild, deal, *, recreate=True
     return False, "missing"
 
 
+async def _refresh_informational_summary(channel, guild, deal):
+    if not deal.get("summaryMessageId"):
+        return True, "not_tracked"
+    embed = await _stage_embed_for_role(DEAL_MSG_ROLE_SUMMARY, deal, guild)
+    if not embed:
+        return False, "failed"
+    updated, status = await _send_or_update_stage_message(
+        channel,
+        guild,
+        deal,
+        DEAL_MSG_ROLE_SUMMARY,
+        embed=embed,
+        view=None,
+        recreate=False,
+    )
+    if not updated and status != "missing":
+        return False, status
+    return True, status
+
+
 async def _refresh_current_deal_view(guild, deal, *, recreate=True):
     channel = await _original_deal_channel(guild, deal)
     if not channel or not _channel_is_private(guild, channel):
         return False, "public_or_missing_channel"
     plan = _build_stage_render_plan(deal)
-    await _retire_stage_controls(channel, deal, plan.retire_roles, active_role=plan.active_role)
 
     if plan.terminal_roles:
-        return await _repair_terminal_stage_messages(channel, guild, deal, recreate=recreate)
+        _retired, retire_failed = await _retire_stage_controls(
+            channel,
+            deal,
+            plan.retire_roles,
+            active_role=None,
+        )
+        summary_ok, _summary_status = await _refresh_informational_summary(channel, guild, deal)
+        repaired, status = await _repair_terminal_stage_messages(channel, guild, deal, recreate=recreate)
+        if retire_failed or not summary_ok:
+            return False, "retire_failed"
+        if not recreate and status == "missing":
+            return True, "terminal_retired"
+        return repaired, status
     if not plan.active_role:
-        return True, "retired"
+        _retired, retire_failed = await _retire_stage_controls(
+            channel,
+            deal,
+            plan.retire_roles,
+            active_role=None,
+        )
+        return (False, "retire_failed") if retire_failed else (True, "retired")
 
     if get_deal_operational_stage(deal) == DEAL_STAGE_WAITING_SELLER_PAYOUT:
         buyer_confirm_embed = await _stage_embed_for_role(DEAL_MSG_ROLE_BUYER_CONFIRM, deal, guild)
@@ -4011,7 +4064,7 @@ async def _refresh_current_deal_view(guild, deal, *, recreate=True):
     view = _build_stage_view(deal, plan.active_role)
     if not embed:
         return False, "failed"
-    return await _send_or_update_stage_message(
+    updated, status = await _send_or_update_stage_message(
         channel,
         guild,
         deal,
@@ -4020,6 +4073,19 @@ async def _refresh_current_deal_view(guild, deal, *, recreate=True):
         view=view,
         recreate=recreate and plan.recreate_missing,
     )
+    if not updated or status in ("created_untracked", "adopted_untracked"):
+        return False, status
+    if plan.active_role != DEAL_MSG_ROLE_SUMMARY:
+        summary_ok, _summary_status = await _refresh_informational_summary(channel, guild, deal)
+        if not summary_ok:
+            return False, "summary_update_failed"
+    _retired, retire_failed = await _retire_stage_controls(
+        channel,
+        deal,
+        plan.retire_roles,
+        active_role=plan.active_role,
+    )
+    return (False, "retire_failed") if retire_failed else (True, status)
 
 
 async def _send_deal_action_result(
@@ -5518,6 +5584,287 @@ class PaymentProfileSetupModal(discord.ui.Modal, title="Payment Profile Setup"):
         await interaction.followup.send("Profile payment kamu berhasil disimpan.", ephemeral=True)
 
 
+def _force_edit_reason_hash(reason):
+    return hashlib.sha256(str(reason or "").encode("utf-8")).hexdigest()
+
+
+def _force_edit_confirmation_token(deal_row_id, guild_id, actor_id, reason):
+    safe_reason = normalize_force_edit_reason(reason)
+    if safe_reason is None:
+        return None
+    _prune_force_edit_confirmations()
+    token = secrets.token_urlsafe(32)
+    FORCE_EDIT_CONFIRMATIONS[token] = {
+        "deal_row_id": int(deal_row_id),
+        "guild_id": int(guild_id),
+        "actor_id": int(actor_id),
+        "reason_hash": _force_edit_reason_hash(safe_reason),
+        "state": "pending_confirmation",
+        "expires": time.monotonic() + FORCE_EDIT_CONFIRMATION_TTL_SECONDS,
+    }
+    FORCE_EDIT_CONFIRMATIONS.move_to_end(token)
+    while len(FORCE_EDIT_CONFIRMATIONS) > FORCE_EDIT_CONFIRMATION_CACHE_MAX:
+        FORCE_EDIT_CONFIRMATIONS.popitem(last=False)
+    return token
+
+
+def _prune_force_edit_confirmations():
+    now = time.monotonic()
+    expired = [token for token, data in FORCE_EDIT_CONFIRMATIONS.items() if data.get("expires", 0) <= now]
+    for token in expired:
+        FORCE_EDIT_CONFIRMATIONS.pop(token, None)
+
+
+def _invalidate_force_edit_confirmation(token):
+    FORCE_EDIT_CONFIRMATIONS.pop(str(token or ""), None)
+
+
+def _open_force_edit_confirmation(token, deal_row_id, guild_id, actor_id, reason):
+    _prune_force_edit_confirmations()
+    token = str(token or "")
+    data = FORCE_EDIT_CONFIRMATIONS.get(token)
+    if not data:
+        return False
+    valid = (
+        data.get("state") == "pending_confirmation"
+        and data.get("deal_row_id") == int(deal_row_id)
+        and data.get("guild_id") == int(guild_id)
+        and data.get("actor_id") == int(actor_id)
+        and data.get("reason_hash") == _force_edit_reason_hash(reason)
+    )
+    if not valid:
+        return False
+    data["state"] = "modal_opened"
+    FORCE_EDIT_CONFIRMATIONS.move_to_end(token)
+    return True
+
+
+def _consume_force_edit_confirmation(token, deal_row_id, guild_id, actor_id, reason):
+    _prune_force_edit_confirmations()
+    data = FORCE_EDIT_CONFIRMATIONS.pop(str(token or ""), None)
+    if not data:
+        return False
+    return (
+        data.get("state") == "modal_opened"
+        and data.get("deal_row_id") == int(deal_row_id)
+        and data.get("guild_id") == int(guild_id)
+        and data.get("actor_id") == int(actor_id)
+        and data.get("reason_hash") == _force_edit_reason_hash(reason)
+    )
+
+
+def _normal_edit_stage_allowed(deal):
+    return get_deal_operational_stage(deal) in (
+        DEAL_STAGE_WAITING_PAYMENT_INSTRUCTION,
+        DEAL_STAGE_WAITING_PAYMENT_PROOF,
+    ) and not _has_payment_proof(deal)
+
+
+async def _validate_edit_channel_context(interaction, deal, *, force):
+    guild = getattr(interaction, "guild", None)
+    if not guild or str(deal.get("guildId")) != str(guild.id):
+        return False, "Data deal tidak ditemukan."
+    channel = await _original_deal_channel(guild, deal)
+    channel_guild = getattr(channel, "guild", None)
+    if (
+        not channel
+        or not channel_guild
+        or str(channel_guild.id) != str(guild.id)
+        or str(getattr(channel, "id", "")) != str(deal.get("ticketChannelId"))
+        or not _channel_is_private(guild, channel)
+    ):
+        return False, "Deal hanya bisa diedit jika channel ticket/private masih valid."
+    if not force:
+        invocation_channel_id = getattr(interaction, "channel_id", None) or getattr(getattr(interaction, "channel", None), "id", None)
+        if str(invocation_channel_id or "") != str(deal.get("ticketChannelId")):
+            return False, "Command ini hanya bisa digunakan di channel deal yang sesuai."
+    return True, None
+
+
+async def _refresh_edit_deal_ui(guild, deal, *, interaction=None, invocation=None):
+    lock_key = None
+    try:
+        if invocation and interaction:
+            _deal_invocation_log(invocation, interaction, "ui_lock_requested", deal=deal)
+        lock_key = _acquire_action_lock("ui", guild.id, deal["id"], None, ttl=20)
+        if not lock_key:
+            return False, "locked"
+        if invocation and interaction:
+            _deal_invocation_log(invocation, interaction, "ui_lock_acquired", deal=deal)
+        latest = await get_deal_by_id(deal["id"]) or deal
+        recreate = get_deal_operational_stage(latest) not in (DEAL_STAGE_COMPLETED, DEAL_STAGE_CANCELLED)
+        try:
+            result = await asyncio.wait_for(
+                _refresh_current_deal_view(guild, latest, recreate=recreate),
+                timeout=DEAL_UI_HANDLER_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            result = (False, "timeout")
+        if invocation and interaction:
+            _deal_invocation_log(invocation, interaction, "ui_refresh_completed", deal=latest, result_code=result[1])
+        return result
+    except Exception as exc:
+        logging.exception(
+            "Edit deal UI refresh failed (guild_id=%s, row_id=%s, exception=%s)",
+            getattr(guild, "id", None),
+            (deal or {}).get("id"),
+            type(exc).__name__,
+        )
+        if invocation and interaction:
+            _deal_invocation_log(invocation, interaction, "callback_exception", deal=deal, exception=exc)
+        return False, "failed"
+    finally:
+        _release_action_lock(lock_key)
+        if invocation and interaction:
+            _deal_invocation_log(invocation, interaction, "ui_lock_released", deal=deal)
+
+
+async def process_deal_edit_submit(
+    interaction,
+    deal_row_id,
+    *,
+    payment_penjual,
+    payment_pembeli,
+    nominal_item,
+    fee_type,
+    description,
+    force=False,
+    force_reason=None,
+    force_actor_id=None,
+    force_token=None,
+    invocation=None,
+):
+    actor = interaction.user
+    guild = interaction.guild
+    if not guild:
+        return _result("validation_failed", "Command ini hanya bisa dipakai di server.", retryable=True)
+    if force:
+        if force_actor_id is None or int(force_actor_id) != int(actor.id):
+            return _result("unauthorized", "Konfirmasi force-edit tidak valid.")
+        force_reason = normalize_force_edit_reason(force_reason)
+        if force_reason is None:
+            _invalidate_force_edit_confirmation(force_token)
+            return _result("validation_failed", "Reason force-edit tidak valid.", retryable=True)
+        if not _consume_force_edit_confirmation(force_token, deal_row_id, guild.id, actor.id, force_reason):
+            return _result("validation_failed", "Konfirmasi force-edit sudah kadaluarsa. Jalankan command force-edit lagi.", retryable=True)
+    if invocation:
+        _deal_invocation_log(invocation, interaction, "deal_refetch_started", deal_row_id=deal_row_id)
+    deal = await get_deal_by_id(deal_row_id)
+    if not deal or str(deal.get("guildId")) != str(guild.id):
+        return _result("validation_failed", "Data deal tidak ditemukan.", retryable=True)
+    if invocation:
+        _deal_invocation_log(invocation, interaction, "deal_refetch_completed", deal=deal, result_code="found")
+    channel_ok, channel_error = await _validate_edit_channel_context(interaction, deal, force=force)
+    if not channel_ok:
+        return _result("validation_failed", channel_error, deal=deal)
+    if force:
+        if not await _can_admin_override(interaction):
+            return _result("unauthorized", "Hanya admin atau owner role yang bisa force-edit deal.", deal=deal)
+    else:
+        if not await _can_manage_deal(interaction, deal=deal):
+            return _result("unauthorized", "Kamu tidak punya permission untuk mengedit deal ini.", deal=deal)
+        if not _normal_edit_stage_allowed(deal):
+            return _result("invalid_status", "Deal hanya bisa diedit sebelum bukti pembayaran buyer dikirim.", deal=deal)
+
+    lock_key = None
+    try:
+        if invocation:
+            _deal_invocation_log(invocation, interaction, "transition_lock_requested", deal=deal)
+        lock_key = _acquire_action_lock("transition", guild.id, deal["id"], actor.id)
+        if not lock_key:
+            await _send_lock_collision_audit(interaction, "transition", deal["id"])
+            return _result("lock_held", "Aksi ini sedang diproses. Coba lagi beberapa saat.", deal=deal)
+        if invocation:
+            _deal_invocation_log(invocation, interaction, "transition_lock_acquired", deal=deal)
+        latest = await get_deal_by_id(deal["id"])
+        if not latest:
+            return _result("validation_failed", "Data deal tidak ditemukan.", retryable=True)
+        if str(latest.get("guildId")) != str(guild.id):
+            return _result("validation_failed", "Data deal tidak ditemukan.", retryable=True)
+        channel_ok, channel_error = await _validate_edit_channel_context(interaction, latest, force=force)
+        if not channel_ok:
+            return _result("validation_failed", channel_error, deal=latest)
+        if force:
+            if not await _can_admin_override(interaction):
+                return _result("unauthorized", "Hanya admin atau owner role yang bisa force-edit deal.", deal=latest)
+        else:
+            if not await _can_manage_deal(interaction, deal=latest):
+                return _result("unauthorized", "Kamu tidak punya permission untuk mengedit deal ini.", deal=latest)
+            if not _normal_edit_stage_allowed(latest):
+                return _result("invalid_status", "Deal hanya bisa diedit sebelum bukti pembayaran buyer dikirim.", deal=latest)
+        if invocation:
+            _deal_invocation_log(invocation, interaction, "database_update_started", deal=latest)
+        mutation = await update_deal_editable_fields(
+            latest["id"],
+            actor.id,
+            payment_penjual=payment_penjual,
+            payment_pembeli=payment_pembeli,
+            nominal_item=nominal_item,
+            fee_type=fee_type,
+            description=description,
+            force=force,
+            force_reason=force_reason,
+        )
+        if invocation:
+            _deal_invocation_log(
+                invocation,
+                interaction,
+                "database_update_completed",
+                deal=mutation.deal or latest,
+                result_code=mutation.code,
+            )
+        if mutation.code == "invalid_status":
+            return _result("invalid_status", "Deal hanya bisa diedit sebelum bukti pembayaran buyer dikirim.", deal=mutation.deal or latest)
+        if mutation.code == "invalid_input":
+            return _result("validation_failed", "Data edit belum valid. Periksa payment method, nominal, fee, dan deskripsi.", deal=latest, retryable=True)
+        if mutation.code == "no_change":
+            return _result("already_processed", "Tidak ada perubahan pada data deal.", deal=mutation.deal or latest)
+        if mutation.code == "database_failure":
+            return _result(
+                "failed_before_state_change",
+                "Perubahan deal belum berhasil disimpan. Tampilan deal tidak diubah.",
+                deal=mutation.deal or latest,
+                retryable=True,
+            )
+        if not mutation.committed:
+            return _result("already_processed", "Aksi ini sudah diproses atau status deal sudah berubah.", deal=mutation.deal or latest)
+        updated = mutation.deal
+        _release_action_lock(lock_key)
+        lock_key = None
+        if invocation:
+            _deal_invocation_log(invocation, interaction, "transition_lock_released", deal=updated)
+        ui_updated, _ui_status = await _refresh_edit_deal_ui(guild, updated, interaction=interaction, invocation=invocation)
+        if not ui_updated:
+            return _result(
+                "state_changed_ui_failed",
+                "Data deal berhasil diperbarui, tetapi tampilannya gagal diperbarui. Jalankan `/deal refresh`.",
+                ok=True,
+                deal=updated,
+                state_changed=True,
+                old_status=mutation.old_status,
+                new_status=mutation.new_status,
+                ui_updated=False,
+                retryable=False,
+                audit_written=mutation.deal_log_written,
+            )
+        message = "Force edit berhasil disimpan." if force else "Deal berhasil diedit dan fee sudah dihitung ulang."
+        return _result(
+            "success",
+            message,
+            ok=True,
+            deal=updated,
+            state_changed=True,
+            old_status=mutation.old_status,
+            new_status=mutation.new_status,
+            ui_updated=True,
+            audit_written=mutation.deal_log_written,
+        )
+    finally:
+        _release_action_lock(lock_key)
+        if invocation and lock_key:
+            _deal_invocation_log(invocation, interaction, "transition_lock_released", deal=deal)
+
+
 class EditDealModal(discord.ui.Modal, title="Edit Deal"):
     payment_penjual = discord.ui.TextInput(label="Payment Penjual", max_length=200)
     payment_pembeli = discord.ui.TextInput(label="Payment Pembeli", max_length=200)
@@ -5525,10 +5872,13 @@ class EditDealModal(discord.ui.Modal, title="Edit Deal"):
     fee_type = discord.ui.TextInput(label="Fee: Inc / Exc", max_length=10)
     description = discord.ui.TextInput(label="Deskripsi Item", style=discord.TextStyle.paragraph, max_length=1000)
 
-    def __init__(self, deal, force=False):
+    def __init__(self, deal, force=False, *, force_reason=None, force_actor_id=None, force_token=None):
         super().__init__()
         self.deal_row_id = int(deal["id"])
-        self.force = force
+        self.force = bool(force)
+        self.force_reason = str(force_reason or "").strip()
+        self.force_actor_id = int(force_actor_id) if force_actor_id is not None else None
+        self.force_token = str(force_token or "").strip() or None
         self.payment_penjual.default = deal.get("paymentPenjual") or ""
         self.payment_pembeli.default = deal.get("paymentPembeli") or ""
         self.nominal_item.default = str(deal.get("nominalItem") or "")
@@ -5536,44 +5886,86 @@ class EditDealModal(discord.ui.Modal, title="Edit Deal"):
         self.description.default = deal.get("description") or ""
 
     async def on_submit(self, interaction: discord.Interaction):
-        deal = await get_deal_by_id(self.deal_row_id)
-        if not deal:
-            await _safe_respond(interaction, "Data deal tidak ditemukan.", ephemeral=True)
-            return
-        if self.force:
-            if not await _can_admin_override(interaction):
-                await _safe_respond(interaction, "Hanya admin atau owner role yang bisa force-edit deal.", ephemeral=True)
-                return
-        elif not await _can_manage_deal(interaction, deal=deal):
-            await _safe_respond(interaction,
-                "Kamu tidak punya permission untuk mengedit deal ini.",
+        invocation = _new_deal_invocation(
+            interaction,
+            "force edit modal submit" if self.force else "edit deal modal submit",
+            "force_edit_modal_submit" if self.force else "edit_modal_submit",
+        )
+        try:
+            _deal_invocation_log(invocation, interaction, "modal_submit_received", deal_row_id=self.deal_row_id)
+        except Exception:
+            pass
+        deferred = await _safe_defer_deal_interaction(interaction, invocation, ephemeral=True)
+        if not deferred:
+            await _finalize_deal_invocation(
+                interaction,
+                invocation,
+                "Modal edit gagal direspons. Data deal tidak diubah. Silakan buka modal kembali.",
+                result_code="defer_failed",
                 ephemeral=True,
             )
             return
-        updated, error = await update_deal_editable_fields(
-            self.deal_row_id,
-            interaction.user.id,
-            payment_penjual=str(self.payment_penjual.value).strip(),
-            payment_pembeli=str(self.payment_pembeli.value).strip(),
-            nominal_item=str(self.nominal_item.value).strip(),
-            fee_type=str(self.fee_type.value).strip(),
-            description=str(self.description.value).strip(),
-            force=self.force,
+        result = None
+        try:
+            result = await process_deal_edit_submit(
+                interaction,
+                self.deal_row_id,
+                payment_penjual=self.payment_penjual.value,
+                payment_pembeli=self.payment_pembeli.value,
+                nominal_item=self.nominal_item.value,
+                fee_type=self.fee_type.value,
+                description=self.description.value,
+                force=self.force,
+                force_reason=self.force_reason,
+                force_actor_id=self.force_actor_id,
+                force_token=self.force_token,
+                invocation=invocation,
+            )
+        except Exception as exc:
+            _deal_invocation_log(invocation, interaction, "modal_submit_exception", deal_row_id=self.deal_row_id, exception=exc)
+            logging.exception(
+                "Edit deal modal submit failed (guild_id=%s, channel_id=%s, actor_id=%s, row_id=%s)",
+                getattr(interaction, "guild_id", None) or getattr(getattr(interaction, "guild", None), "id", None),
+                getattr(interaction, "channel_id", None) or getattr(getattr(interaction, "channel", None), "id", None),
+                getattr(getattr(interaction, "user", None), "id", None),
+                self.deal_row_id,
+            )
+            result = _result(
+                "failed_before_state_change",
+                "Terjadi kesalahan saat mengedit deal. Jalankan `/deal status` sebelum mencoba lagi.",
+                retryable=True,
+            )
+        await _finalize_deal_invocation(
+            interaction,
+            invocation,
+            result.user_message if result else "Terjadi kesalahan saat mengedit deal.",
+            result_code=result.code if result else "failed_before_state_change",
+            deal=result.deal if result else None,
+            ephemeral=True,
         )
-        if error == "invalid_status":
-            await _safe_respond(interaction, "Deal hanya bisa diedit sebelum Dana Masuk.", ephemeral=True)
-            return
-        if error in ("invalid_nominal", "invalid_fee"):
-            await _safe_respond(interaction, "Nominal atau fee tidak valid. Fee harus Inc/Exc.", ephemeral=True)
-            return
-        if error:
-            await _safe_respond(interaction, "Gagal mengedit deal.", ephemeral=True)
-            return
-        await _update_summary_message(interaction.guild, updated)
-        if self.force:
-            await _safe_respond(interaction, "✅ Override berhasil: deal diedit dan fee sudah dihitung ulang.", ephemeral=True)
-        else:
-            await _safe_respond(interaction, "✅ Deal berhasil diedit dan fee sudah dihitung ulang.", ephemeral=True)
+        return
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception):
+        invocation = _new_deal_invocation(interaction, "edit deal modal error", "edit_modal_error")
+        try:
+            _deal_invocation_log(
+                invocation,
+                interaction,
+                "modal_submit_exception",
+                deal_row_id=self.deal_row_id,
+                exception=error,
+            )
+        except Exception:
+            pass
+        if not interaction.response.is_done():
+            await _safe_defer_deal_interaction(interaction, invocation, ephemeral=True)
+        await _finalize_deal_invocation(
+            interaction,
+            invocation,
+            "Terjadi kesalahan saat mengedit deal. Jalankan `/deal status` sebelum mencoba lagi.",
+            result_code="modal_error",
+            ephemeral=True,
+        )
 
 
 class CancelDealModal(discord.ui.Modal, title="Cancel Deal"):
@@ -5800,8 +6192,8 @@ class DealSummaryView(discord.ui.View):
                 ephemeral=True,
             )
             return
-        if deal["status"] != DEAL_STATUS_WAITING_FUNDS:
-            await _safe_respond(interaction, "Deal hanya bisa diedit sebelum Dana Masuk.", ephemeral=True)
+        if not _normal_edit_stage_allowed(deal):
+            await _safe_respond(interaction, "Deal hanya bisa diedit sebelum bukti pembayaran buyer dikirim.", ephemeral=True)
             return
         # Modal must be sent quickly - all validation done above
         try:
@@ -6105,10 +6497,13 @@ class SafeDealActionView(discord.ui.View):
         if not deal:
             await interaction.response.send_message("Data deal tidak ditemukan.", ephemeral=True)
             return
-        if not await _can_manage_deal(interaction, deal=deal):
-            await interaction.response.send_message("Hanya middleman atau admin yang bisa edit deal.", ephemeral=True)
+        if not await _can_admin_override(interaction):
+            await interaction.response.send_message("Hanya admin atau owner role yang bisa force-edit deal.", ephemeral=True)
             return
-        await interaction.response.send_modal(EditDealModal(deal, force=True))
+        await interaction.response.send_message(
+            "Gunakan `/deal force-edit` dengan reason untuk membuka modal override edit.",
+            ephemeral=True,
+        )
 
     @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.danger, custom_id="safe_cancel")
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -6433,11 +6828,66 @@ class DealTermsView(discord.ui.View):
                 await interaction.followup.send("Form gagal dibuka. Silakan klik tombol Form lagi.", ephemeral=True)
 
 
+class ForceEditConfirmationView(discord.ui.View):
+    def __init__(self, deal_row_id: int, guild_id: int, actor_id: int, reason: str):
+        super().__init__(timeout=FORCE_EDIT_CONFIRMATION_TTL_SECONDS)
+        self.deal_row_id = int(deal_row_id)
+        self.guild_id = int(guild_id)
+        self.actor_id = int(actor_id)
+        self.reason = normalize_force_edit_reason(reason)
+        self.token = _force_edit_confirmation_token(
+            self.deal_row_id,
+            self.guild_id,
+            self.actor_id,
+            self.reason,
+        )
+
+    @discord.ui.button(label="Confirm Force Edit", style=discord.ButtonStyle.danger, custom_id="deal_force_edit_confirm")
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if int(interaction.user.id) != self.actor_id:
+            await interaction.response.send_message("Konfirmasi force-edit ini bukan milik kamu.", ephemeral=True)
+            return
+        if not interaction.guild or int(interaction.guild.id) != self.guild_id:
+            await interaction.response.send_message("Konfirmasi force-edit tidak valid untuk server ini.", ephemeral=True)
+            return
+        if not await _can_admin_override(interaction):
+            _invalidate_force_edit_confirmation(self.token)
+            await interaction.response.send_message("Hanya admin atau owner role yang bisa memakai override.", ephemeral=True)
+            return
+        if not self.token or not _open_force_edit_confirmation(
+            self.token,
+            self.deal_row_id,
+            self.guild_id,
+            self.actor_id,
+            self.reason,
+        ):
+            await interaction.response.send_message("Konfirmasi force-edit sudah kadaluarsa. Jalankan command force-edit lagi.", ephemeral=True)
+            return
+        deal = await get_deal_by_id(self.deal_row_id)
+        if not deal or str(deal.get("guildId")) != str(self.guild_id):
+            _invalidate_force_edit_confirmation(self.token)
+            await interaction.response.send_message("Deal ID tidak ditemukan.", ephemeral=True)
+            return
+        try:
+            await interaction.response.send_modal(
+                EditDealModal(
+                    deal,
+                    force=True,
+                    force_reason=self.reason,
+                    force_actor_id=self.actor_id,
+                    force_token=self.token,
+                )
+            )
+        except (discord.HTTPException, discord.InteractionResponded):
+            _invalidate_force_edit_confirmation(self.token)
+            await _safe_respond(interaction, "Modal force-edit gagal dibuka. Jalankan command force-edit lagi.", ephemeral=True)
+
+
 class PrefixEditDealView(discord.ui.View):
-    def __init__(self, deal_id: str, force: bool = False):
+    def __init__(self, deal_id: str, *, actor_id=None):
         super().__init__(timeout=180)
         self.deal_id = str(deal_id).strip().upper()
-        self.force = bool(force)
+        self.actor_id = int(actor_id) if actor_id is not None else None
 
     @discord.ui.button(label="Buka Form Edit", style=discord.ButtonStyle.primary, custom_id="prefix_edit_deal")
     async def open_edit_modal(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -6447,19 +6897,16 @@ class PrefixEditDealView(discord.ui.View):
         if not deal:
             await interaction.response.send_message("Deal ID tidak ditemukan.", ephemeral=True)
             return
-        if self.force:
-            if not await _can_admin_override(interaction):
-                await interaction.response.send_message("Hanya admin atau owner role yang bisa memakai override.", ephemeral=True)
-                return
-            await interaction.response.send_modal(EditDealModal(deal, force=True))
+        if self.actor_id is not None and int(interaction.user.id) != self.actor_id:
+            await interaction.response.send_message("Tombol edit ini bukan milik kamu.", ephemeral=True)
             return
         if not await _require_matching_deal_channel(interaction, deal):
             return
         if not await _can_manage_deal(interaction, deal=deal):
             await interaction.response.send_message("Kamu tidak punya permission untuk mengedit deal ini.", ephemeral=True)
             return
-        if deal["status"] != DEAL_STATUS_WAITING_FUNDS:
-            await interaction.response.send_message("Deal hanya bisa diedit sebelum Dana Masuk.", ephemeral=True)
+        if not _normal_edit_stage_allowed(deal):
+            await interaction.response.send_message("Deal hanya bisa diedit sebelum bukti pembayaran buyer dikirim.", ephemeral=True)
             return
         await interaction.response.send_modal(EditDealModal(deal))
 
@@ -7405,12 +7852,34 @@ def setup(tree, client):
         callback = getattr(command, "callback", command)
         await callback(interaction, *args)
 
-    async def _prefix_edit_prompt(interaction, deal_id, force=False):
+    async def _prefix_edit_prompt(interaction, deal_id, force=False, reason=None):
         if not await _require_deal_phase(interaction, 4):
+            return
+        if force:
+            safe_reason = normalize_force_edit_reason(reason)
+            if safe_reason is None:
+                await interaction.response.send_message("Reason force-edit tidak valid.")
+                return
+            if not await _can_admin_override(interaction):
+                await interaction.response.send_message("Hanya admin atau owner role yang bisa memakai override.")
+                return
+            deal = await get_deal_by_deal_id(interaction.guild.id, str(deal_id).strip().upper())
+            if not deal or str(deal.get("guildId")) != str(interaction.guild.id):
+                await interaction.response.send_message("Deal ID tidak ditemukan.")
+                return
+            await interaction.response.send_message(
+                "Klik tombol di bawah untuk confirm force-edit dan membuka form edit deal.",
+                view=ForceEditConfirmationView(
+                    deal["id"],
+                    interaction.guild.id,
+                    interaction.user.id,
+                    safe_reason,
+                ),
+            )
             return
         await interaction.response.send_message(
             "Klik tombol di bawah untuk membuka form edit deal.",
-            view=PrefixEditDealView(deal_id, force=force),
+            view=PrefixEditDealView(deal_id, actor_id=interaction.user.id),
         )
 
     async def _prefix_payment_image_attachment(message):
@@ -7981,10 +8450,10 @@ def setup(tree, client):
             return
 
         if subcommand == "force-edit":
-            if len(args) < 2:
-                await _prefix_send(message, "Format salah. Gunakan: w!deal force-edit <deal_id>")
+            if len(args) < 3:
+                await _prefix_send(message, "Format salah. Gunakan: w!deal force-edit <deal_id> <reason>")
                 return
-            await _prefix_edit_prompt(interaction, args[1], force=True)
+            await _prefix_edit_prompt(interaction, args[1], force=True, reason=_join_tail(args[2:]))
             return
 
         if subcommand == "delete-duplicate":
@@ -8210,14 +8679,14 @@ def setup(tree, client):
             return
         if not await _require_matching_deal_channel(interaction, deal):
             return
-        if not (_is_participant(interaction, deal) or await _can_manage_deal(interaction, deal=deal)):
+        if not await _can_manage_deal(interaction, deal=deal):
             await interaction.response.send_message(
-                "Kamu tidak memiliki akses untuk mengedit deal ini. Hanya buyer, seller, dan middleman yang bisa mengedit.",
+                "Kamu tidak punya permission untuk mengedit deal ini.",
                 ephemeral=True,
             )
             return
-        if deal["status"] != DEAL_STATUS_WAITING_FUNDS:
-            await interaction.response.send_message("Deal hanya bisa diedit sebelum Dana Masuk.", ephemeral=True)
+        if not _normal_edit_stage_allowed(deal):
+            await interaction.response.send_message("Deal hanya bisa diedit sebelum bukti pembayaran buyer dikirim.", ephemeral=True)
             return
         await interaction.response.send_modal(EditDealModal(deal))
 
@@ -8453,17 +8922,25 @@ def setup(tree, client):
         )
 
     @deal_group.command(name="force-edit", description="Admin override edit deal")
-    async def deal_force_edit(interaction: discord.Interaction, deal_id: str):
+    async def deal_force_edit(interaction: discord.Interaction, deal_id: str, reason: str):
         if not await _require_deal_phase(interaction, 4):
+            return
+        reason = normalize_force_edit_reason(reason)
+        if reason is None:
+            await interaction.response.send_message("Reason force-edit tidak valid.", ephemeral=True)
+            return
+        if not await _can_admin_override(interaction):
+            await interaction.response.send_message("Hanya admin atau owner role yang bisa memakai override.", ephemeral=True)
             return
         deal = await get_deal_by_deal_id(interaction.guild.id, deal_id.strip().upper())
         if not deal:
             await interaction.response.send_message("Deal ID tidak ditemukan.", ephemeral=True)
             return
-        if not await _can_admin_override(interaction):
-            await interaction.response.send_message("Hanya admin atau owner role yang bisa memakai override.", ephemeral=True)
-            return
-        await interaction.response.send_modal(EditDealModal(deal, force=True))
+        await interaction.response.send_message(
+            f"Force-edit deal `{deal.get('dealId')}` akan mengubah data tersimpan. Klik confirm untuk membuka modal.",
+            view=ForceEditConfirmationView(deal["id"], interaction.guild.id, interaction.user.id, reason),
+            ephemeral=True,
+        )
 
     @deal_group.command(name="delete-duplicate", description="Tandai deal duplicate sebagai void")
     async def deal_delete_duplicate(interaction: discord.Interaction, deal_id: str, reason: str):
