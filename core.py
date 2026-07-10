@@ -222,6 +222,11 @@ def _init_db():
             status TEXT NOT NULL DEFAULT 'Menunggu Form',
             warningMessageId TEXT,
             summaryMessageId TEXT,
+            fundsReceivedStageMessageId TEXT,
+            buyerConfirmStageMessageId TEXT,
+            payoutStageMessageId TEXT,
+            doneStageMessageId TEXT,
+            completedSummaryMessageId TEXT,
             vouchProgressMessageId TEXT,
             cancelledById TEXT,
             cancelledAt TEXT,
@@ -284,6 +289,11 @@ def _init_db():
         "paymentProofSubmittedById": "TEXT",
         "paymentProofSubmittedAt": "TEXT",
         "paymentProofConfirmationMessageId": "TEXT",
+        "fundsReceivedStageMessageId": "TEXT",
+        "buyerConfirmStageMessageId": "TEXT",
+        "payoutStageMessageId": "TEXT",
+        "doneStageMessageId": "TEXT",
+        "completedSummaryMessageId": "TEXT",
         "transferProofUrl": "TEXT",
         "transferProofNotes": "TEXT",
         "transferProofMessageId": "TEXT",
@@ -3415,7 +3425,9 @@ DEAL_COLUMNS = (
     "sellerId", "middlemanId", "paymentPenjual", "paymentPembeli",
     "nominalItem", "feeType", "mmFee", "buyerPays", "sellerReceives",
     "description", "status", "warningMessageId", "summaryMessageId",
-    "vouchProgressMessageId", "cancelledById", "cancelledAt", "cancelReason",
+    "fundsReceivedStageMessageId", "buyerConfirmStageMessageId", "payoutStageMessageId",
+    "doneStageMessageId", "completedSummaryMessageId", "vouchProgressMessageId",
+    "cancelledById", "cancelledAt", "cancelReason",
     "disputedById", "disputedAt", "disputeReason", "disputeProofUrl",
     "disputePreviousStatus", "statusBeforeDispute", "disputeResolvedById", "disputeResolvedAt",
     "disputeResolution", "paymentProofUrl",
@@ -4548,7 +4560,7 @@ async def send_public_completed_deal_feed(guild_id, deal_row_id):
         embed.add_field(name="Buyer", value=await _public_user_display(guild, deal.get("buyerId")), inline=True)
         embed.add_field(name="Seller", value=await _public_user_display(guild, deal.get("sellerId")), inline=True)
         embed.add_field(name="Middleman", value=await _public_user_display(guild, deal.get("middlemanId")), inline=True)
-        embed.add_field(name="Status", value="Completed", inline=True)
+        embed.add_field(name="Status", value="Selesai", inline=True)
         embed.add_field(name="Vouch", value="Eligible" if deal.get("isVouchEligible") else "Not Eligible", inline=True)
         embed.add_field(name="Archived", value="Yes" if archive else "No", inline=True)
         embed.set_footer(text="Verified middleman transaction")
@@ -4824,6 +4836,51 @@ async def set_deal_payment_proof_confirmation_message(deal_row_id, message_id):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "UPDATE Deal SET paymentProofConfirmationMessageId=?, updatedAt=? WHERE id=?",
+            (str(message_id), _deal_now(), int(deal_row_id)),
+        )
+        await db.commit()
+
+
+async def set_deal_funds_received_stage_message(deal_row_id, message_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE Deal SET fundsReceivedStageMessageId=?, updatedAt=? WHERE id=?",
+            (str(message_id), _deal_now(), int(deal_row_id)),
+        )
+        await db.commit()
+
+
+async def set_deal_buyer_confirm_stage_message(deal_row_id, message_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE Deal SET buyerConfirmStageMessageId=?, updatedAt=? WHERE id=?",
+            (str(message_id), _deal_now(), int(deal_row_id)),
+        )
+        await db.commit()
+
+
+async def set_deal_payout_stage_message(deal_row_id, message_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE Deal SET payoutStageMessageId=?, updatedAt=? WHERE id=?",
+            (str(message_id), _deal_now(), int(deal_row_id)),
+        )
+        await db.commit()
+
+
+async def set_deal_done_stage_message(deal_row_id, message_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE Deal SET doneStageMessageId=?, updatedAt=? WHERE id=?",
+            (str(message_id), _deal_now(), int(deal_row_id)),
+        )
+        await db.commit()
+
+
+async def set_deal_completed_summary_message(deal_row_id, message_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE Deal SET completedSummaryMessageId=?, updatedAt=? WHERE id=?",
             (str(message_id), _deal_now(), int(deal_row_id)),
         )
         await db.commit()

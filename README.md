@@ -95,13 +95,14 @@ Boss spawns hourly (20% chance) or via admin API. Pets add bonus damage.
 ### Middleman & Trust System
 `deal`, `vouches`, `vouchleaderboard`, `w!deal leaderboard`, `w!deal rank`
 
-- **Secure Transactions & Access Model**: Full-featured middleman system for buyer, seller, assigned middleman, staff, admin, and owner-role workflows. Buttons remain the normal shared UI, while command fallback exists for stale/deleted/broken button messages.
-- **Workflow & Proofs (Simplified)**: Deal form -> private payment instruction -> buyer payment proof -> Dana Masuk -> Buyer Confirm -> seller payout data -> transfer proof/Done. The legacy "Item Sent" stage is skipped for new deals and only retained for old-row compatibility.
+- **Secure Transactions & Access Model**: Full-featured middleman system for buyer, seller, assigned middleman, staff, admin, and owner-role workflows. Buttons remain the normal staged UI, while command fallback exists for stale/deleted/broken button messages.
+- **Legacy-Style Staged UI**: Major stages use dedicated private ticket messages: payment proof, Dana Masuk received, Buyer Confirm, payout instruction, seller transfer, Done, completed summary, and verified vouch progress. Only one tracked stage message has active transition buttons at a time.
+- **Workflow & Proofs (Simplified)**: Deal form -> private payment instruction -> buyer payment proof -> Dana Masuk -> Buyer Confirm -> seller payout data -> transfer proof/Done. The legacy "Item Sent" stage is permanently skipped for new deals and only retained for old-row compatibility.
 - **Button + Command Fallbacks**: Staff can inspect or continue a deal with `/deal status`, `/deal next`, `/deal action`, `/deal refresh`, and `/deal recover`; prefix equivalents are available as `w!deal status`, `w!deal next`, `w!deal action`, `w!deal refresh`, and `w!deal recover`.
 - **Per-User Payment Profile Config (`/deal payment-config`)**: Each middleman/admin configures their own payment profile by guild + user. Payment instructions can contain text, QRIS/image, or image-only details and are only posted in private deal channels or staff-only/ephemeral/DM previews.
 - **Public Trust Panels (`/deal panel`)**: Set up public tracking boards including trusted vouch leaderboards, server trust stats, recent vouches feed, completed deals feed, middleman status panels, active deal queues, and dispute boards.
 - **Vouch & Scam Panels**: Public vouch submission panel (`/deal vouch-panel setup`) and scam reporting panel (`/deal scam-report-panel setup`).
-- **Button Recovery**: `/deal recover-buttons` performs broad recovery, while `/deal recover` targets one deal and repairs the current canonical UI without exposing payment, proof, payout, credentials, evidence, or notes.
+- **Button Recovery**: `/deal recover-buttons` performs broad recovery, while `/deal recover` targets one deal and repairs the current staged UI without exposing payment, proof, payout, credentials, evidence, or notes.
 - **Trust Profile**: Earn verified vouches from successful deals, increase Trust Score, and climb the Trust Rank ladder.
 - **Admin & Safety**: Review manual vouches, resolve disputes, and monitor active deals.
 
@@ -214,7 +215,7 @@ SQLite (`w2ebot.db`) with tables:
 - `AuditLog` — admin action audit trail
 - `json_store` — key-value blob storage for JSON data files
 - **Middleman & Reputation Tables**:
-  - `Deal`, `DealLog`, `DealConfig`, `dealAuditLogConfig` — Core deal details, logs, configs, and audit channel settings
+  - `Deal`, `DealLog`, `DealConfig`, `dealAuditLogConfig` — Core deal details, staged-message tracking, logs, configs, and audit channel settings
   - `dealPaymentProfiles` — Persistent payment configurations (payment instructions & QRIS images) per middleman/admin
   - `Vouch`, `VouchReport`, `UserReputation`, `trustModerationStatus` — User reputation details, vouches, vouch/reputation reports, and moderation settings
   - `dealPanels`, `dealPanelEvents`, `middlemanStatus` — Settings and state events for public trust boards & active middleman queue

@@ -715,6 +715,33 @@ DEAL_ACTION_REFRESH = "refresh"
 DEAL_ACTION_RECOVER = "recover"
 DEAL_VISIBLE_ACTION_EDIT = "edit"
 
+DEAL_MSG_ROLE_SUMMARY = "summary"
+DEAL_MSG_ROLE_PAYMENT_PROOF = "payment_proof"
+DEAL_MSG_ROLE_FUNDS_RECEIVED = "funds_received"
+DEAL_MSG_ROLE_BUYER_CONFIRM = "buyer_confirm"
+DEAL_MSG_ROLE_PAYOUT = "payout"
+DEAL_MSG_ROLE_DONE = "done"
+DEAL_MSG_ROLE_COMPLETED_SUMMARY = "completed_summary"
+DEAL_MSG_ROLE_VOUCH_PROGRESS = "vouch_progress"
+
+DEAL_STAGE_MESSAGE_FIELDS = {
+    DEAL_MSG_ROLE_SUMMARY: "summaryMessageId",
+    DEAL_MSG_ROLE_PAYMENT_PROOF: "paymentProofConfirmationMessageId",
+    DEAL_MSG_ROLE_FUNDS_RECEIVED: "fundsReceivedStageMessageId",
+    DEAL_MSG_ROLE_BUYER_CONFIRM: "buyerConfirmStageMessageId",
+    DEAL_MSG_ROLE_PAYOUT: "payoutStageMessageId",
+    DEAL_MSG_ROLE_DONE: "doneStageMessageId",
+    DEAL_MSG_ROLE_COMPLETED_SUMMARY: "completedSummaryMessageId",
+    DEAL_MSG_ROLE_VOUCH_PROGRESS: "vouchProgressMessageId",
+}
+
+DEAL_ACTIVE_CONTROL_ROLES = {
+    DEAL_MSG_ROLE_SUMMARY,
+    DEAL_MSG_ROLE_PAYMENT_PROOF,
+    DEAL_MSG_ROLE_FUNDS_RECEIVED,
+    DEAL_MSG_ROLE_PAYOUT,
+}
+
 DEAL_ACTION_CHOICES = [
     app_commands.Choice(name="dana-masuk", value=DEAL_ACTION_DANA_MASUK),
     app_commands.Choice(name="buyer-confirm", value=DEAL_ACTION_BUYER_CONFIRM),
@@ -750,6 +777,17 @@ class DealActionResult:
     retryable: bool = False
     audit_written: bool = False
     deal: dict = None
+
+
+@dataclass
+class StageRenderPlan:
+    active_role: str = None
+    embed_factory: object = None
+    view_factory: object = None
+    tracked_field: str = None
+    retire_roles: tuple = ()
+    recreate_missing: bool = True
+    terminal_roles: tuple = ()
 
 
 def _result(code, message, *, ok=False, deal=None, state_changed=False, old_status=None, new_status=None, ui_updated=False, retryable=False, audit_written=False):
@@ -1167,7 +1205,7 @@ async def handle_deal_message(client, message: discord.Message) -> bool:
             message.author.id,
             fields,
             "deal_payment_proof_submitted",
-            message.jump_url,
+            "payment proof submitted",
         )
         
         if error:
@@ -1532,11 +1570,27 @@ async def _seller_payout_received_embed(deal, guild=None, bot=None):
     )
     embed.add_field(name="Deal ID", value=deal.get("dealId") or "-", inline=False)
     embed.add_field(name="Seller", value=await format_user_display(bot, guild, deal.get("sellerId")), inline=True)
-    embed.add_field(name="Platform", value=_clean_payout_value(deal.get("sellerPayoutPlatform")) or "-", inline=False)
-    embed.add_field(name="No Rek / No HP / Email", value=_clean_payout_value(deal.get("sellerPayoutAccount")) or "-", inline=False)
-    embed.add_field(name="Atas Nama", value=_clean_payout_value(deal.get("sellerPayoutName")) or "-", inline=False)
     embed.add_field(name="Submitted By", value=await format_user_display(bot, guild, deal.get("sellerPayoutSubmittedById")), inline=True)
     embed.add_field(name="Status", value="Menunggu transfer dari Middleman", inline=False)
+    embed.set_footer(text="W2E Middleman")
+    return embed
+
+
+async def _seller_transfer_stage_embed(deal, guild=None, bot=None):
+    embed = discord.Embed(
+        title="Data Pencairan Seller Diterima",
+        description=(
+            "Data pencairan seller sudah diterima.\n\n"
+            "Middleman silakan melakukan transfer dana ke seller sesuai data yang sudah dikirim di channel private ini.\n"
+            "Setelah transfer selesai, upload bukti transfer lalu tekan Done & Transfer Sukses."
+        ),
+        color=0x57F287,
+    )
+    embed.add_field(name="Deal ID", value=deal.get("dealId") or "-", inline=False)
+    embed.add_field(name="Buyer", value=await format_user_display(bot, guild, deal.get("buyerId")), inline=True)
+    embed.add_field(name="Seller", value=await format_user_display(bot, guild, deal.get("sellerId")), inline=True)
+    embed.add_field(name="Middleman", value=await format_user_display(bot, guild, deal.get("middlemanId")), inline=True)
+    embed.add_field(name="Status", value="Menunggu Transfer ke Seller", inline=False)
     embed.set_footer(text="W2E Middleman")
     return embed
 
@@ -1556,13 +1610,8 @@ async def _final_summary_embed(deal, guild=None, bot=None):
         ("Fee Type", deal["feeType"]),
         ("Payment Penjual", deal["paymentPenjual"]),
         ("Payment Pembeli", deal["paymentPembeli"]),
-        ("Seller Payout Platform", _clean_payout_value(deal.get("sellerPayoutPlatform")) or "-"),
-        ("Seller Payout Account", _clean_payout_value(deal.get("sellerPayoutAccount")) or "-"),
-        ("Seller Payout Name", _clean_payout_value(deal.get("sellerPayoutName")) or "-"),
         ("Completed At", format_discord_timestamp(deal.get("completedAt"), "f")),
-        ("Payment Proof", _proof_link(deal, "payment")),
-        ("Transfer Proof", _proof_link(deal, "transfer")),
-        ("Status", "Completed"),
+        ("Status", "Selesai"),
     ]
     for name, value in fields:
         embed.add_field(name=name, value=str(value), inline=False)
@@ -3389,7 +3438,8 @@ async def _safe_deal_message_exists(guild, deal):
     channel = await _original_deal_channel(guild, deal)
     if not channel:
         return False
-    for message_id in (deal.get("summaryMessageId"), deal.get("paymentProofConfirmationMessageId")):
+    for field in DEAL_STAGE_MESSAGE_FIELDS.values():
+        message_id = deal.get(field)
         if not message_id:
             continue
         try:
@@ -3400,76 +3450,341 @@ async def _safe_deal_message_exists(guild, deal):
     return False
 
 
+def _stage_message_setter(role):
+    return {
+        DEAL_MSG_ROLE_SUMMARY: set_deal_summary_message,
+        DEAL_MSG_ROLE_PAYMENT_PROOF: set_deal_payment_proof_confirmation_message,
+        DEAL_MSG_ROLE_FUNDS_RECEIVED: set_deal_funds_received_stage_message,
+        DEAL_MSG_ROLE_BUYER_CONFIRM: set_deal_buyer_confirm_stage_message,
+        DEAL_MSG_ROLE_PAYOUT: set_deal_payout_stage_message,
+        DEAL_MSG_ROLE_DONE: set_deal_done_stage_message,
+        DEAL_MSG_ROLE_COMPLETED_SUMMARY: set_deal_completed_summary_message,
+        DEAL_MSG_ROLE_VOUCH_PROGRESS: set_deal_vouch_progress_message,
+    }.get(role)
+
+
+def _stage_title_marker(role):
+    return {
+        DEAL_MSG_ROLE_PAYMENT_PROOF: "Bukti Payment Dikirim",
+        DEAL_MSG_ROLE_FUNDS_RECEIVED: "Uang Telah Diterima Middleman",
+        DEAL_MSG_ROLE_BUYER_CONFIRM: "Buyer Confirm",
+        DEAL_MSG_ROLE_PAYOUT: ("DATA PENCAIRAN DANA", "Data Pencairan Seller Diterima"),
+        DEAL_MSG_ROLE_DONE: "Proses Done & Transfer Sukses",
+        DEAL_MSG_ROLE_COMPLETED_SUMMARY: "Deal Completed",
+        DEAL_MSG_ROLE_VOUCH_PROGRESS: "Verified Middleman Deal Vouch",
+    }.get(role)
+
+
+def _embed_deal_id_matches(embed, deal):
+    expected = str(deal.get("dealId") or "").strip()
+    if not expected:
+        return False
+    for field in getattr(embed, "fields", []) or []:
+        if str(getattr(field, "name", "")).strip().lower() == "deal id":
+            value = str(getattr(field, "value", "") or "").replace("`", "").strip()
+            return expected in value
+    desc = str(getattr(embed, "description", "") or "")
+    return expected in desc
+
+
+def _message_matches_stage(message, deal, role):
+    marker = _stage_title_marker(role)
+    if not marker or not getattr(message, "embeds", None):
+        return False
+    markers = marker if isinstance(marker, tuple) else (marker,)
+    for embed in message.embeds:
+        title = str(getattr(embed, "title", "") or "")
+        if any(item in title for item in markers) and _embed_deal_id_matches(embed, deal):
+            return True
+    return False
+
+
+async def _find_existing_stage_message(channel, deal, role, *, limit=30):
+    async def scan():
+        async for message in channel.history(limit=limit):
+            if _message_matches_stage(message, deal, role):
+                return message
+        return None
+
+    try:
+        return await asyncio.wait_for(scan(), timeout=DANA_MASUK_UI_TIMEOUT_SECONDS)
+    except (asyncio.TimeoutError, discord.Forbidden, discord.HTTPException):
+        return None
+
+
+async def _fetch_tracked_stage_message(channel, deal, role):
+    field = DEAL_STAGE_MESSAGE_FIELDS.get(role)
+    message_id = deal.get(field) if field else None
+    if not message_id:
+        return None
+    try:
+        return await channel.fetch_message(int(message_id))
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException, TypeError, ValueError):
+        return None
+
+
+async def _persist_stage_message_id(deal, role, message_id):
+    setter = _stage_message_setter(role)
+    if setter and message_id:
+        await setter(deal["id"], message_id)
+
+
+async def _edit_stage_message(message, *, embed=None, view=None):
+    await message.edit(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
+
+
+async def _send_or_update_stage_message(channel, guild, deal, role, *, embed, view, recreate=True):
+    message = await _fetch_tracked_stage_message(channel, deal, role)
+    if message:
+        try:
+            await _edit_stage_message(message, embed=embed, view=view)
+            return True, "updated"
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            message = None
+
+    adopted = await _find_existing_stage_message(channel, deal, role)
+    if adopted:
+        try:
+            await _edit_stage_message(adopted, embed=embed, view=view)
+            try:
+                await _persist_stage_message_id(deal, role, adopted.id)
+                return True, "adopted"
+            except Exception:
+                logging.exception(
+                    "Stage message ID persist failed after adopt (guild_id=%s, row_id=%s, role=%s)",
+                    deal.get("guildId"),
+                    deal.get("id"),
+                    role,
+                )
+                return True, "adopted_untracked"
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            pass
+
+    if not recreate:
+        return False, "missing"
+    try:
+        sent = await channel.send(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
+        try:
+            await _persist_stage_message_id(deal, role, sent.id)
+            return True, "created"
+        except Exception:
+            logging.exception(
+                "Stage message ID persist failed after send (guild_id=%s, row_id=%s, role=%s)",
+                deal.get("guildId"),
+                deal.get("id"),
+                role,
+            )
+            return True, "created_untracked"
+    except discord.HTTPException:
+        return False, "failed"
+
+
+async def _retire_stage_controls(channel, deal, roles, *, active_role=None):
+    retired = 0
+    for role in roles:
+        if role == active_role:
+            continue
+        message = await _fetch_tracked_stage_message(channel, deal, role)
+        if not message:
+            continue
+        try:
+            await message.edit(view=None, allowed_mentions=discord.AllowedMentions.none())
+            retired += 1
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            continue
+    return retired
+
+
+async def _stage_embed_for_role(role, deal, guild, *, attachment=None):
+    if role == DEAL_MSG_ROLE_SUMMARY:
+        return await _summary_embed(deal, guild, client)
+    if role == DEAL_MSG_ROLE_PAYMENT_PROOF:
+        return await _payment_proof_embed(deal, guild, client, attachment)
+    if role == DEAL_MSG_ROLE_FUNDS_RECEIVED:
+        return _funds_received_embed(deal)
+    if role == DEAL_MSG_ROLE_BUYER_CONFIRM:
+        return await _buyer_confirm_embed(deal, guild, client)
+    if role == DEAL_MSG_ROLE_PAYOUT:
+        if _has_seller_payout_info(deal):
+            return await _seller_transfer_stage_embed(deal, guild, client)
+        return _seller_payout_instruction_embed(deal)
+    if role == DEAL_MSG_ROLE_DONE:
+        return await _completed_embed(deal, guild, client, attachment)
+    if role == DEAL_MSG_ROLE_COMPLETED_SUMMARY:
+        return await _final_summary_embed(deal, guild, client)
+    if role == DEAL_MSG_ROLE_VOUCH_PROGRESS:
+        embed, _complete = await _vouch_progress_embed(deal)
+        return embed
+    return None
+
+
+def _build_stage_view(deal, role):
+    if role == DEAL_MSG_ROLE_SUMMARY:
+        return _view_for_deal_status(deal)
+    if role == DEAL_MSG_ROLE_PAYMENT_PROOF:
+        return DealSummaryView(deal["id"], visible_actions=get_visible_deal_actions(deal))
+    if role == DEAL_MSG_ROLE_FUNDS_RECEIVED:
+        return FundsReceivedView(deal["id"])
+    if role == DEAL_MSG_ROLE_PAYOUT:
+        return BuyerConfirmedView(deal["id"], visible_actions=get_visible_deal_actions(deal))
+    if role == DEAL_MSG_ROLE_VOUCH_PROGRESS:
+        return VouchView(deal["id"])
+    return None
+
+
+def _build_stage_render_plan(deal):
+    stage = get_deal_operational_stage(deal)
+    all_control_roles = (
+        DEAL_MSG_ROLE_SUMMARY,
+        DEAL_MSG_ROLE_PAYMENT_PROOF,
+        DEAL_MSG_ROLE_FUNDS_RECEIVED,
+        DEAL_MSG_ROLE_PAYOUT,
+    )
+    if stage in (DEAL_STAGE_WAITING_FORM, DEAL_STAGE_WAITING_PAYMENT_INSTRUCTION, DEAL_STAGE_WAITING_PAYMENT_PROOF):
+        return StageRenderPlan(
+            active_role=DEAL_MSG_ROLE_SUMMARY,
+            tracked_field=DEAL_STAGE_MESSAGE_FIELDS[DEAL_MSG_ROLE_SUMMARY],
+            retire_roles=tuple(role for role in all_control_roles if role != DEAL_MSG_ROLE_SUMMARY),
+        )
+    if stage == DEAL_STAGE_WAITING_FUNDS_CONFIRMATION:
+        return StageRenderPlan(
+            active_role=DEAL_MSG_ROLE_PAYMENT_PROOF,
+            tracked_field=DEAL_STAGE_MESSAGE_FIELDS[DEAL_MSG_ROLE_PAYMENT_PROOF],
+            retire_roles=tuple(role for role in all_control_roles if role != DEAL_MSG_ROLE_PAYMENT_PROOF),
+        )
+    if stage == DEAL_STAGE_WAITING_BUYER_CONFIRM:
+        return StageRenderPlan(
+            active_role=DEAL_MSG_ROLE_FUNDS_RECEIVED,
+            tracked_field=DEAL_STAGE_MESSAGE_FIELDS[DEAL_MSG_ROLE_FUNDS_RECEIVED],
+            retire_roles=tuple(role for role in all_control_roles if role != DEAL_MSG_ROLE_FUNDS_RECEIVED),
+        )
+    if stage in (DEAL_STAGE_WAITING_SELLER_PAYOUT, DEAL_STAGE_WAITING_SELLER_TRANSFER):
+        return StageRenderPlan(
+            active_role=DEAL_MSG_ROLE_PAYOUT,
+            tracked_field=DEAL_STAGE_MESSAGE_FIELDS[DEAL_MSG_ROLE_PAYOUT],
+            retire_roles=tuple(role for role in all_control_roles if role != DEAL_MSG_ROLE_PAYOUT),
+        )
+    if stage == DEAL_STAGE_DISPUTED:
+        return StageRenderPlan(
+            active_role=DEAL_MSG_ROLE_SUMMARY,
+            tracked_field=DEAL_STAGE_MESSAGE_FIELDS[DEAL_MSG_ROLE_SUMMARY],
+            retire_roles=tuple(role for role in all_control_roles if role != DEAL_MSG_ROLE_SUMMARY),
+        )
+    if stage == DEAL_STAGE_COMPLETED:
+        return StageRenderPlan(
+            active_role=None,
+            tracked_field=None,
+            retire_roles=all_control_roles,
+            terminal_roles=(DEAL_MSG_ROLE_DONE, DEAL_MSG_ROLE_COMPLETED_SUMMARY, DEAL_MSG_ROLE_VOUCH_PROGRESS),
+        )
+    if stage == DEAL_STAGE_CANCELLED:
+        return StageRenderPlan(
+            active_role=None,
+            tracked_field=None,
+            retire_roles=all_control_roles,
+        )
+    return StageRenderPlan(active_role=None, tracked_field=None, retire_roles=all_control_roles, recreate_missing=False)
+
+
 async def _repair_payment_proof_action_message(guild, deal, *, attachment=None, recreate=True):
     if get_deal_operational_stage(deal) != DEAL_STAGE_WAITING_FUNDS_CONFIRMATION:
         return False, "not_applicable"
     channel = await _original_deal_channel(guild, deal)
     if not channel or not _channel_is_private(guild, channel):
         return False, "public_or_missing_channel"
-
-    embed = await _payment_proof_embed(deal, guild, client, attachment)
-    view = _view_for_deal_status(deal)
-    message_id = deal.get("paymentProofConfirmationMessageId")
-    if message_id:
-        try:
-            message = await channel.fetch_message(int(message_id))
-            await message.edit(embed=embed, view=view)
-            return True, "updated"
-        except (discord.NotFound, discord.Forbidden, discord.HTTPException, TypeError, ValueError):
-            pass
-
-    if not recreate:
-        return False, "missing"
-    try:
-        message = await channel.send(
-            embed=embed,
-            view=view,
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
-        await set_deal_payment_proof_confirmation_message(deal["id"], message.id)
-        return True, "created"
-    except discord.HTTPException:
-        return False, "failed"
+    await _retire_stage_controls(
+        channel,
+        deal,
+        (DEAL_MSG_ROLE_SUMMARY, DEAL_MSG_ROLE_FUNDS_RECEIVED, DEAL_MSG_ROLE_PAYOUT),
+        active_role=DEAL_MSG_ROLE_PAYMENT_PROOF,
+    )
+    embed = await _stage_embed_for_role(DEAL_MSG_ROLE_PAYMENT_PROOF, deal, guild, attachment=attachment)
+    view = _build_stage_view(deal, DEAL_MSG_ROLE_PAYMENT_PROOF)
+    return await _send_or_update_stage_message(
+        channel,
+        guild,
+        deal,
+        DEAL_MSG_ROLE_PAYMENT_PROOF,
+        embed=embed,
+        view=view,
+        recreate=recreate,
+    )
 
 
 async def _clear_payment_proof_action_view(guild, deal):
-    message_id = deal.get("paymentProofConfirmationMessageId")
     channel = await _original_deal_channel(guild, deal)
-    if not message_id or not channel:
+    if not channel:
         return
-    try:
-        message = await channel.fetch_message(int(message_id))
-        await message.edit(view=None)
-    except (discord.NotFound, discord.Forbidden, discord.HTTPException, TypeError, ValueError):
-        pass
+    await _retire_stage_controls(channel, deal, (DEAL_MSG_ROLE_PAYMENT_PROOF,))
+
+
+async def _repair_terminal_stage_messages(channel, guild, deal, *, recreate=True):
+    statuses = []
+    for role in (DEAL_MSG_ROLE_DONE, DEAL_MSG_ROLE_COMPLETED_SUMMARY, DEAL_MSG_ROLE_VOUCH_PROGRESS):
+        if role == DEAL_MSG_ROLE_VOUCH_PROGRESS:
+            embed, complete = await _vouch_progress_embed(deal)
+            view = VouchView(deal["id"], disabled=complete)
+        else:
+            embed = await _stage_embed_for_role(role, deal, guild)
+            view = _build_stage_view(deal, role)
+        if not embed:
+            statuses.append("skipped")
+            continue
+        updated, status = await _send_or_update_stage_message(
+            channel,
+            guild,
+            deal,
+            role,
+            embed=embed,
+            view=view,
+            recreate=recreate,
+        )
+        statuses.append(status if updated else status)
+    if any(status in ("created", "updated", "adopted") for status in statuses):
+        return True, "terminal_repaired"
+    if any(status == "failed" for status in statuses):
+        return False, "failed"
+    return False, "missing"
 
 
 async def _refresh_current_deal_view(guild, deal, *, recreate=True):
     channel = await _original_deal_channel(guild, deal)
     if not channel or not _channel_is_private(guild, channel):
         return False, "public_or_missing_channel"
-    if get_deal_operational_stage(deal) == DEAL_STAGE_WAITING_FUNDS_CONFIRMATION:
-        return await _repair_payment_proof_action_message(guild, deal, recreate=recreate)
+    plan = _build_stage_render_plan(deal)
+    await _retire_stage_controls(channel, deal, plan.retire_roles, active_role=plan.active_role)
 
-    await _clear_payment_proof_action_view(guild, deal)
-    view = _view_for_deal_status(deal)
-    embed = await _summary_embed(deal, guild, client)
-    message_id = deal.get("summaryMessageId")
-    if message_id:
-        try:
-            message = await channel.fetch_message(int(message_id))
-            await message.edit(embed=embed, view=view)
-            return True, "updated"
-        except (discord.NotFound, discord.Forbidden, discord.HTTPException, TypeError, ValueError):
-            pass
-    if not recreate:
-        return False, "missing"
-    try:
-        message = await channel.send(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
-        await set_deal_summary_message(deal["id"], message.id)
-        return True, "created"
-    except discord.HTTPException:
+    if plan.terminal_roles:
+        return await _repair_terminal_stage_messages(channel, guild, deal, recreate=recreate)
+    if not plan.active_role:
+        return True, "retired"
+
+    if get_deal_operational_stage(deal) == DEAL_STAGE_WAITING_SELLER_PAYOUT:
+        buyer_confirm_embed = await _stage_embed_for_role(DEAL_MSG_ROLE_BUYER_CONFIRM, deal, guild)
+        if buyer_confirm_embed:
+            await _send_or_update_stage_message(
+                channel,
+                guild,
+                deal,
+                DEAL_MSG_ROLE_BUYER_CONFIRM,
+                embed=buyer_confirm_embed,
+                view=None,
+                recreate=recreate,
+            )
+
+    embed = await _stage_embed_for_role(plan.active_role, deal, guild)
+    view = _build_stage_view(deal, plan.active_role)
+    if not embed:
         return False, "failed"
+    return await _send_or_update_stage_message(
+        channel,
+        guild,
+        deal,
+        plan.active_role,
+        embed=embed,
+        view=view,
+        recreate=recreate and plan.recreate_missing,
+    )
 
 
 async def _send_deal_action_result(
@@ -3844,7 +4159,9 @@ async def _update_summary_message(guild: discord.Guild, deal):
         return
     try:
         msg = await channel.fetch_message(int(deal["summaryMessageId"]))
-        await msg.edit(embed=await _summary_embed(deal, guild, client), view=_view_for_deal_status(deal))
+        plan = _build_stage_render_plan(deal)
+        view = _view_for_deal_status(deal) if plan.active_role == DEAL_MSG_ROLE_SUMMARY else None
+        await msg.edit(embed=await _summary_embed(deal, guild, client), view=view)
     except (discord.HTTPException, ValueError, TypeError):
         pass
 
@@ -3971,12 +4288,13 @@ async def _payment_proof_embed(deal, guild=None, bot=None, attachment=None):
 
 def _funds_received_embed(deal=None):
     return _transition_embed(
-        "Dana Masuk",
+        "✅ Uang Telah Diterima Middleman",
         (
             "Dana sudah dikonfirmasi masuk oleh middleman.\n\n"
-            "Buyer silakan cek item/data sesuai kesepakatan deal.\n"
-            "Jika sudah sesuai, tekan tombol Buyer Confirm.\n\n"
-            "Middleman/staff dapat memproses Buyer Confirm jika buyer tidak tersedia."
+            "Silakan seller mengirim item/barang/data yang dijual kepada pembeli.\n\n"
+            "Setelah data/item diterima, buyer harus memeriksa dan mengamankan item terlebih dahulu.\n"
+            "Buyer hanya menekan Buyer Confirm setelah item/data benar-benar diterima sesuai deal.\n\n"
+            "Buyer Confirm = transaksi dilanjutkan ke proses pencairan seller."
         ),
         deal=deal,
     )
@@ -4110,8 +4428,8 @@ async def _completed_embed(deal, guild=None, bot=None, attachment=None):
         (
             "Dana sudah diteruskan oleh middleman.\n"
             "Silakan cek rekening atau e-wallet kalian masing-masing.\n\n"
-            "Setelah transaksi dinyatakan DONE, kedua pihak sudah berada di luar tanggung jawab middleman.\n\n"
-            "Kecuali untuk kasus refful, warranty, atau kesepakatan khusus yang sudah disebutkan sebelum deal selesai."
+            "Setelah transaksi dinyatakan selesai, kedua pihak berada di luar tanggung jawab middleman, "
+            "kecuali kasus refund, warranty, atau kesepakatan khusus yang sudah disebutkan sebelum deal selesai."
         ),
     )
     embed.add_field(name="Deal ID", value=f"`{deal.get('dealId')}`", inline=True)
@@ -4119,7 +4437,7 @@ async def _completed_embed(deal, guild=None, bot=None, attachment=None):
     embed.add_field(name="Seller", value=await format_user_display(bot, guild, deal.get("sellerId")), inline=True)
     embed.add_field(name="Middleman", value=await format_user_display(bot, guild, deal.get("middlemanId")), inline=True)
     embed.add_field(name="Transfer Proof", value=_proof_link(deal, "transfer"), inline=False)
-    embed.add_field(name="Status", value="Completed", inline=True)
+    embed.add_field(name="Status", value="Selesai", inline=True)
     if attachment and str(getattr(attachment, "content_type", "") or "").startswith("image/"):
         embed.set_image(url=attachment.url)
     return embed
@@ -4168,18 +4486,20 @@ async def _handle_retired_item_sent_button(interaction: discord.Interaction, dea
         await _safe_respond(interaction, "Data deal tidak ditemukan.", ephemeral=True)
         return
     deal = await _normalize_legacy_item_sent_deal(deal, getattr(interaction.user, "id", None))
-    message = "Tahap Item Sent sudah tidak digunakan. Deal ini sekarang menggunakan alur Buyer Confirm."
-    if deal and deal.get("status") == DEAL_STATUS_FUNDS_RECEIVED and not interaction.response.is_done():
-        try:
-            await interaction.response.edit_message(
-                embed=_funds_received_embed(deal),
-                view=_view_for_deal_status(deal),
-            )
-            await interaction.followup.send(message, ephemeral=True)
-            return
-        except (discord.NotFound, discord.Forbidden, discord.HTTPException, discord.InteractionResponded):
-            pass
+    message = "Tahap Item Sent sudah tidak digunakan. Deal ini sekarang langsung menggunakan Buyer Confirm."
     await _safe_respond(interaction, message, ephemeral=True)
+    if deal and deal.get("status") == DEAL_STATUS_FUNDS_RECEIVED:
+        try:
+            await asyncio.wait_for(
+                _post_transition_ui(interaction.guild, deal, interaction=interaction, source="legacy_item_sent"),
+                timeout=DEAL_UI_HANDLER_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            logging.exception(
+                "Legacy Item Sent staged UI repair failed (guild_id=%s, row_id=%s)",
+                getattr(getattr(interaction, "guild", None), "id", None),
+                deal.get("id"),
+            )
 
 
 def _same_payout_payload(deal, platform, account, account_name):
@@ -4271,7 +4591,7 @@ async def _post_transition_ui(guild, deal, *, interaction=None, source=None, sta
 def _ui_result_message(default_message, ui_updated):
     if ui_updated:
         return default_message
-    return "Aksi berhasil diproses, tetapi tampilan deal gagal diperbarui. Gunakan `/deal refresh`."
+    return "Aksi berhasil diproses, tetapi tampilan tahap berikutnya gagal dibuat. Jalankan `/deal refresh`."
 
 
 async def process_deal_action(
@@ -4418,7 +4738,7 @@ async def process_deal_action(
             )
             return _result(
                 "success" if ui_updated else "state_changed_ui_failed",
-                _ui_result_message("Dana Masuk berhasil diproses.", ui_updated),
+                _ui_result_message("Dana Masuk berhasil diproses. Tahap berikutnya adalah Buyer Confirm.", ui_updated),
                 ok=True,
                 deal=updated,
                 state_changed=True,
@@ -5012,7 +5332,7 @@ class AddDealNoteModal(discord.ui.Modal, title="Add Deal Note"):
 
 class DisputeActionView(discord.ui.View):
     def __init__(self, deal_row_id: int):
-        super().__init__(timeout=86400)
+        super().__init__(timeout=None)
         self.deal_row_id = deal_row_id
 
     async def _require_staff(self, interaction):
@@ -5196,7 +5516,7 @@ class DealSummaryView(discord.ui.View):
         return None
 class FundsReceivedView(discord.ui.View):
     def __init__(self, deal_row_id: int):
-        super().__init__(timeout=86400)
+        super().__init__(timeout=None)
         self.deal_row_id = deal_row_id
 
     @discord.ui.button(label="✅ Buyer Confirm", style=discord.ButtonStyle.success, custom_id="funds_buyer_confirm")
@@ -5228,7 +5548,7 @@ class FundsReceivedView(discord.ui.View):
 
 class ItemSentView(discord.ui.View):
     def __init__(self, deal_row_id: int):
-        super().__init__(timeout=86400)
+        super().__init__(timeout=None)
         self.deal_row_id = deal_row_id
 
     @discord.ui.button(label="✅ Buyer Confirm", style=discord.ButtonStyle.success, custom_id="item_buyer_confirm")
@@ -5283,7 +5603,7 @@ class SellerPayoutModal(discord.ui.Modal, title="Data Pencairan Seller"):
 
 class BuyerConfirmedView(discord.ui.View):
     def __init__(self, deal_row_id: int, visible_actions=None):
-        super().__init__(timeout=86400)
+        super().__init__(timeout=None)
         self.deal_row_id = deal_row_id
         if visible_actions is not None:
             allowed_custom_ids = set()
@@ -5298,6 +5618,12 @@ class BuyerConfirmedView(discord.ui.View):
             for child in list(self.children):
                 if getattr(child, "custom_id", None) not in allowed_custom_ids:
                     self.remove_item(child)
+            order = {"buyer_payout": 0, "buyer_done": 0, "buyer_cancel": 1, "buyer_dispute": 2}
+            ordered_children = sorted(list(self.children), key=lambda child: order.get(getattr(child, "custom_id", ""), 99))
+            for child in ordered_children:
+                self.remove_item(child)
+            for child in ordered_children:
+                self.add_item(child)
 
     @discord.ui.button(label="🏦 Kirim Data Pencairan", style=discord.ButtonStyle.primary, custom_id="buyer_payout")
     async def kirim_data_pencairan(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -5310,7 +5636,7 @@ class BuyerConfirmedView(discord.ui.View):
         if await _block_if_disputed(interaction, deal):
             return
         if deal.get("status") != DEAL_STATUS_BUYER_CONFIRMED:
-            await interaction.response.send_message("Deal ini belum berada di status Buyer Confirmed.", ephemeral=True)
+            await interaction.response.send_message("Deal ini belum berada di tahap Menunggu Data Pencairan Seller.", ephemeral=True)
             return
         if not (_is_seller(interaction, deal) or await _can_manage_deal(interaction, deal=deal)):
             await interaction.response.send_message("Hanya seller atau middleman/staff yang bisa mengirim data pencairan.", ephemeral=True)
@@ -5331,7 +5657,7 @@ class BuyerConfirmedView(discord.ui.View):
             await interaction.response.send_message("Hanya middleman/staff yang bisa menyelesaikan deal.", ephemeral=True)
             return
         if deal["status"] != DEAL_STATUS_BUYER_CONFIRMED:
-            await interaction.response.send_message("Deal ini belum berada di status Buyer Confirmed.", ephemeral=True)
+            await interaction.response.send_message("Deal ini belum berada di tahap Menunggu Transfer ke Seller.", ephemeral=True)
             return
         if REQUIRE_SELLER_PAYOUT_INFO and not _has_seller_payout_info(deal):
             await interaction.response.send_message("Seller belum mengirim data pencairan.", ephemeral=True)
@@ -5385,7 +5711,7 @@ class BuyerConfirmedView(discord.ui.View):
 
 class SafeDealActionView(discord.ui.View):
     def __init__(self, deal):
-        super().__init__(timeout=86400)
+        super().__init__(timeout=None)
         self.deal_row_id = int(deal["id"])
 
     @discord.ui.button(label="✏️ Edit Deal", style=discord.ButtonStyle.primary, custom_id="safe_edit")
@@ -5457,7 +5783,7 @@ class VouchModal(discord.ui.Modal, title="Verified Deal Vouch"):
             await interaction.response.send_message("Review terlalu pendek.", ephemeral=True)
             return
         if error == "not_completed":
-            await interaction.response.send_message("Vouch hanya bisa diberikan setelah deal Completed.", ephemeral=True)
+            await interaction.response.send_message("Vouch hanya bisa diberikan setelah deal selesai.", ephemeral=True)
             return
         if error in ("not_participant", "not_allowed"):
             await interaction.response.send_message("Kamu tidak punya izin memberi vouch untuk target ini.", ephemeral=True)
@@ -5475,7 +5801,7 @@ class VouchModal(discord.ui.Modal, title="Verified Deal Vouch"):
 
 class VouchView(discord.ui.View):
     def __init__(self, deal_row_id: int, disabled=False):
-        super().__init__(timeout=86400)
+        super().__init__(timeout=None)
         self.deal_row_id = deal_row_id
         if disabled:
             for child in self.children:
@@ -5491,7 +5817,7 @@ class VouchView(discord.ui.View):
         if await _block_if_disputed(interaction, deal):
             return
         if deal["status"] != DEAL_STATUS_COMPLETED or not deal.get("isVouchEligible"):
-            await interaction.response.send_message("Vouch hanya bisa diberikan setelah deal Completed.", ephemeral=True)
+            await interaction.response.send_message("Vouch hanya bisa diberikan setelah deal selesai.", ephemeral=True)
             return
         target_id = _target_id_for_role(deal, target_role)
         if str(interaction.user.id) == str(target_id):
@@ -5639,7 +5965,7 @@ class DealStartView(discord.ui.View):
     def __init__(self, deal: Mapping[str, object]):
         if not isinstance(deal, Mapping):
             raise TypeError("DealStartView membutuhkan mapping deal lengkap.")
-        super().__init__(timeout=86400)
+        super().__init__(timeout=None)
         self.deal_row_id = int(deal["id"])
         self.middleman_id = int(deal["middlemanId"])
 
@@ -5695,7 +6021,7 @@ class DealStartView(discord.ui.View):
 
 class DealTermsView(discord.ui.View):
     def __init__(self, deal):
-        super().__init__(timeout=86400)
+        super().__init__(timeout=None)
         self.deal = deal
         self.middleman_id = int(deal["middlemanId"])
 
@@ -5820,12 +6146,6 @@ async def _recover_edit_message(guild, channel_id, message_id, *, embed=None, vi
         return "failed"
 
 
-def _recover_active_deal_view(deal):
-    if deal.get("status") not in DEAL_ACTIVE_STATUSES:
-        return None
-    return _view_for_deal_status(deal)
-
-
 async def _recover_single_active_deal(guild, deal):
     counts = _recovery_counts()
     if not deal or not deal.get("id"):
@@ -5859,18 +6179,6 @@ async def _recover_single_active_deal_unlocked(guild, deal):
     else:
         counts["skipped"] += 1
 
-    if deal.get("summaryMessageId"):
-        result = await _recover_edit_message(
-            guild,
-            channel_id,
-            deal.get("summaryMessageId"),
-            embed=await _summary_embed(deal, guild, client),
-            view=_recover_active_deal_view(deal),
-        )
-        counts["refreshed" if result == "refreshed" else result] += 1
-    else:
-        counts["skipped"] += 1
-
     if deal.get("paymentInstructionMessageId"):
         channel = await _recover_fetch_channel(guild, channel_id)
         if channel:
@@ -5892,43 +6200,19 @@ async def _recover_single_active_deal_unlocked(guild, deal):
     else:
         counts["skipped"] += 1
 
-    if get_deal_operational_stage(deal) == DEAL_STAGE_WAITING_FUNDS_CONFIRMATION:
-        repaired, result = await _repair_payment_proof_action_message(guild, deal, recreate=True)
-        if repaired:
-            counts["recovered" if result == "created" else "refreshed"] += 1
-        elif result == "missing":
-            counts["missing"] += 1
-        else:
-            counts["failed"] += 1
-    elif deal.get("paymentProofConfirmationMessageId"):
-        result = await _recover_edit_message(
-            guild,
-            channel_id,
-            deal.get("paymentProofConfirmationMessageId"),
-            embed=await _payment_proof_embed(deal, guild, client),
-            view=None,
-        )
-        counts["refreshed" if result == "refreshed" else result] += 1
-    else:
+    try:
+        refreshed, result = await _refresh_current_deal_view(guild, deal, recreate=True)
+    except Exception:
+        logging.exception("active staged deal recovery failed (guild_id=%s, row_id=%s)", getattr(guild, "id", None), deal.get("id"))
+        refreshed, result = False, "failed"
+    if refreshed:
+        counts["recovered" if result in ("created", "created_untracked", "adopted", "adopted_untracked", "terminal_repaired") else "refreshed"] += 1
+    elif result == "missing":
+        counts["missing"] += 1
+    elif result in ("retired", "not_applicable"):
         counts["skipped"] += 1
-
-    if deal.get("vouchProgressMessageId"):
-        if deal.get("status") == DEAL_STATUS_COMPLETED and deal.get("isVouchEligible"):
-            embed, complete = await _vouch_progress_embed(deal)
-            view = VouchView(deal["id"], disabled=complete)
-        else:
-            embed = None
-            view = None
-        result = await _recover_edit_message(
-            guild,
-            channel_id,
-            deal.get("vouchProgressMessageId"),
-            embed=embed,
-            view=view,
-        )
-        counts["refreshed" if result == "refreshed" else result] += 1
     else:
-        counts["skipped"] += 1
+        counts["failed"] += 1
     return counts
 
 
@@ -9014,7 +9298,7 @@ def setup(tree, client):
             await interaction.response.send_message("Review terlalu pendek.", ephemeral=True)
             return
         if error == "not_completed":
-            await interaction.response.send_message("Vouch hanya bisa diberikan setelah deal Completed.", ephemeral=True)
+            await interaction.response.send_message("Vouch hanya bisa diberikan setelah deal selesai.", ephemeral=True)
             return
         if error in ("not_participant", "not_allowed"):
             await interaction.response.send_message("Kamu tidak punya izin memberi vouch untuk target ini.", ephemeral=True)

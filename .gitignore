@@ -20,6 +20,9 @@ backups/
 *.log
 *.out
 *.err
+*.pid
+*.bak
+*.backup
 
 # Python cache/build artifacts
 __pycache__/
