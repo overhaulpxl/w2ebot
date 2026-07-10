@@ -10,13 +10,20 @@ w2ebot.db
 *.db-journal
 *.db-wal
 *.db-shm
+*.db-*
 *.sqlite
 *.sqlite3
+*.sqlite-*
 config.json
 
 # Runtime logs and backups
 logs/
 backups/
+tmp/
+temp/
+uploads/
+proofs/
+payment-images/
 *.log
 *.out
 *.err

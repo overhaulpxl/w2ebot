@@ -1,12 +1,16 @@
 import discord
 from discord import app_commands
 from collections.abc import Mapping
+from collections import OrderedDict
 from datetime import datetime
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from core import *
 from core import _deal_row_to_dict, _scam_report_row_to_dict
 import logging
 import asyncio
+import math
+import re
 import time
 import uuid
 
@@ -19,6 +23,11 @@ DANA_MASUK_RESPONSE_TIMEOUT_SECONDS = 8
 DEAL_RESOLUTION_TIMEOUT_SECONDS = 6
 DEAL_READ_HANDLER_TIMEOUT_SECONDS = 10
 DEAL_UI_HANDLER_TIMEOUT_SECONDS = 20
+DEAL_RENDER_MONEY_MAX_DIGITS = 15
+DEAL_RENDER_MONEY_MAX_INT = (10 ** DEAL_RENDER_MONEY_MAX_DIGITS) - 1
+DEAL_RENDER_FLOAT_SAFE_MAX = 9_007_199_254_740_991  # 2**53 - 1
+DEAL_RENDER_WARNING_CACHE_MAX = 256
+_DEAL_RENDER_WARNING_CACHE = OrderedDict()
 
 
 @dataclass
@@ -932,6 +941,8 @@ async def get_available_deal_actions(deal, actor):
     elif stage == DEAL_STAGE_WAITING_SELLER_TRANSFER:
         if is_manager:
             actions.extend([DEAL_ACTION_DONE, DEAL_ACTION_CANCEL, DEAL_ACTION_DISPUTE])
+            if not _has_transfer_proof(deal):
+                actions.append(DEAL_ACTION_PAYOUT)
     elif stage == DEAL_STAGE_DISPUTED and is_manager:
         actions.extend([DEAL_ACTION_RESOLVE_DISPUTE, DEAL_ACTION_ADD_NOTE, DEAL_ACTION_CANCEL])
     elif stage == DEAL_STAGE_WAITING_FORM and is_manager:
@@ -1363,6 +1374,8 @@ def _terms_embed(deal=None):
 
 
 async def _summary_embed(deal, guild=None, bot=None):
+    stage = get_deal_operational_stage(deal)
+    guild_id = getattr(guild, "id", None) or deal.get("guildId")
     embed = discord.Embed(title="📋 Middleman Deal Created", color=0x57F287)
     if deal.get("status") == DEAL_STATUS_WAITING_FUNDS:
         if deal.get("paymentProofMessageId"):
@@ -1371,19 +1384,19 @@ async def _summary_embed(deal, guild=None, bot=None):
             embed.description = "📣 **Buyer, silakan kirim gambar/PDF bukti pembayaran langsung di channel ini.**"
 
     fields = [
-        ("Deal ID", deal["dealId"]),
+        ("Deal ID", deal.get("dealId") or "-"),
         ("Buyer", await format_user_display(bot, guild, deal.get("buyerId"))),
         ("Seller", await format_user_display(bot, guild, deal.get("sellerId"))),
         ("Middleman", await format_user_display(bot, guild, deal.get("middlemanId"))),
-        ("Payment Penjual", deal["paymentPenjual"]),
-        ("Payment Pembeli", deal["paymentPembeli"]),
-        ("Nominal Item", format_rupiah(deal["nominalItem"])),
-        ("Fee Type", deal["feeType"]),
-        ("MM Fee", format_rupiah(deal["mmFee"])),
-        ("Buyer Pays", format_rupiah(deal["buyerPays"])),
-        ("Seller Receives", format_rupiah(deal["sellerReceives"])),
-        ("Deskripsi Item", deal["description"] or "-"),
-        ("Status", deal["status"]),
+        ("Payment Penjual", deal.get("paymentPenjual") or "Belum tersedia"),
+        ("Payment Pembeli", deal.get("paymentPembeli") or "Belum tersedia"),
+        ("Nominal Item", _safe_rupiah_display(deal, "nominalItem", stage=stage, guild_id=guild_id)),
+        ("Fee Type", deal.get("feeType") or "Belum tersedia"),
+        ("MM Fee", _safe_rupiah_display(deal, "mmFee", stage=stage, guild_id=guild_id)),
+        ("Buyer Pays", _safe_rupiah_display(deal, "buyerPays", stage=stage, guild_id=guild_id)),
+        ("Seller Receives", _safe_rupiah_display(deal, "sellerReceives", stage=stage, guild_id=guild_id)),
+        ("Deskripsi Item", deal.get("description") or "-"),
+        ("Status", deal.get("status") or "-"),
     ]
     if deal.get("formSubmittedById"):
         fields.append(("Form Submitted By", await format_user_display(bot, guild, deal.get("formSubmittedById"))))
@@ -1426,7 +1439,13 @@ async def _payment_instruction_embed(deal, profile, guild=None, bot=None, *, war
     embed.add_field(name="Buyer", value=await format_user_display(bot, guild, deal.get("buyerId")), inline=True)
     embed.add_field(name="Seller", value=await format_user_display(bot, guild, deal.get("sellerId")), inline=True)
     embed.add_field(name="Middleman/Admin", value=await format_user_display(bot, guild, owner_id), inline=True)
-    nominal = format_rupiah(deal.get("buyerPays")) if deal.get("buyerPays") else "Sesuai kesepakatan deal"
+    nominal = _safe_rupiah_display(
+        deal,
+        "buyerPays",
+        stage=get_deal_operational_stage(deal),
+        guild_id=getattr(guild, "id", None) or deal.get("guildId"),
+        missing_text="Sesuai kesepakatan deal",
+    )
     embed.add_field(name="Nominal", value=nominal, inline=True)
     embed.add_field(name="Status", value="Menunggu pembayaran buyer", inline=True)
     footer = profile.get("footerText") if profile and profile.get("footerText") and not warning else None
@@ -1518,11 +1537,90 @@ def _clean_payout_value(value):
     return str(value or "").strip()
 
 
+def _payout_value_is_safe(value, *, max_length):
+    text = _clean_payout_value(value)
+    if not text or len(text) > int(max_length):
+        return None
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in text):
+        return None
+    if "\n" in text or "\r" in text:
+        return None
+    return text
+
+
+def _validate_payout_inputs(platform, account, account_name):
+    cleaned_platform = _payout_value_is_safe(platform, max_length=100)
+    cleaned_account = _payout_value_is_safe(account, max_length=200)
+    cleaned_account_name = _payout_value_is_safe(account_name, max_length=200)
+    if not cleaned_platform or not cleaned_account or not cleaned_account_name:
+        return None, None, None, "invalid"
+    return cleaned_platform, cleaned_account, cleaned_account_name, None
+
+
 def _has_seller_payout_info(deal):
     return all(
         _clean_payout_value(deal.get(field))
         for field in ("sellerPayoutPlatform", "sellerPayoutAccount", "sellerPayoutName")
     )
+
+
+def _payout_display_warning(deal, field_name, warning_type):
+    try:
+        logging.warning(
+            "seller payout display fallback guild_id=%s row_id=%s deal_id=%s stage=%s field=%s warning_type=%s",
+            deal.get("guildId") if isinstance(deal, Mapping) else None,
+            deal.get("id") if isinstance(deal, Mapping) else None,
+            deal.get("dealId") if isinstance(deal, Mapping) else None,
+            get_deal_operational_stage(deal) if isinstance(deal, Mapping) else "unknown",
+            field_name,
+            warning_type,
+        )
+    except Exception:
+        return
+
+
+def _safe_private_payout_display_value(deal, field_name):
+    raw = deal.get(field_name) if isinstance(deal, Mapping) else None
+    text = str(raw or "").strip()
+    if not text:
+        _payout_display_warning(deal, field_name, "missing_payout_display_field")
+        return None, "missing_payout_display_field"
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in text) or "\n" in text or "\r" in text:
+        _payout_display_warning(deal, field_name, "invalid_payout_display_field")
+        return None, "invalid_payout_display_field"
+    escaped = discord.utils.escape_markdown(discord.utils.escape_mentions(text))
+    if not escaped or len(escaped) > 1024:
+        _payout_display_warning(deal, field_name, "invalid_payout_display_field")
+        return None, "invalid_payout_display_field"
+    return escaped, None
+
+
+def _private_payout_display_fields(deal):
+    fields = (
+        ("Platform", "sellerPayoutPlatform"),
+        ("No Rek / No HP / Email", "sellerPayoutAccount"),
+        ("Atas Nama", "sellerPayoutName"),
+    )
+    rendered = []
+    for label, field_name in fields:
+        value, error = _safe_private_payout_display_value(deal, field_name)
+        if error:
+            return None, error
+        rendered.append((label, value))
+    return rendered, None
+
+
+def _target_channel_allows_private_payout(guild, deal, channel):
+    try:
+        if not guild or not deal or not channel:
+            return False
+        if str(getattr(channel, "guild", guild).id) != str(guild.id):
+            return False
+        if str(getattr(channel, "id", "")) != str(deal.get("ticketChannelId") or ""):
+            return False
+        return _channel_is_private(guild, channel)
+    except Exception:
+        return False
 
 
 async def _buyer_confirm_embed(deal, guild=None, bot=None):
@@ -1576,12 +1674,12 @@ async def _seller_payout_received_embed(deal, guild=None, bot=None):
     return embed
 
 
-async def _seller_transfer_stage_embed(deal, guild=None, bot=None):
+async def _seller_transfer_stage_embed(deal, guild=None, bot=None, *, include_private_payout=False):
     embed = discord.Embed(
         title="Data Pencairan Seller Diterima",
         description=(
             "Data pencairan seller sudah diterima.\n\n"
-            "Middleman silakan melakukan transfer dana ke seller sesuai data yang sudah dikirim di channel private ini.\n"
+            "Middleman silakan melakukan transfer dana ke seller menggunakan data pencairan di bawah ini.\n"
             "Setelah transfer selesai, upload bukti transfer lalu tekan Done & Transfer Sukses."
         ),
         color=0x57F287,
@@ -1590,26 +1688,45 @@ async def _seller_transfer_stage_embed(deal, guild=None, bot=None):
     embed.add_field(name="Buyer", value=await format_user_display(bot, guild, deal.get("buyerId")), inline=True)
     embed.add_field(name="Seller", value=await format_user_display(bot, guild, deal.get("sellerId")), inline=True)
     embed.add_field(name="Middleman", value=await format_user_display(bot, guild, deal.get("middlemanId")), inline=True)
+    if include_private_payout:
+        payout_fields, _error = _private_payout_display_fields(deal)
+        if payout_fields:
+            for name, value in payout_fields:
+                embed.add_field(name=name, value=value, inline=False)
+        else:
+            embed.add_field(
+                name="Data Pencairan",
+                value="Data pencairan tersimpan, tetapi tidak dapat ditampilkan karena data tidak valid. Minta seller mengirim ulang data pencairan.",
+                inline=False,
+            )
+    else:
+        embed.add_field(
+            name="Data Pencairan",
+            value="Data pencairan tersimpan, tetapi hanya ditampilkan di channel deal private yang terverifikasi.",
+            inline=False,
+        )
     embed.add_field(name="Status", value="Menunggu Transfer ke Seller", inline=False)
     embed.set_footer(text="W2E Middleman")
     return embed
 
 
 async def _final_summary_embed(deal, guild=None, bot=None):
+    stage = get_deal_operational_stage(deal)
+    guild_id = getattr(guild, "id", None) or deal.get("guildId")
     embed = discord.Embed(title="✅ Deal Completed", color=0x57F287)
     fields = [
-        ("Deal ID", deal["dealId"]),
+        ("Deal ID", deal.get("dealId") or "-"),
         ("Buyer", await format_user_display(bot, guild, deal.get("buyerId"))),
         ("Seller", await format_user_display(bot, guild, deal.get("sellerId"))),
         ("Middleman", await format_user_display(bot, guild, deal.get("middlemanId"))),
-        ("Item / Deskripsi", deal["description"] or "-"),
-        ("Nominal Item", format_rupiah(deal["nominalItem"])),
-        ("MM Fee", format_rupiah(deal["mmFee"])),
-        ("Buyer Paid", format_rupiah(deal["buyerPays"])),
-        ("Seller Received", format_rupiah(deal["sellerReceives"])),
-        ("Fee Type", deal["feeType"]),
-        ("Payment Penjual", deal["paymentPenjual"]),
-        ("Payment Pembeli", deal["paymentPembeli"]),
+        ("Item / Deskripsi", deal.get("description") or "-"),
+        ("Nominal Item", _safe_rupiah_display(deal, "nominalItem", stage=stage, guild_id=guild_id, missing_text="Data tidak tersedia")),
+        ("MM Fee", _safe_rupiah_display(deal, "mmFee", stage=stage, guild_id=guild_id, missing_text="Data tidak tersedia")),
+        ("Buyer Paid", _safe_rupiah_display(deal, "buyerPays", stage=stage, guild_id=guild_id, missing_text="Data tidak tersedia")),
+        ("Seller Received", _safe_rupiah_display(deal, "sellerReceives", stage=stage, guild_id=guild_id, missing_text="Data tidak tersedia")),
+        ("Fee Type", deal.get("feeType") or "Data tidak tersedia"),
+        ("Payment Penjual", deal.get("paymentPenjual") or "Data tidak tersedia"),
+        ("Payment Pembeli", deal.get("paymentPembeli") or "Data tidak tersedia"),
         ("Completed At", format_discord_timestamp(deal.get("completedAt"), "f")),
         ("Status", "Selesai"),
     ]
@@ -1621,6 +1738,110 @@ async def _final_summary_embed(deal, guild=None, bot=None):
 
 def _target_id_for_role(deal, role):
     return get_deal_role_user_id(deal, role)
+
+
+def _safe_warning_cache_key(row_id, field_name, warning_type):
+    return (
+        str(row_id) if row_id is not None else "unknown",
+        str(field_name or "unknown"),
+        str(warning_type or "unknown"),
+    )
+
+
+def _log_deal_render_money_warning(deal, field_name, warning_type, *, stage=None, guild_id=None):
+    try:
+        row_id = deal.get("id") if isinstance(deal, Mapping) else None
+        key = _safe_warning_cache_key(row_id, field_name, warning_type)
+        if key in _DEAL_RENDER_WARNING_CACHE:
+            _DEAL_RENDER_WARNING_CACHE.move_to_end(key)
+            return
+        _DEAL_RENDER_WARNING_CACHE[key] = True
+        while len(_DEAL_RENDER_WARNING_CACHE) > DEAL_RENDER_WARNING_CACHE_MAX:
+            _DEAL_RENDER_WARNING_CACHE.popitem(last=False)
+
+        safe_stage = stage
+        if not safe_stage:
+            try:
+                safe_stage = get_deal_operational_stage(deal) if isinstance(deal, Mapping) else None
+            except Exception:
+                safe_stage = None
+        logging.warning(
+            "deal render used monetary fallback "
+            "guild_id=%s row_id=%s deal_id=%s stage=%s field=%s warning_type=%s",
+            guild_id or (deal.get("guildId") if isinstance(deal, Mapping) else None),
+            row_id,
+            deal.get("dealId") if isinstance(deal, Mapping) else None,
+            safe_stage or "unknown",
+            field_name,
+            warning_type,
+        )
+    except Exception:
+        return
+
+
+def _coerce_deal_money_for_display(value):
+    if isinstance(value, bool):
+        return None, "invalid_monetary_value"
+    if value is None:
+        return None, "missing_monetary_value"
+    if isinstance(value, int):
+        amount = value
+    elif isinstance(value, Decimal):
+        try:
+            if not value.is_finite() or value != value.to_integral_value():
+                return None, "invalid_monetary_value"
+            if value < 0 or value.adjusted() + 1 > DEAL_RENDER_MONEY_MAX_DIGITS:
+                return None, "invalid_monetary_value"
+            amount = int(value)
+        except (InvalidOperation, TypeError, ValueError, OverflowError):
+            return None, "invalid_monetary_value"
+    elif isinstance(value, float):
+        if not math.isfinite(value) or not value.is_integer() or abs(value) > DEAL_RENDER_FLOAT_SAFE_MAX:
+            return None, "invalid_monetary_value"
+        amount = int(value)
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None, "missing_monetary_value"
+        if not re.fullmatch(r"[0-9]+", text):
+            return None, "invalid_monetary_value"
+        if len(text) > DEAL_RENDER_MONEY_MAX_DIGITS:
+            return None, "invalid_monetary_value"
+        amount = int(text)
+    else:
+        return None, "invalid_monetary_value"
+
+    if amount < 0 or amount > DEAL_RENDER_MONEY_MAX_INT:
+        return None, "invalid_monetary_value"
+    return amount, None
+
+
+def _safe_rupiah_display(deal, field_name, *, stage=None, guild_id=None, missing_text="Belum tersedia"):
+    try:
+        has_field = isinstance(deal, Mapping) and field_name in deal
+        value = deal.get(field_name) if has_field else None
+        amount, warning_type = _coerce_deal_money_for_display(value)
+        if warning_type:
+            if not has_field:
+                warning_type = "missing_monetary_value"
+            _log_deal_render_money_warning(
+                deal if isinstance(deal, Mapping) else {},
+                field_name,
+                warning_type,
+                stage=stage,
+                guild_id=guild_id,
+            )
+            return missing_text
+        return format_rupiah(amount)
+    except Exception:
+        _log_deal_render_money_warning(
+            deal if isinstance(deal, Mapping) else {},
+            field_name,
+            "invalid_monetary_value",
+            stage=stage,
+            guild_id=guild_id,
+        )
+        return missing_text
 
 
 async def _vouch_success_embed(vouch, guild=None, bot=None):
@@ -3022,15 +3243,17 @@ async def _refresh_vouch_progress_message(interaction: discord.Interaction, deal
 
 async def _deal_info_embed(deal, show_notes=False, guild=None, bot=None):
     embed = discord.Embed(title=f"Deal Info: {deal.get('dealId') or '-'}", color=0x5865F2)
+    stage = get_deal_operational_stage(deal)
+    guild_id = getattr(guild, "id", None) or deal.get("guildId")
     fields = [
         ("Buyer", await format_user_display(bot, guild, deal.get("buyerId"))),
         ("Seller", await format_user_display(bot, guild, deal.get("sellerId"))),
         ("Middleman", await format_user_display(bot, guild, deal.get("middlemanId"))),
         ("Product / Deskripsi Item", deal.get("description") or "-"),
-        ("Nominal Item", format_rupiah(deal["nominalItem"] or 0)),
-        ("MM Fee", format_rupiah(deal["mmFee"] or 0)),
-        ("Buyer Pays", format_rupiah(deal["buyerPays"] or 0)),
-        ("Seller Receives", format_rupiah(deal["sellerReceives"] or 0)),
+        ("Nominal Item", _safe_rupiah_display(deal, "nominalItem", stage=stage, guild_id=guild_id)),
+        ("MM Fee", _safe_rupiah_display(deal, "mmFee", stage=stage, guild_id=guild_id)),
+        ("Buyer Pays", _safe_rupiah_display(deal, "buyerPays", stage=stage, guild_id=guild_id)),
+        ("Seller Receives", _safe_rupiah_display(deal, "sellerReceives", stage=stage, guild_id=guild_id)),
         ("Status", deal.get("status") or "-"),
         ("Created At", format_discord_timestamp(deal.get("createdAt"), "f")),
         ("Last Updated", format_discord_timestamp(deal.get("updatedAt"), "R")),
@@ -3595,7 +3818,7 @@ async def _retire_stage_controls(channel, deal, roles, *, active_role=None):
     return retired
 
 
-async def _stage_embed_for_role(role, deal, guild, *, attachment=None):
+async def _stage_embed_for_role(role, deal, guild, *, attachment=None, target_channel=None, include_private_payout=False):
     if role == DEAL_MSG_ROLE_SUMMARY:
         return await _summary_embed(deal, guild, client)
     if role == DEAL_MSG_ROLE_PAYMENT_PROOF:
@@ -3606,7 +3829,8 @@ async def _stage_embed_for_role(role, deal, guild, *, attachment=None):
         return await _buyer_confirm_embed(deal, guild, client)
     if role == DEAL_MSG_ROLE_PAYOUT:
         if _has_seller_payout_info(deal):
-            return await _seller_transfer_stage_embed(deal, guild, client)
+            private_ok = include_private_payout and _target_channel_allows_private_payout(guild, deal, target_channel)
+            return await _seller_transfer_stage_embed(deal, guild, client, include_private_payout=private_ok)
         return _seller_payout_instruction_embed(deal)
     if role == DEAL_MSG_ROLE_DONE:
         return await _completed_embed(deal, guild, client, attachment)
@@ -3772,7 +3996,18 @@ async def _refresh_current_deal_view(guild, deal, *, recreate=True):
                 recreate=recreate,
             )
 
-    embed = await _stage_embed_for_role(plan.active_role, deal, guild)
+    include_private_payout = (
+        plan.active_role == DEAL_MSG_ROLE_PAYOUT
+        and _has_seller_payout_info(deal)
+        and _target_channel_allows_private_payout(guild, deal, channel)
+    )
+    embed = await _stage_embed_for_role(
+        plan.active_role,
+        deal,
+        guild,
+        target_channel=channel,
+        include_private_payout=include_private_payout,
+    )
     view = _build_stage_view(deal, plan.active_role)
     if not embed:
         return False, "failed"
@@ -4510,9 +4745,11 @@ def _same_payout_payload(deal, platform, account, account_name):
     )
 
 
-async def _post_transition_ui(guild, deal, *, interaction=None, source=None, started_at=None):
+async def _post_transition_ui(guild, deal, *, interaction=None, source=None, started_at=None, invocation=None):
     lock_key = None
     try:
+        if invocation and interaction:
+            _deal_invocation_log(invocation, interaction, "ui_lock_requested", deal=deal)
         if interaction:
             _dana_masuk_phase_log(
                 interaction,
@@ -4524,6 +4761,8 @@ async def _post_transition_ui(guild, deal, *, interaction=None, source=None, sta
         lock_key = _acquire_action_lock("ui", guild.id, deal["id"], None, ttl=20)
         if not lock_key:
             return False, "locked"
+        if invocation and interaction:
+            _deal_invocation_log(invocation, interaction, "ui_lock_acquired", deal=deal)
         if interaction:
             _dana_masuk_phase_log(
                 interaction,
@@ -4533,6 +4772,8 @@ async def _post_transition_ui(guild, deal, *, interaction=None, source=None, sta
                 started_at=started_at,
             )
         latest = await get_deal_by_id(deal["id"]) or deal
+        if invocation and interaction:
+            _deal_invocation_log(invocation, interaction, "ui_refresh_started", deal=latest)
         if interaction:
             _dana_masuk_phase_log(
                 interaction,
@@ -4548,6 +4789,8 @@ async def _post_transition_ui(guild, deal, *, interaction=None, source=None, sta
             )
         except asyncio.TimeoutError:
             result = (False, "timeout")
+        if invocation and interaction:
+            _deal_invocation_log(invocation, interaction, "ui_refresh_completed", deal=latest, result_code=result[1])
         if interaction:
             _dana_masuk_phase_log(
                 interaction,
@@ -4578,6 +4821,8 @@ async def _post_transition_ui(guild, deal, *, interaction=None, source=None, sta
         return False, "failed"
     finally:
         _release_action_lock(lock_key)
+        if invocation and interaction:
+            _deal_invocation_log(invocation, interaction, "ui_lock_released", deal=deal)
         if interaction:
             _dana_masuk_phase_log(
                 interaction,
@@ -4989,69 +5234,163 @@ async def process_deal_action(
         _release_action_lock(lock_key)
 
 
-async def process_deal_payout_submit(interaction, deal_row_id, platform, account, account_name):
-    deal = await get_deal_by_id(deal_row_id)
-    if not deal:
-        return _result("validation_failed", "Data deal tidak ditemukan.", retryable=True)
-    stage = get_deal_operational_stage(deal)
-    if stage not in (DEAL_STAGE_WAITING_SELLER_PAYOUT, DEAL_STAGE_WAITING_SELLER_TRANSFER):
-        return _result("invalid_status", "Deal ini belum berada di tahap data pencairan.", deal=deal)
-    allowed = await get_available_deal_actions(deal, interaction.user)
-    if DEAL_ACTION_PAYOUT not in allowed:
-        return _result("unauthorized", "Kamu tidak punya permission untuk menjalankan aksi deal ini.", deal=deal)
-    platform = _clean_payout_value(platform)
-    account = _clean_payout_value(account)
-    account_name = _clean_payout_value(account_name)
-    if not platform or not account or not account_name:
-        return _result("validation_failed", "Data pencairan belum lengkap.", deal=deal, retryable=True)
-    if _same_payout_payload(deal, platform, account, account_name):
-        return _result("already_processed", "Data pencairan seller sudah sama, tidak ada perubahan.", deal=deal, ui_updated=True)
+async def process_deal_payout_submit(interaction, deal_row_id, platform, account, account_name, *, invocation=None):
+    guild = getattr(interaction, "guild", None)
+    actor = getattr(interaction, "user", None)
+    guild_id = getattr(interaction, "guild_id", None) or getattr(guild, "id", None)
 
-    lock_key = _acquire_action_lock("transition", interaction.guild.id, deal["id"], interaction.user.id)
+    if invocation:
+        _deal_invocation_log(invocation, interaction, "input_validation_started", deal_row_id=deal_row_id)
+    platform, account, account_name, input_error = _validate_payout_inputs(platform, account, account_name)
+    if invocation:
+        _deal_invocation_log(invocation, interaction, "input_validation_completed", deal_row_id=deal_row_id, result_code=input_error or "ok")
+    if input_error:
+        return _result(
+            "validation_failed",
+            "Data pencairan belum valid. Periksa kembali semua field lalu kirim ulang.",
+            retryable=True,
+        )
+
+    if invocation:
+        _deal_invocation_log(invocation, interaction, "deal_refetch_started", deal_row_id=deal_row_id)
+    deal = await get_deal_by_id(deal_row_id)
+    if invocation:
+        _deal_invocation_log(invocation, interaction, "deal_refetch_completed", deal=deal, result_code="found" if deal else "missing")
+    if not deal or str(deal.get("guildId")) != str(guild_id):
+        return _result("validation_failed", "Data deal tidak ditemukan.", retryable=True)
+    if not guild or not actor:
+        return _result("validation_failed", "Data deal tidak ditemukan.", deal=deal, retryable=True)
+
+    channel = await _original_deal_channel(guild, deal)
+    if not channel or not _channel_is_private(guild, channel):
+        return _result(
+            "validation_failed",
+            "Deal hanya bisa diproses di channel ticket/private karena channel ini masih bisa dilihat publik.",
+            deal=deal,
+        )
+
+    stage = get_deal_operational_stage(deal)
+    if _same_payout_payload(deal, platform, account, account_name) and (_is_seller(interaction, deal) or await _can_manage_deal(interaction, deal=deal)):
+        return _result("already_processed", "Data pencairan yang sama sudah tersimpan.", deal=deal, ui_updated=True)
+    if stage not in (DEAL_STAGE_WAITING_SELLER_PAYOUT, DEAL_STAGE_WAITING_SELLER_TRANSFER):
+        return _result("invalid_status", "Status deal sudah berubah. Buka kembali tombol Data Pencairan pada tahap yang aktif.", deal=deal)
+    if stage == DEAL_STAGE_WAITING_SELLER_TRANSFER and _has_transfer_proof(deal):
+        return _result("invalid_status", "Status deal sudah berubah. Buka kembali tombol Data Pencairan pada tahap yang aktif.", deal=deal)
+
+    if invocation:
+        _deal_invocation_log(invocation, interaction, "permission_validation_started", deal=deal)
+    allowed = await get_available_deal_actions(deal, actor)
+    if invocation:
+        _deal_invocation_log(invocation, interaction, "permission_validation_completed", deal=deal, result_code="allowed" if DEAL_ACTION_PAYOUT in allowed else "denied")
+    if DEAL_ACTION_PAYOUT not in allowed:
+        return _result("unauthorized", "Kamu tidak punya permission untuk mengirim atau mengubah data pencairan deal ini.", deal=deal)
+
+    if invocation:
+        _deal_invocation_log(invocation, interaction, "transition_lock_requested", deal=deal)
+    lock_key = _acquire_action_lock("transition", guild_id, deal["id"], actor.id)
     if not lock_key:
         await _send_lock_collision_audit(interaction, "transition", deal["id"])
         return _result("lock_held", "Aksi ini sedang diproses. Coba lagi beberapa saat.", deal=deal)
+    if invocation:
+        _deal_invocation_log(invocation, interaction, "transition_lock_acquired", deal=deal)
+
+    old_status = deal.get("status")
+    latest = deal
     try:
         latest = await get_deal_by_id(deal["id"])
-        if not latest or get_deal_operational_stage(latest) not in (DEAL_STAGE_WAITING_SELLER_PAYOUT, DEAL_STAGE_WAITING_SELLER_TRANSFER):
-            return _result("already_processed", "Aksi ini sudah diproses atau status deal sudah berubah.", deal=latest or deal)
-        allowed = await get_available_deal_actions(latest, interaction.user)
+        if invocation:
+            _deal_invocation_log(invocation, interaction, "post_lock_refetch_completed", deal=latest, result_code="found" if latest else "missing")
+        if not latest or str(latest.get("guildId")) != str(guild_id):
+            return _result("validation_failed", "Data deal tidak ditemukan.", retryable=True)
+        latest_stage = get_deal_operational_stage(latest)
+        if _same_payout_payload(latest, platform, account, account_name) and (_is_seller(interaction, latest) or await _can_manage_deal(interaction, deal=latest)):
+            return _result("already_processed", "Data pencairan yang sama sudah tersimpan.", deal=latest, ui_updated=True)
+        if latest_stage not in (DEAL_STAGE_WAITING_SELLER_PAYOUT, DEAL_STAGE_WAITING_SELLER_TRANSFER):
+            return _result("already_processed", "Aksi ini sudah diproses atau status deal sudah berubah.", deal=latest)
+        if latest_stage == DEAL_STAGE_WAITING_SELLER_TRANSFER and _has_transfer_proof(latest):
+            return _result("already_processed", "Aksi ini sudah diproses atau status deal sudah berubah.", deal=latest)
+        allowed = await get_available_deal_actions(latest, actor)
         if DEAL_ACTION_PAYOUT not in allowed:
-            return _result("unauthorized", "Kamu tidak punya permission untuk menjalankan aksi deal ini.", deal=latest)
-        if _same_payout_payload(latest, platform, account, account_name):
-            return _result("already_processed", "Data pencairan seller sudah sama, tidak ada perubahan.", deal=latest, ui_updated=True)
+            return _result("unauthorized", "Kamu tidak punya permission untuk mengirim atau mengubah data pencairan deal ini.", deal=latest)
+
         was_update = _has_seller_payout_info(latest)
-        updated, error = await update_deal_fields(
-            latest["id"],
-            interaction.user.id,
-            {
-                "sellerPayoutPlatform": platform,
-                "sellerPayoutAccount": account,
-                "sellerPayoutName": account_name,
-                "sellerPayoutSubmittedById": str(interaction.user.id),
-                "sellerPayoutSubmittedAt": _now(),
-            },
-            "deal_seller_payout_updated" if was_update else "deal_seller_payout_submitted",
-            "Seller payout data submitted.",
-        )
+        if invocation:
+            _deal_invocation_log(invocation, interaction, "database_update_started", deal=latest)
+        try:
+            updated, error = await update_deal_payout_atomic(
+                latest["id"],
+                actor.id,
+                platform,
+                account,
+                account_name,
+                expected_status=DEAL_STATUS_BUYER_CONFIRMED,
+                action="deal_seller_payout_corrected" if was_update else "deal_seller_payout_submitted",
+                reason="seller payout corrected" if was_update else "seller payout submitted",
+                require_no_transfer_proof=True,
+            )
+        except Exception as exc:
+            if invocation:
+                _deal_invocation_log(invocation, interaction, "database_update_completed", deal=latest, result_code="exception", exception=exc)
+            logging.exception(
+                "Seller payout DB update failed (guild_id=%s, row_id=%s, deal_id=%s)",
+                guild_id,
+                latest.get("id"),
+                latest.get("dealId"),
+            )
+            fresh = await get_deal_by_id(latest["id"])
+            if fresh and _same_payout_payload(fresh, platform, account, account_name):
+                return _result(
+                    "state_changed_ui_failed",
+                    "Aksi berhasil diproses, tetapi tampilan tahap transfer gagal diperbarui. Jalankan `/deal refresh`.",
+                    ok=True,
+                    deal=fresh,
+                    state_changed=True,
+                    old_status=old_status,
+                    new_status=fresh.get("status"),
+                    ui_updated=False,
+                    retryable=False,
+                    audit_written=True,
+                )
+            return _result("failed_before_state_change", "Data pencairan belum berhasil disimpan. Silakan coba lagi.", deal=fresh or latest, retryable=True)
+        if invocation:
+            _deal_invocation_log(invocation, interaction, "database_update_completed", deal=updated or latest, result_code=error or "changed")
         if error:
-            return _result("validation_failed", "Gagal menyimpan data pencairan. Coba lagi nanti.", deal=latest, retryable=True)
+            return _result("already_processed", "Aksi ini sudah diproses atau status deal sudah berubah.", deal=updated or latest)
+
         _release_action_lock(lock_key)
         lock_key = None
-        ui_updated, _ui_status = await _post_transition_ui(interaction.guild, updated)
+        if invocation:
+            _deal_invocation_log(invocation, interaction, "transition_lock_released", deal=updated)
+        ui_updated, _ui_status = await _post_transition_ui(guild, updated, interaction=interaction, source="payout_modal_submit", invocation=invocation)
+        if not ui_updated:
+            return _result(
+                "state_changed_ui_failed",
+                "Aksi berhasil diproses, tetapi tampilan tahap transfer gagal diperbarui. Jalankan `/deal refresh`.",
+                ok=True,
+                deal=updated,
+                state_changed=True,
+                old_status=old_status,
+                new_status=updated.get("status"),
+                ui_updated=False,
+                retryable=False,
+                audit_written=True,
+            )
         return _result(
-            "success" if ui_updated else "state_changed_ui_failed",
-            _ui_result_message("Data pencairan seller berhasil diperbarui." if was_update else "Data pencairan seller berhasil disimpan.", ui_updated),
+            "success",
+            "Data pencairan berhasil disimpan. Tahap berikutnya adalah Transfer ke Seller.",
             ok=True,
             deal=updated,
             state_changed=True,
-            old_status=latest.get("status"),
+            old_status=old_status,
             new_status=updated.get("status"),
-            ui_updated=ui_updated,
+            ui_updated=True,
             audit_written=True,
         )
     finally:
-        _release_action_lock(lock_key)
+        if lock_key:
+            _release_action_lock(lock_key)
+            if invocation:
+                _deal_invocation_log(invocation, interaction, "transition_lock_released", deal=latest or deal)
 
 
 async def process_deal_add_note(interaction, deal, note):
@@ -5586,18 +5925,62 @@ class SellerPayoutModal(discord.ui.Modal, title="Data Pencairan Seller"):
         self.deal_row_id = int(deal_row_id)
 
     async def on_submit(self, interaction: discord.Interaction):
-        deal = await get_deal_by_id(self.deal_row_id)
-        if not deal:
-            await interaction.response.send_message("Data deal tidak ditemukan.", ephemeral=True)
-            return
-        result = await process_deal_payout_submit(
+        invocation = _new_deal_invocation(interaction, "seller payout modal submit", "payout_modal_submit")
+        try:
+            _deal_invocation_log(invocation, interaction, "modal_submit_received", deal_row_id=self.deal_row_id)
+        except Exception:
+            pass
+        await _safe_defer_deal_interaction(interaction, invocation, ephemeral=True)
+        result = None
+        try:
+            result = await process_deal_payout_submit(
+                interaction,
+                self.deal_row_id,
+                self.platform.value,
+                self.account.value,
+                self.account_name.value,
+                invocation=invocation,
+            )
+        except Exception as exc:
+            _deal_invocation_log(invocation, interaction, "modal_submit_exception", deal_row_id=self.deal_row_id, exception=exc)
+            logging.exception(
+                "Seller payout modal submit failed (guild_id=%s, channel_id=%s, actor_id=%s, row_id=%s)",
+                getattr(interaction, "guild_id", None) or getattr(getattr(interaction, "guild", None), "id", None),
+                getattr(interaction, "channel_id", None) or getattr(getattr(interaction, "channel", None), "id", None),
+                getattr(getattr(interaction, "user", None), "id", None),
+                self.deal_row_id,
+            )
+            result = _result("failed_before_state_change", "Terjadi kesalahan saat menyimpan data pencairan.", retryable=True)
+            try:
+                platform, account, account_name, input_error = _validate_payout_inputs(
+                    self.platform.value,
+                    self.account.value,
+                    self.account_name.value,
+                )
+                fresh = await get_deal_by_id(self.deal_row_id)
+                if not input_error and fresh and _same_payout_payload(fresh, platform, account, account_name):
+                    result = _result(
+                        "state_changed_ui_failed",
+                        "Aksi berhasil diproses, tetapi tampilan tahap transfer gagal diperbarui. Jalankan `/deal refresh`.",
+                        ok=True,
+                        deal=fresh,
+                        state_changed=True,
+                        old_status=fresh.get("status"),
+                        new_status=fresh.get("status"),
+                        ui_updated=False,
+                        retryable=False,
+                        audit_written=True,
+                    )
+            except Exception:
+                pass
+        await _finalize_deal_invocation(
             interaction,
-            self.deal_row_id,
-            self.platform.value,
-            self.account.value,
-            self.account_name.value,
+            invocation,
+            (result.user_message if result else "Terjadi kesalahan saat menyimpan data pencairan."),
+            result_code=(result.code if result else "failed_before_state_change"),
+            deal=(result.deal if result else None),
+            ephemeral=True,
         )
-        await _send_deal_action_result(interaction, result, ephemeral=not result.ok)
         return
 
 
@@ -5635,11 +6018,13 @@ class BuyerConfirmedView(discord.ui.View):
             return
         if await _block_if_disputed(interaction, deal):
             return
-        if deal.get("status") != DEAL_STATUS_BUYER_CONFIRMED:
+        stage = get_deal_operational_stage(deal)
+        allowed = await get_available_deal_actions(deal, interaction.user)
+        if stage not in (DEAL_STAGE_WAITING_SELLER_PAYOUT, DEAL_STAGE_WAITING_SELLER_TRANSFER) or DEAL_ACTION_PAYOUT not in allowed:
             await interaction.response.send_message("Deal ini belum berada di tahap Menunggu Data Pencairan Seller.", ephemeral=True)
             return
-        if not (_is_seller(interaction, deal) or await _can_manage_deal(interaction, deal=deal)):
-            await interaction.response.send_message("Hanya seller atau middleman/staff yang bisa mengirim data pencairan.", ephemeral=True)
+        if stage == DEAL_STAGE_WAITING_SELLER_TRANSFER and _has_transfer_proof(deal):
+            await interaction.response.send_message("Status deal sudah berubah. Buka kembali tombol Data Pencairan pada tahap yang aktif.", ephemeral=True)
             return
         await interaction.response.send_modal(SellerPayoutModal(self.deal_row_id))
 

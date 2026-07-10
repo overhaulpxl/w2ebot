@@ -46,8 +46,8 @@ AI_AUTO_REPLY_CHANNEL_ID=0    # Channel where bot auto-replies without prefix. 0
 ### Repository Hygiene
 Local runtime files are intentionally ignored by git:
 - `.env` and `.env.*` except `.env.example`
-- SQLite runtime files such as `w2ebot.db`, `*.db-wal`, and `*.db-shm`
-- logs, backups, Python caches, dashboard build output, and local agent/editor folders
+- SQLite runtime files such as `w2ebot.db`, `*.db-wal`, `*.db-shm`, and other SQLite sidecars
+- logs, backups, temp/upload folders, proof/payment image folders, Python caches, dashboard build output, and local agent/editor folders
 
 Do not commit production tokens, live databases, proof/payment images, or bot logs.
 
@@ -98,6 +98,7 @@ Boss spawns hourly (20% chance) or via admin API. Pets add bonus damage.
 - **Secure Transactions & Access Model**: Full-featured middleman system for buyer, seller, assigned middleman, staff, admin, and owner-role workflows. Buttons remain the normal staged UI, while command fallback exists for stale/deleted/broken button messages.
 - **Legacy-Style Staged UI**: Major stages use dedicated private ticket messages: payment proof, Dana Masuk received, Buyer Confirm, payout instruction, seller transfer, Done, completed summary, and verified vouch progress. Only one tracked stage message has active transition buttons at a time.
 - **Workflow & Proofs (Simplified)**: Deal form -> private payment instruction -> buyer payment proof -> Dana Masuk -> Buyer Confirm -> seller payout data -> transfer proof/Done. The legacy "Item Sent" stage is permanently skipped for new deals and only retained for old-row compatibility.
+- **Seller Payout Safety**: Seller payout modal submits acknowledge immediately, update payout data with expected-status atomic writes, preserve account/phone/email as text, and show the full payout destination only in the original confirmed-private deal channel. Public feeds, status/next, recovery responses, logs, and audit reasons stay sanitized.
 - **Button + Command Fallbacks**: Staff can inspect or continue a deal with `/deal status`, `/deal next`, `/deal action`, `/deal refresh`, and `/deal recover`; prefix equivalents are available as `w!deal status`, `w!deal next`, `w!deal action`, `w!deal refresh`, and `w!deal recover`.
 - **Per-User Payment Profile Config (`/deal payment-config`)**: Each middleman/admin configures their own payment profile by guild + user. Payment instructions can contain text, QRIS/image, or image-only details and are only posted in private deal channels or staff-only/ephemeral/DM previews.
 - **Public Trust Panels (`/deal panel`)**: Set up public tracking boards including trusted vouch leaderboards, server trust stats, recent vouches feed, completed deals feed, middleman status panels, active deal queues, and dispute boards.

@@ -6795,6 +6795,85 @@ async def update_deal_fields(deal_row_id, actor_id, fields, action, reason=None)
     return await get_deal_by_id(deal_row_id), None
 
 
+async def update_deal_payout_atomic(
+    deal_row_id,
+    actor_id,
+    platform,
+    account,
+    account_name,
+    *,
+    expected_status,
+    action,
+    reason=None,
+    require_no_transfer_proof=True,
+):
+    now = _deal_now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        async with db.execute(f"SELECT {DEAL_SELECT} FROM Deal WHERE id=?", (int(deal_row_id),)) as cursor:
+            row = await cursor.fetchone()
+        deal = _deal_row_to_dict(row)
+        if not deal:
+            await db.rollback()
+            return None, "not_found"
+        if deal.get("status") != expected_status:
+            await db.rollback()
+            return deal, "invalid_status"
+        if require_no_transfer_proof and (
+            str(deal.get("transferProofUrl") or "").strip()
+            or str(deal.get("transferProofMessageId") or "").strip()
+            or str(deal.get("transferProofSubmittedAt") or "").strip()
+        ):
+            await db.rollback()
+            return deal, "transfer_proof_exists"
+
+        proof_guard = ""
+        params = [
+            platform,
+            account,
+            account_name,
+            str(actor_id) if actor_id is not None else None,
+            now,
+            now,
+            int(deal_row_id),
+            expected_status,
+        ]
+        if require_no_transfer_proof:
+            proof_guard = """
+            AND COALESCE(TRIM(CAST(transferProofUrl AS TEXT)), '') = ''
+            AND COALESCE(TRIM(CAST(transferProofMessageId AS TEXT)), '') = ''
+            AND COALESCE(TRIM(CAST(transferProofSubmittedAt AS TEXT)), '') = ''
+            """
+        cursor = await db.execute(
+            f"""
+            UPDATE Deal
+            SET sellerPayoutPlatform=?,
+                sellerPayoutAccount=?,
+                sellerPayoutName=?,
+                sellerPayoutSubmittedById=?,
+                sellerPayoutSubmittedAt=?,
+                updatedAt=?
+            WHERE id=? AND status=?
+            {proof_guard}
+            """,
+            tuple(params),
+        )
+        if cursor.rowcount == 0:
+            await db.rollback()
+            return deal, "invalid_status"
+        await db.execute(
+            """
+            INSERT INTO DealLog (guildId, dealId, action, actorId, oldValue, newValue, reason, createdAt)
+            VALUES (?, ?, ?, ?, NULL, NULL, ?, ?)
+            """,
+            (deal["guildId"], deal["dealId"], action, str(actor_id) if actor_id else None, reason, now),
+        )
+        await db.commit()
+    await write_audit(action, deal_row_id, reason, source="deal")
+    await refresh_staff_operation_panels(deal["guildId"], {"active_deals"})
+    return await get_deal_by_id(deal_row_id), None
+
+
 async def update_deal_payment_proof_atomic(deal_row_id, actor_id, fields, action, reason=None):
     fields = dict(fields or {})
     if not fields:
