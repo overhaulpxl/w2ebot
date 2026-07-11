@@ -66,7 +66,7 @@ TREE_SYNC_DONE = False
 
 
 def _schedule_ready_task(name, factory, *, once=False):
-    """Jadwalkan satu task on-ready tanpa duplikasi saat reconnect."""
+    """Schedule one on-ready task without duplicating it after reconnects."""
     key = str(name)
     existing = READY_TASKS.get(key)
     if existing and not existing.done():
@@ -321,6 +321,10 @@ def _init_db():
         )
     ''')
     existing_deal_cols = {row[1] for row in conn.execute("PRAGMA table_info(Deal)").fetchall()}
+    required_deal_columns = {"id", "guildId", "dealId", "ticketChannelId"}
+    if not required_deal_columns.issubset(existing_deal_cols):
+        logging.critical("Deal database schema is incompatible and requires manual repair.")
+        raise RuntimeError("Deal database schema is incompatible and requires manual repair.")
     deal_columns_to_add = {
         "paymentProofUrl": "TEXT",
         "paymentProofNotes": "TEXT",
@@ -741,7 +745,7 @@ async def load_json(filepath):
                     _json_cache[basename] = data
                     return data
     except Exception as e:
-        logging.error(f"DB Load Error: {e}")
+        logging.error("DB Load Error exception=%s", type(e).__name__)
     _json_cache[basename] = {}
     return {}
 
@@ -753,7 +757,7 @@ async def save_json(filepath, data):
             await db.execute("INSERT OR REPLACE INTO json_store (filename, content) VALUES (?, ?)", (basename, json.dumps(data, ensure_ascii=False)))
             await db.commit()
     except Exception as e:
-        logging.error(f"DB Save Error: {e}")
+        logging.error("DB Save Error exception=%s", type(e).__name__)
 
 async def get_discord_stat(uid):
     try:
@@ -781,7 +785,7 @@ async def get_discord_stat(uid):
                                 logging.info(f"[LEVELUP] uid={uid} naik level {old_level} -> {level} (sisa XP {xp})")
                     return {'coins': coins, 'xp': xp, 'level': level, 'lastDaily': lastDaily}
     except Exception as e:
-        logging.error(f"DB Error get: {e}")
+        logging.error("DB Error get exception=%s", type(e).__name__)
     return {'coins': 0, 'xp': 0, 'level': 1, 'lastDaily': ''}
 
 async def update_discord_stat(uid, display_name, coins, xp, level, last_daily):
@@ -812,7 +816,7 @@ async def update_discord_stat(uid, display_name, coins, xp, level, last_daily):
             """, (str(uid), display_name, coins, xp, level, last_daily, now))
             await db.commit()
     except Exception as e:
-        logging.error(f"DB Error update: {e}")
+        logging.error("DB Error update exception=%s", type(e).__name__)
 
 
 async def adjust_coins(uid, delta, display_name=None):
@@ -833,7 +837,7 @@ async def adjust_coins(uid, delta, display_name=None):
         arah = '+' if delta >= 0 else ''
         logging.info(f"[ECONOMY] {display_name or uid} ({uid}) koin {arah}{delta} -> saldo {saldo}")
     except Exception as e:
-        logging.error(f"DB Error adjust_coins: {e}")
+        logging.error("DB Error adjust_coins exception=%s", type(e).__name__)
 
 
 # Alias semantik untuk kredit koin (biar maksud kode jelas).
@@ -867,7 +871,7 @@ async def try_spend(uid, amount, display_name=None):
                 logging.info(f"[ECONOMY] {display_name or uid} ({uid}) GAGAL bayar {amount} (saldo kurang)")
             return ok
     except Exception as e:
-        logging.error(f"DB Error try_spend: {e}")
+        logging.error("DB Error try_spend exception=%s", type(e).__name__)
         return False
 
 
@@ -887,7 +891,7 @@ async def add_xp(uid, display_name, xp_delta):
             await db.commit()
         logging.info(f"[XP] {display_name or uid} ({uid}) +{xp_delta} XP")
     except Exception as e:
-        logging.error(f"DB Error add_xp: {e}")
+        logging.error("DB Error add_xp exception=%s", type(e).__name__)
 
 
 async def set_last_daily(uid, value, display_name=None):
@@ -902,7 +906,7 @@ async def set_last_daily(uid, value, display_name=None):
                 (str(uid), display_name or str(uid), value, now, value, display_name, now))
             await db.commit()
     except Exception as e:
-        logging.error(f"DB Error set_last_daily: {e}")
+        logging.error("DB Error set_last_daily exception=%s", type(e).__name__)
 
 
 # Fee transaksi kripto (2% dua arah). Dipakai /buycoin & /sellcoin.
@@ -952,7 +956,7 @@ async def add_treasury(amount):
         await save_json(TREASURY_FILE, treasury)
         logging.info(f"[TREASURY] +{int(amount)} koin (fee) -> kas {treasury['balance']}")
     except Exception as e:
-        logging.error(f"Error add_treasury: {e}")
+        logging.error("Error add_treasury exception=%s", type(e).__name__)
 
 
 async def record_game(uid, game, won):
@@ -971,7 +975,7 @@ async def record_game(uid, game, won):
             g['losses'] += 1
         await save_json('users.json', users)
     except Exception as e:
-        logging.error(f"record_game error: {e}")
+        logging.error("record_game error exception=%s", type(e).__name__)
 
 
 async def apply_soft_cap(uid, base_amount):
@@ -1119,7 +1123,7 @@ async def fetch_remote_image(url, max_bytes=8 * 1024 * 1024):
                     return None
                 return Image.open(io.BytesIO(data))
     except Exception as e:
-        logging.error(f"Failed to fetch remote image: {e}")
+        logging.error("Failed to fetch remote image exception=%s", type(e).__name__)
         return None
 
 
@@ -1286,13 +1290,13 @@ def ensure_fonts():
                 urllib.request.urlretrieve(url, path)
                 logging.info(f"Downloaded {os.path.basename(path)} successfully.")
             except Exception as e:
-                logging.error(f"Failed to download font {os.path.basename(path)}: {e}")
+                logging.error("Failed to download font path=%s exception=%s", os.path.basename(path), type(e).__name__)
 
 # Pre-download fonts if possible on import/startup
 try:
     ensure_fonts()
 except Exception as e:
-    logging.error(f"Error checking/downloading Poppins fonts on startup: {e}")
+    logging.error("Error checking/downloading Poppins fonts on startup exception=%s", type(e).__name__)
 
 def rounded_rectangle(draw, xy, radius, fill=None, outline=None, width=4):
     x0, y0, x1, y1 = xy
@@ -1365,7 +1369,7 @@ async def get_user_rank(uid):
                 if row:
                     return row[0]
     except Exception as e:
-        logging.error(f"Error getting user rank: {e}")
+        logging.error("Error getting user rank exception=%s", type(e).__name__)
     return None
 
 
@@ -1519,7 +1523,7 @@ async def generate_profile_image(member, stat, bg_url=None):
                         av_data = await resp.read()
                         avatar_img = Image.open(io.BytesIO(av_data))
         except Exception as e:
-            logging.error(f"Failed to fetch user avatar: {e}")
+            logging.error("Failed to fetch user avatar exception=%s", type(e).__name__)
 
     # Fetch background image if bg_url is provided (SSRF-guarded + size/type capped)
     bg_img = None
@@ -1562,7 +1566,7 @@ async def generate_profile_image(member, stat, bg_url=None):
         )
         return buf
     except Exception as e:
-        logging.error(f"Error in profile card generation: {e}")
+        logging.error("Error in profile card generation exception=%s", type(e).__name__)
         return None
 
 def heart_polygon(cx, cy, size, n=500):
@@ -1743,7 +1747,7 @@ async def generate_love_image(member1, member2, percentage):
                         av_data = await resp.read()
                         avatar_img1 = Image.open(io.BytesIO(av_data))
         except Exception as e:
-            logging.error(f"Failed to fetch user1 avatar: {e}")
+            logging.error("Failed to fetch user1 avatar exception=%s", type(e).__name__)
 
     avatar_img2 = None
     av_url2 = member2.display_avatar.with_size(128).url if member2.display_avatar else None
@@ -1755,7 +1759,7 @@ async def generate_love_image(member1, member2, percentage):
                         av_data = await resp.read()
                         avatar_img2 = Image.open(io.BytesIO(av_data))
         except Exception as e:
-            logging.error(f"Failed to fetch user2 avatar: {e}")
+            logging.error("Failed to fetch user2 avatar exception=%s", type(e).__name__)
 
     name1 = member1.display_name
     name2 = member2.display_name
@@ -1771,7 +1775,7 @@ async def generate_love_image(member1, member2, percentage):
         )
         return buf
     except Exception as e:
-        logging.error(f"Error in love card generation: {e}")
+        logging.error("Error in love card generation exception=%s", type(e).__name__)
         return None
 
 
@@ -2261,7 +2265,7 @@ async def update_config_api(request):
         _save_config(data)
         return web.json_response({'status': 'success'})
     except Exception as e:
-        logging.error(f"update_config_api error: {e}")
+        logging.error("update_config_api error exception=%s", type(e).__name__)
         return web.json_response({'status': 'error'}, status=500)
 
 async def api_channels(request):
@@ -2305,7 +2309,7 @@ async def update_announce_config_api(request):
         await write_audit('announce-config', None, str(announce), source="api")
         return web.json_response({'status': 'success', 'announce_channels': announce})
     except Exception as e:
-        logging.error(f"update_announce_config_api error: {e}")
+        logging.error("update_announce_config_api error exception=%s", type(e).__name__)
         return web.json_response({'status': 'error'}, status=500)
 
 # ── Extra dashboard READ endpoints ───────────────────────────────────────────
@@ -2345,7 +2349,7 @@ async def api_leaderboard(request):
                 'coins': r[2], 'xp': r[3], 'level': r[4],
             })
     except Exception as e:
-        logging.error(f"api_leaderboard error: {e}")
+        logging.error("api_leaderboard error exception=%s", type(e).__name__)
         return web.json_response({'error': 'internal error'}, status=500)
     return web.json_response({'sort': sort, 'limit': limit, 'entries': rows_out})
 
@@ -2453,7 +2457,7 @@ async def api_economy_stats(request):
                 "SELECT id, displayName, coins FROM DiscordStat ORDER BY coins DESC LIMIT 1") as cur:
                 top = await cur.fetchone()
     except Exception as e:
-        logging.error(f"api_economy_stats error: {e}")
+        logging.error("api_economy_stats error exception=%s", type(e).__name__)
         return web.json_response({'error': 'internal error'}, status=500)
     treasury = await load_json(TREASURY_FILE)
     top_holder = None
@@ -2502,7 +2506,7 @@ async def api_stats_summary(request):
                 row = await cur.fetchone()
                 total_coins = int(row[0]) if row else 0
     except Exception as e:
-        logging.error(f"api_stats_summary error: {e}")
+        logging.error("api_stats_summary error exception=%s", type(e).__name__)
     return web.json_response({
         'member_count': member_count,
         'members_in_voice': in_voice,
@@ -2862,7 +2866,7 @@ async def api_user_reset_player(request):
                 await db.execute(f"UPDATE DiscordStat SET {', '.join(sets)} WHERE id=?", (uid,))
                 await db.commit()
         except Exception as e:
-            logging.error(f"api_user_reset_player DB error: {e}")
+            logging.error("api_user_reset_player DB error exception=%s", type(e).__name__)
         if 'coins' in targets:
             reset_done.append('coins')
         if 'xp' in targets:
@@ -2970,7 +2974,7 @@ async def api_reset_all_players(request):
             await db.execute("UPDATE DiscordStat SET coins=0, xp=0, level=1, lastDaily=''")
             await db.commit()
     except Exception as e:
-        logging.error(f"api_reset_all_players DB error: {e}")
+        logging.error("api_reset_all_players DB error exception=%s", type(e).__name__)
 
     # Reset semua users.json (hapus data game semua orang)
     await save_json('users.json', {})
@@ -3026,7 +3030,7 @@ async def api_audit(request):
                 'target_id': r[3], 'detail': r[4], 'source': r[5],
             })
     except Exception as e:
-        logging.error(f"api_audit error: {e}")
+        logging.error("api_audit error exception=%s", type(e).__name__)
         return web.json_response({'error': 'internal error'}, status=500)
     return web.json_response({'limit': limit, 'entries': entries})
 
@@ -3041,7 +3045,7 @@ async def api_level_distribution(request):
                 rows = await cur.fetchall()
         buckets = [{'level': r[0], 'count': r[1]} for r in rows]
     except Exception as e:
-        logging.error(f"api_level_distribution error: {e}")
+        logging.error("api_level_distribution error exception=%s", type(e).__name__)
         return web.json_response({'error': 'internal error'}, status=500)
     return web.json_response({'buckets': buckets})
 
@@ -3096,7 +3100,7 @@ async def api_bot_stats(request):
             'total_xp': int(row[4]),
         }
     except Exception as e:
-        logging.error(f"api_bot_stats economy error: {e}")
+        logging.error("api_bot_stats economy error exception=%s", type(e).__name__)
 
     treasury = await load_json(TREASURY_FILE)
     boss = await load_json(BOSS_FILE)
@@ -3248,7 +3252,7 @@ async def write_to_memory(content):
             await db.execute("DELETE FROM ChatMemory WHERE id NOT IN (SELECT id FROM ChatMemory ORDER BY id DESC LIMIT 2000)")
             await db.commit()
     except Exception as e:
-        logging.error(f"Error saving chat memory to DB: {e}")
+        logging.error("Error saving chat memory to DB exception=%s", type(e).__name__)
 
 
 # ── Audit log ────────────────────────────────────────────────────────────────
@@ -3265,7 +3269,7 @@ async def write_audit(action, target_id=None, detail=None, source="api"):
             await db.execute("DELETE FROM AuditLog WHERE id NOT IN (SELECT id FROM AuditLog ORDER BY id DESC LIMIT 1000)")
             await db.commit()
     except Exception as e:
-        logging.error(f"write_audit error: {e}")
+        logging.error("write_audit error exception=%s", type(e).__name__)
 
 
 def _audit_now():
@@ -3316,7 +3320,7 @@ async def get_deal_audit_log_config(guild_id):
             "updatedAt": row[4],
         }
     except Exception as e:
-        logging.error(f"get_deal_audit_log_config error: {e}")
+        logging.error("get_deal_audit_log_config error exception=%s", type(e).__name__)
         return None
 
 
@@ -3410,7 +3414,7 @@ async def send_deal_audit_log(
         embed.set_footer(text="W2E Deal Audit")
         await channel.send(embed=embed)
     except Exception as e:
-        logging.error(f"send_deal_audit_log error: {e}")
+        logging.error("send_deal_audit_log error exception=%s", type(e).__name__)
 
 
 DEAL_STATUS_PENDING_FORM = "Menunggu Form"
@@ -3747,7 +3751,7 @@ async def archive_deal_if_final(deal_row_id, final_status=None, final_action_by=
                     )
         return archive, None
     except Exception as e:
-        logging.error(f"archive_deal_if_final error: {e}")
+        logging.error("archive_deal_if_final error exception=%s", type(e).__name__)
         return None, "error"
 
 
@@ -3781,6 +3785,7 @@ async def backfill_deal_archives(guild_id, actor_id=None):
 STAFF_OPERATION_PANEL_TYPES = {"middleman_status", "active_deals", "dispute_board", "trust_warning"}
 REFRESHABLE_DEAL_PANEL_TYPES = {"vouch_leaderboard", "trust_stats", *STAFF_OPERATION_PANEL_TYPES}
 DEAL_PANEL_TYPES = {"vouch_leaderboard", "trust_stats", "recent_vouches", "completed_deals", *STAFF_OPERATION_PANEL_TYPES}
+DEAL_PANEL_REST_TIMEOUT_SECONDS = 5
 DEAL_PANEL_LABELS = {
     "vouch_leaderboard": "Trusted Vouch Leaderboard",
     "trust_stats": "Server Trust Stats",
@@ -4416,8 +4421,11 @@ async def _resolve_panel_channel(guild, config):
         channel = guild.get_channel(int(config["channelId"]))
         if channel:
             return channel
-        return await guild.fetch_channel(int(config["channelId"]))
-    except (discord.NotFound, discord.Forbidden, discord.HTTPException, TypeError, ValueError):
+        return await asyncio.wait_for(
+            guild.fetch_channel(int(config["channelId"])),
+            timeout=DEAL_PANEL_REST_TIMEOUT_SECONDS,
+        )
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException, asyncio.TimeoutError, TypeError, ValueError):
         return None
 
 
@@ -4444,21 +4452,30 @@ async def refresh_deal_panel(guild, panel_type, *, force=False):
         message = None
         if config.get("messageId"):
             try:
-                message = await channel.fetch_message(int(config["messageId"]))
-            except (discord.NotFound, discord.Forbidden, discord.HTTPException, TypeError, ValueError):
+                message = await asyncio.wait_for(
+                    channel.fetch_message(int(config["messageId"])),
+                    timeout=DEAL_PANEL_REST_TIMEOUT_SECONDS,
+                )
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException, asyncio.TimeoutError, TypeError, ValueError):
                 message = None
-        if message and not force and config.get("lastPayloadHash") == payload_hash:
+        if message and config.get("lastPayloadHash") == payload_hash:
             return message, "unchanged"
         if message:
-            await message.edit(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+            await asyncio.wait_for(
+                message.edit(embed=embed, allowed_mentions=discord.AllowedMentions.none()),
+                timeout=DEAL_PANEL_REST_TIMEOUT_SECONDS,
+            )
             await set_deal_panel_config(guild.id, panel_type, channel.id, message.id, enabled=True, last_payload_hash=payload_hash)
             return message, "updated"
-        message = await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        message = await asyncio.wait_for(
+            channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none()),
+            timeout=DEAL_PANEL_REST_TIMEOUT_SECONDS,
+        )
         await set_deal_panel_config(guild.id, panel_type, channel.id, message.id, enabled=True, last_payload_hash=payload_hash)
         await send_deal_audit_log(guild, "Trust Panel Recovered Message", deal_id=None, note=DEAL_PANEL_LABELS.get(panel_type), metadata={"status": "recovered"})
         return message, "created"
     except Exception as e:
-        logging.error(f"refresh_deal_panel error ({panel_type}): {e}")
+        logging.error("refresh_deal_panel error panel_type=%s exception=%s", panel_type, type(e).__name__)
         return None, "error"
 
 
@@ -4544,7 +4561,7 @@ async def _send_panel_feed_embed(guild, panel_type, event_type, event_key, embed
         await _record_panel_event(guild.id, panel_type, event_type, event_key, message.id, channel.id)
         return message, None
     except Exception as e:
-        logging.error(f"_send_panel_feed_embed error ({panel_type}, {event_key}): {e}")
+        logging.error("_send_panel_feed_embed error panel_type=%s event_key=%s exception=%s", panel_type, event_key, type(e).__name__)
         return None, "error"
 
 
@@ -4584,7 +4601,7 @@ async def send_public_vouch_feed(guild_id, vouch_id):
         embed.set_footer(text="Trusted vouch system")
         return await _send_panel_feed_embed(guild, "recent_vouches", "vouch", f"vouch:{vouch_id}", embed)
     except Exception as e:
-        logging.error(f"send_public_vouch_feed error: {e}")
+        logging.error("send_public_vouch_feed error exception=%s", type(e).__name__)
         return None, "error"
 
 
@@ -4612,7 +4629,7 @@ async def send_public_completed_deal_feed(guild_id, deal_row_id):
         embed.set_footer(text="Verified middleman transaction")
         return await _send_panel_feed_embed(guild, "completed_deals", "completed_deal", f"completed_deal:{deal.get('dealId') or deal.get('id')}", embed)
     except Exception as e:
-        logging.error(f"send_public_completed_deal_feed error: {e}")
+        logging.error("send_public_completed_deal_feed error exception=%s", type(e).__name__)
         return None, "error"
 
 
@@ -5554,7 +5571,7 @@ async def cleanup_rate_limit_events(days=7):
             await db.execute("DELETE FROM rateLimitEvents WHERE createdAt < ?", (cutoff,))
             await db.commit()
     except Exception as e:
-        logging.error(f"cleanup_rate_limit_events error: {e}")
+        logging.error("cleanup_rate_limit_events error exception=%s", type(e).__name__)
 
 
 async def seconds_since_rate_limit_event(guild_id, user_id, action_type):
@@ -7303,7 +7320,7 @@ async def add_reminder(user_id, channel_id, message, fire_at):
             await db.commit()
             return cur.lastrowid
     except Exception as e:
-        logging.error(f"add_reminder error: {e}")
+        logging.error("add_reminder error exception=%s", type(e).__name__)
         return None
 
 
@@ -7313,7 +7330,7 @@ async def delete_reminder(rid):
             await db.execute("DELETE FROM Reminder WHERE id=?", (rid,))
             await db.commit()
     except Exception as e:
-        logging.error(f"delete_reminder error: {e}")
+        logging.error("delete_reminder error exception=%s", type(e).__name__)
 
 
 async def _fire_reminder(rid, user_id, channel_id, message, delay):
@@ -7325,7 +7342,7 @@ async def _fire_reminder(rid, user_id, channel_id, message, delay):
         if channel:
             await channel.send(f"🔔 <@{user_id}> **REMINDER:** {message}")
     except Exception as e:
-        logging.error(f"_fire_reminder error: {e}")
+        logging.error("_fire_reminder error exception=%s", type(e).__name__)
     finally:
         await delete_reminder(rid)
 
@@ -7345,7 +7362,7 @@ async def add_giveaway(channel_id, message_id, prize, host_id, end_at):
             await db.commit()
             return cur.lastrowid
     except Exception as e:
-        logging.error(f"add_giveaway error: {e}")
+        logging.error("add_giveaway error exception=%s", type(e).__name__)
         return None
 
 
@@ -7367,14 +7384,14 @@ async def _end_giveaway(gid, channel_id, message_id, prize, delay):
                 winner = random.choice(entrants)
                 await channel.send(f"🎊 Selamat {winner.mention}! Kamu memenangkan **{prize}**!")
     except Exception as e:
-        logging.error(f"_end_giveaway error: {e}")
+        logging.error("_end_giveaway error exception=%s", type(e).__name__)
     finally:
         try:
             async with aiosqlite.connect(DB_PATH) as db:
                 await db.execute("UPDATE Giveaway SET ended=1 WHERE id=?", (gid,))
                 await db.commit()
         except Exception as e:
-            logging.error(f"_end_giveaway cleanup error: {e}")
+            logging.error("_end_giveaway cleanup error exception=%s", type(e).__name__)
 
 
 def schedule_giveaway(gid, channel_id, message_id, prize, end_at):
@@ -7395,16 +7412,16 @@ async def resume_scheduled_jobs():
             try:
                 schedule_reminder(rid, uid, cid, msg, datetime.fromisoformat(fire_at))
             except Exception as e:
-                logging.error(f"resume reminder {rid} error: {e}")
+                logging.error("resume reminder id=%s error exception=%s", rid, type(e).__name__)
         for gid, cid, mid, prize, end_at in giveaways:
             try:
                 schedule_giveaway(gid, cid, mid, prize, datetime.fromisoformat(end_at))
             except Exception as e:
-                logging.error(f"resume giveaway {gid} error: {e}")
+                logging.error("resume giveaway id=%s error exception=%s", gid, type(e).__name__)
         if reminders or giveaways:
             logging.info(f"[RESUME] {len(reminders)} reminder & {len(giveaways)} giveaway dijadwalkan ulang")
     except Exception as e:
-        logging.error(f"resume_scheduled_jobs error: {e}")
+        logging.error("resume_scheduled_jobs error exception=%s", type(e).__name__)
 
 
 async def finished_callback(sink, channel: discord.TextChannel, *args):
@@ -7533,7 +7550,7 @@ async def send_embed(interaction, text, color=None, title=None, ephemeral=False,
         else:
             return await interaction.response.send_message(**kwargs)
     except Exception as e:
-        logging.error(f"Embed send error: {e}")
+        logging.error("Embed send error exception=%s", type(e).__name__)
 
 # ============================================================================
 # SLASH COMMANDS (APP COMMANDS)
@@ -7557,7 +7574,7 @@ async def on_interaction(interaction: discord.Interaction):
                 arg_str,
             )
     except Exception as e:
-        logging.error(f"on_interaction log error: {e}")
+        logging.error("on_interaction log error exception=%s", type(e).__name__)
 
 @tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
@@ -7665,7 +7682,7 @@ async def deal_reminder_loop():
                         except discord.HTTPException:
                             pass
     except Exception as e:
-        logging.error(f"deal_reminder_loop error: {e}")
+        logging.error("deal_reminder_loop error exception=%s", type(e).__name__)
 
 
 @tasks.loop(minutes=15)
@@ -7673,7 +7690,7 @@ async def public_trust_panel_loop():
     try:
         await refresh_all_public_trust_panels()
     except Exception as e:
-        logging.error(f"public_trust_panel_loop error: {e}")
+        logging.error("public_trust_panel_loop error exception=%s", type(e).__name__)
 
 
 @tasks.loop(minutes=15)
@@ -7681,7 +7698,7 @@ async def staff_operation_panel_loop():
     try:
         await refresh_all_staff_operation_panels()
     except Exception as e:
-        logging.error(f"staff_operation_panel_loop error: {e}")
+        logging.error("staff_operation_panel_loop error exception=%s", type(e).__name__)
 
 
 @tasks.loop(minutes=30)
@@ -7784,7 +7801,7 @@ async def on_message(message):
             if await handle_deal_message(client, message):
                 return
         except Exception as e:
-            logging.exception("Error in handle_deal_message: %s", e)
+            logging.error("Error in handle_deal_message exception=%s", type(e).__name__)
     # duplicate bot check removed
         # duplicate return removed
 

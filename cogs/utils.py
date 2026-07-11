@@ -10,7 +10,7 @@ def setup(tree, client):
         client.add_view(W2EHelpExpiredView())
         logging.info("Registered persistent view: W2EHelpExpiredView")
     except Exception as e:
-        logging.error(f"Failed to register W2EHelpExpiredView: {e}")
+        logging.error("Failed to register W2EHelpExpiredView exception=%s", type(e).__name__)
 
     @tree.command(name="find", description="Cari tahu member sedang berada di Voice Channel mana")
     async def slash_find(interaction: discord.Interaction, target: discord.Member):
