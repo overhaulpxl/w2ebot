@@ -357,7 +357,7 @@ class ExpiredHelpSelect(discord.ui.Select):
             min_values=1,
             max_values=1,
             options=options,
-            custom_id="w2e_help_select",
+            custom_id="w2e_help_expired_select",
         )
 
     async def callback(self, interaction: discord.Interaction):

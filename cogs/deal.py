@@ -1577,10 +1577,18 @@ def _has_seller_payout_info(deal):
 
 def _payout_display_warning(deal, field_name, warning_type):
     try:
+        row_id = deal.get("id") if isinstance(deal, Mapping) else None
+        warning_key = _safe_warning_cache_key(row_id, field_name, warning_type)
+        if warning_key in _DEAL_RENDER_WARNING_CACHE:
+            _DEAL_RENDER_WARNING_CACHE.move_to_end(warning_key)
+            return
+        _DEAL_RENDER_WARNING_CACHE[warning_key] = True
+        while len(_DEAL_RENDER_WARNING_CACHE) > DEAL_RENDER_WARNING_CACHE_MAX:
+            _DEAL_RENDER_WARNING_CACHE.popitem(last=False)
         logging.warning(
             "seller payout display fallback guild_id=%s row_id=%s deal_id=%s stage=%s field=%s warning_type=%s",
             deal.get("guildId") if isinstance(deal, Mapping) else None,
-            deal.get("id") if isinstance(deal, Mapping) else None,
+            row_id,
             deal.get("dealId") if isinstance(deal, Mapping) else None,
             get_deal_operational_stage(deal) if isinstance(deal, Mapping) else "unknown",
             field_name,
@@ -5563,9 +5571,20 @@ class PaymentProfileSetupModal(discord.ui.Modal, title="Payment Profile Setup"):
             self.add_item(item)
 
     async def on_submit(self, interaction: discord.Interaction):
+        invocation = _new_deal_invocation(interaction, "payment profile modal submit", "payment_profile_modal_submit")
+        _deal_invocation_log(invocation, interaction, "modal_submit_received")
+        deferred = await _safe_defer_deal_interaction(interaction, invocation, ephemeral=True)
+        if not deferred:
+            await _finalize_deal_invocation(
+                interaction,
+                invocation,
+                "Modal payment gagal direspons. Profile belum diubah. Silakan coba lagi.",
+                result_code="defer_failed",
+                ephemeral=True,
+            )
+            return
         if not await _require_payment_config_permission(interaction):
             return
-        await interaction.response.defer(ephemeral=True, thinking=True)
         profile, _error = await save_deal_payment_profile(
             interaction.guild.id,
             interaction.user.id,
@@ -5576,12 +5595,21 @@ class PaymentProfileSetupModal(discord.ui.Modal, title="Payment Profile Setup"):
             footerText=str(self.footer_text.value).strip(),
         )
         if not deal_payment_profile_is_valid(profile):
-            await interaction.followup.send(
+            await _finalize_deal_invocation(
+                interaction,
+                invocation,
                 "Profile payment disimpan, tetapi belum valid. Isi Payment Text atau upload QRIS/payment image.",
+                result_code="validation_failed",
                 ephemeral=True,
             )
             return
-        await interaction.followup.send("Profile payment kamu berhasil disimpan.", ephemeral=True)
+        await _finalize_deal_invocation(
+            interaction,
+            invocation,
+            "Profile payment kamu berhasil disimpan.",
+            result_code="success",
+            ephemeral=True,
+        )
 
 
 def _force_edit_reason_hash(reason):
@@ -7533,7 +7561,16 @@ async def _run_deal_status_invocation(interaction, deal_id, *, next_only):
     source = "prefix" if isinstance(interaction, FakeInteraction) else "slash"
     invocation = _new_deal_invocation(interaction, command_name, source)
     _deal_invocation_log(invocation, interaction, "command_received")
-    await _safe_defer_deal_interaction(interaction, invocation, ephemeral=True)
+    deferred = await _safe_defer_deal_interaction(interaction, invocation, ephemeral=True)
+    if not deferred:
+        await _finalize_deal_invocation(
+            interaction,
+            invocation,
+            "Operasi deal gagal direspons. Silakan coba lagi.",
+            result_code="defer_failed",
+            ephemeral=True,
+        )
+        return
     deal = None
     try:
         deal, error = await _resolve_deal_for_command_bounded(
@@ -7598,7 +7635,16 @@ async def _run_deal_ui_invocation(interaction, deal_id, *, recover):
     source = "prefix" if isinstance(interaction, FakeInteraction) else "slash"
     invocation = _new_deal_invocation(interaction, command_name, source)
     _deal_invocation_log(invocation, interaction, "command_received")
-    await _safe_defer_deal_interaction(interaction, invocation, ephemeral=True)
+    deferred = await _safe_defer_deal_interaction(interaction, invocation, ephemeral=True)
+    if not deferred:
+        await _finalize_deal_invocation(
+            interaction,
+            invocation,
+            "Operasi deal gagal direspons. Status deal tidak diubah. Silakan coba lagi.",
+            result_code="defer_failed",
+            ephemeral=True,
+        )
+        return
     deal = None
     try:
         deal, error = await _resolve_deal_for_command_bounded(
@@ -9043,7 +9089,16 @@ def setup(tree, client):
             or action == DEAL_ACTION_DONE
         )
         if not modal_or_session:
-            await _safe_defer_deal_interaction(interaction, invocation, ephemeral=True)
+            deferred = await _safe_defer_deal_interaction(interaction, invocation, ephemeral=True)
+            if not deferred:
+                await _finalize_deal_invocation(
+                    interaction,
+                    invocation,
+                    "Operasi deal gagal direspons. Status deal tidak diubah. Silakan coba lagi.",
+                    result_code="defer_failed",
+                    ephemeral=True,
+                )
+                return
         deal, error = await _resolve_deal_for_command_bounded(
             interaction,
             deal_id,

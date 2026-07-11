@@ -60,6 +60,41 @@ intents.members = True
 client = discord.Client(intents=intents)
 tree = discord.app_commands.CommandTree(client)
 READY_STARTUP_CALLBACKS = []
+READY_TASKS = {}
+READY_ONCE_TASKS = set()
+TREE_SYNC_DONE = False
+
+
+def _schedule_ready_task(name, factory, *, once=False):
+    """Jadwalkan satu task on-ready tanpa duplikasi saat reconnect."""
+    key = str(name)
+    existing = READY_TASKS.get(key)
+    if existing and not existing.done():
+        return existing
+    if once and key in READY_ONCE_TASKS:
+        return existing
+    try:
+        task = asyncio.create_task(factory())
+    except Exception as exc:
+        logging.error("Failed to schedule ready task name=%s exception=%s", key, type(exc).__name__)
+        return None
+    READY_TASKS[key] = task
+    if once:
+        READY_ONCE_TASKS.add(key)
+
+    def _report_ready_task(done_task):
+        if done_task.cancelled():
+            return
+        try:
+            error = done_task.exception()
+        except Exception:
+            error = None
+        if error:
+            READY_ONCE_TASKS.discard(key)
+            logging.error("Ready task failed name=%s exception=%s", key, type(error).__name__)
+
+    task.add_done_callback(_report_ready_task)
+    return task
 
 
 def register_ready_startup_task(callback):
@@ -2060,6 +2095,7 @@ async def crypto_mining_loop():
 
 @client.event
 async def on_ready():
+    global TREE_SYNC_DONE
     if not clean_caches.is_running():
         clean_caches.start()
     if deal_phase_at_least(5) and not deal_reminder_loop.is_running():
@@ -2075,21 +2111,21 @@ async def on_ready():
             await guild.leave()
 
     tree.copy_global_to(guild=discord.Object(id=ALLOWED_SERVER_ID))
-    await tree.sync(guild=discord.Object(id=ALLOWED_SERVER_ID))
-    client.loop.create_task(start_web_server())
-    client.loop.create_task(check_birthdays())
-    client.loop.create_task(update_market_prices())
-    client.loop.create_task(voice_salary_loop())
-    client.loop.create_task(boss_raid_loop())
-    client.loop.create_task(crypto_mining_loop())
-    client.loop.create_task(resume_scheduled_jobs())
-    client.loop.create_task(refresh_all_public_trust_panels())
-    client.loop.create_task(refresh_all_staff_operation_panels())
+    if not TREE_SYNC_DONE:
+        await tree.sync(guild=discord.Object(id=ALLOWED_SERVER_ID))
+        TREE_SYNC_DONE = True
+    _schedule_ready_task("web_server", start_web_server, once=True)
+    _schedule_ready_task("check_birthdays", check_birthdays)
+    _schedule_ready_task("update_market_prices", update_market_prices)
+    _schedule_ready_task("voice_salary_loop", voice_salary_loop)
+    _schedule_ready_task("boss_raid_loop", boss_raid_loop)
+    _schedule_ready_task("crypto_mining_loop", crypto_mining_loop)
+    _schedule_ready_task("resume_scheduled_jobs", resume_scheduled_jobs, once=True)
+    _schedule_ready_task("refresh_public_trust_panels", refresh_all_public_trust_panels, once=True)
+    _schedule_ready_task("refresh_staff_operation_panels", refresh_all_staff_operation_panels, once=True)
     for callback in list(READY_STARTUP_CALLBACKS):
-        try:
-            client.loop.create_task(callback())
-        except Exception as e:
-            logging.error(f"Failed to schedule ready startup callback: {e}")
+        callback_name = getattr(callback, "__qualname__", getattr(callback, "__name__", "callback"))
+        _schedule_ready_task(f"startup:{callback_name}", callback, once=True)
     logging.info(f'We have logged in as {client.user}')
 
 @web.middleware
@@ -7510,9 +7546,16 @@ async def on_interaction(interaction: discord.Interaction):
             data = interaction.data or {}
             name = data.get('name', '?')
             opts = data.get('options', []) or []
-            arg_str = " ".join(f"{o.get('name')}={o.get('value')}" for o in opts)
+            # Jangan log nilai option: reason, note, proof, dan data konfigurasi
+            # dapat berisi informasi sensitif. Nama option saja cukup untuk audit.
+            arg_str = " ".join(str(o.get('name') or "?") for o in opts)
             user = interaction.user
-            logging.info(f"[CMD] (slash) {user} ({getattr(user, 'id', '?')}) -> {name} {arg_str}".rstrip())
+            logging.info(
+                "[CMD] (slash) actor_id=%s command=%s options=%s",
+                getattr(user, "id", None),
+                name,
+                arg_str,
+            )
     except Exception as e:
         logging.error(f"on_interaction log error: {e}")
 
@@ -7754,14 +7797,21 @@ async def on_message(message):
         cmd_name = parts[0].lower()
         args_list = parts[1:]
 
+        interaction = None
         prefix_handler = PREFIX_COMMAND_HANDLERS.get(cmd_name)
         if prefix_handler:
-            logging.info(f"[CMD] (prefix) {message.author} ({message.author.id}) -> {cmd_name} {' '.join(args_list)}".rstrip())
+            logging.info(
+                "[CMD] (prefix) actor_id=%s command=%s arg_count=%s",
+                getattr(message.author, "id", None),
+                cmd_name,
+                len(args_list),
+            )
             try:
                 await prefix_handler(message, args_list)
             except Exception as e:
-                logging.exception(f"Error executing custom prefix command {BOT_PREFIX}{cmd_name}: {e}")
-                await message.channel.send("âŒ Gagal mengeksekusi perintah. Cek format argumennya ya.")
+                logging.error("Error executing custom prefix command command=%s exception=%s", cmd_name, type(e).__name__)
+                if getattr(message, "channel", None):
+                    await message.channel.send("âŒ Gagal mengeksekusi perintah. Cek format argumennya ya.")
             return
 
         if cmd_name in DEAL_PREFIX_RESERVED_TOP_LEVEL:
@@ -7770,7 +7820,12 @@ async def on_message(message):
         # Check if the command exists in the CommandTree
         cmd = tree.get_command(cmd_name)
         if cmd:
-            logging.info(f"[CMD] (prefix) {message.author} ({message.author.id}) -> {cmd_name} {' '.join(args_list)}".rstrip())
+            logging.info(
+                "[CMD] (prefix) actor_id=%s command=%s arg_count=%s",
+                getattr(message.author, "id", None),
+                cmd_name,
+                len(args_list),
+            )
             interaction = FakeInteraction(message)
             
             # Sangat basic argument parsing (untuk command yg butuh target dll)
@@ -7821,7 +7876,9 @@ async def on_message(message):
                         
                 await cmd.callback(interaction, **kwargs)
             except Exception as e:
-                logging.error(f"Error executing prefix command !{cmd_name}: {e}")
+                logging.error("Error executing prefix command command=%s exception=%s", cmd_name, type(e).__name__)
+                if interaction is not None and interaction.response.is_done():
+                    return
                 await message.channel.send("❌ Gagal mengeksekusi perintah. Cek format argumennya ya.")
         return
 
