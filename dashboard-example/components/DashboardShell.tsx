@@ -342,6 +342,25 @@ function Economy({ summary }: { summary: SummaryResponse | null }) {
           />
         </section>
       )}
+      {summary?.v1_supply && (
+        <section className="card card-pad stack" aria-label="Economy V1 Phase 1 supply">
+          <h3>Economy V1 Phase 1 {summary.v1_enabled ? "(Staging Aktif)" : "(Belum Diaktifkan)"}</h3>
+          {(["ETM", "ECY"] as const).map((currency) => {
+            const supply = summary.v1_supply![currency];
+            return (
+              <div key={currency} className="stat-grid">
+                <StatCard icon="coins" label={`${currency} Net Issued`} value={nf(supply.net_issued_supply)} />
+                <StatCard icon="coins" label={`${currency} Circulating`} value={nf(supply.circulating_supply)} />
+                <StatCard icon="vault" label={`${currency} Locked Reserve`} value={nf(supply.non_circulating_supply)} />
+                <StatCard icon="vault" label={`${currency} Burned`} value={nf(supply.burned_supply)} />
+              </div>
+            );
+          })}
+          <span className={summary.v1_supply.ledger_zero_sum ? "badge badge-on" : "badge badge-off"}>
+            Ledger {summary.v1_supply.ledger_zero_sum ? "seimbang" : "tidak seimbang"}
+          </span>
+        </section>
+      )}
       <AdminPanel only="user" />
     </>
   );

@@ -2,6 +2,9 @@
 .env
 .env.*
 !.env.example
+!.env.staging.example
+.env.staging
+.env.staging.local
 .envrc
 
 # Runtime database and generated state
@@ -20,6 +23,17 @@ config.json
 # Runtime logs and backups
 logs/
 backups/
+reports/economy/
+backups/economy/
+tests/tmp/
+*.economy-manifest.json
+*.economy-test.db
+economy-phase2-*.json
+*.phase2-economy.db
+economy-phase3-*.json
+*.phase3-economy.db
+reports/rpg-phase3/
+backups/rpg-phase3/
 tmp/
 temp/
 uploads/

@@ -71,6 +71,69 @@ export interface SummaryResponse {
   boss_active: boolean;
   treasury_balance: number;
   total_coins_in_circulation: number;
+  v1_enabled?: boolean;
+  v1_supply?: EconomyV1Supply;
+}
+
+export interface CurrencySupply {
+  user_wallet_balances: number;
+  spendable_treasury_balances: number;
+  locked_reserve_balances: number;
+  burn_account_balance: number;
+  net_issued_supply: number;
+  circulating_supply: number;
+  non_circulating_supply: number;
+  burned_supply: number;
+  issuance_balance: number;
+  issuance_matches: boolean;
+}
+
+export interface EconomyV1Supply {
+  ETM: CurrencySupply;
+  ECY: CurrencySupply;
+  ledger_zero_sum: boolean;
+}
+
+export interface EconomyV1Profile {
+  guild_id: string;
+  user_id: string;
+  level: number;
+  xp: number;
+  etm_balance: number;
+  ecy_balance: number;
+  max_hp: number;
+  current_hp: number;
+  attack: number;
+  defense: number;
+  crit_bps: number;
+  energy: number;
+  power_score: number;
+  activity_score_30d: number;
+  active_weapon_instance_id: string | null;
+  active_armor_instance_id: string | null;
+  active_accessory_instance_id: string | null;
+  active_pet_instance_id: string | null;
+  phase3_enabled?: boolean;
+  effective_max_hp?: number;
+  effective_attack?: number;
+  effective_defense?: number;
+  effective_crit_bps?: number;
+  effective_power_score?: number;
+  active_loadout?: Record<
+    "weapon" | "armor" | "accessory" | "pet",
+    { instance_id: string; name: string; enhancement_level?: number } | null
+  >;
+}
+
+export interface Phase3BossStatus {
+  raidId: string;
+  tier: "NORMAL" | "ELITE" | "WORLD";
+  maxHp: number;
+  currentHp: number;
+  status: "ACTIVE" | "DEFEATED" | "AWAITING_FUNDS" | "SETTLED" | "CANCELLED";
+  participant_count: number;
+  treasury_ready: boolean;
+  manual_settlement_required: boolean;
 }
 
 export interface LeaderboardEntry {

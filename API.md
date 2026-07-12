@@ -85,6 +85,23 @@ average_level, max_level, total_xp), `treasury_balance`, `boss_active`,
 { "buckets": [ { "level": 1, "count": 65 }, { "level": 2, "count": 18 } ] }
 ```
 
+## Economy V1 Phase 1 Supply
+
+`GET /api/economy/v1-supply` bersifat read-only. Response menyertakan status
+enable dan supply ETM/ECY dengan definisi yang sama dengan verification CLI:
+
+- `net_issued_supply`: wallet user + treasury spendable + reserve + burn.
+- `circulating_supply`: wallet user + treasury spendable.
+- `non_circulating_supply`: locked reserve.
+- `burned_supply`: burn account.
+- `issuance_balance`: balancing account yang tidak masuk supply display.
+- `issuance_matches`: `-issuance_balance == net_issued_supply`.
+- `ledger_zero_sum`: jumlah seluruh entry ledger committed per currency adalah 0.
+
+Endpoint legacy tetap tersedia dan `/api/economy/stats` menambahkan field
+`v1_enabled` serta `v1_supply` tanpa menghapus field lama. Phase 1 tidak
+mengaktifkan mutasi wallet production.
+
 ### GET `/api/audit?limit=100` (token)
 Recent admin write actions. Token required (fail-closed when `DASHBOARD_TOKEN` unset).
 ```json
@@ -429,3 +446,64 @@ curl -X POST http://localhost:8081/api/announce-config \
   -H "Content-Type: application/json" -d '{}'
 # {"error": "unauthorized"}
 ```
+
+## Economy V1 Phase 2 Profile
+
+`GET /api/economy/v1-profile/{id}` adalah endpoint read-only. Endpoint ini tidak
+membuat profile atau wallet baru. Response memuat level/XP, ETM/ECY, HP, stat
+combat, Energy, Power Score, Activity Score rolling 30 hari, dan placeholder
+instance equipment/pet. `404` berarti profile staging belum tersedia.
+
+Phase 2 tetap nonaktif secara default dan membutuhkan
+`ECONOMY_V1_ENABLED=true` serta `ECONOMY_PHASE2_ENABLED=true` hanya pada staging.
+
+## Economy V1 Phase 3 RPG
+
+Phase 3 belum menambahkan endpoint mutation publik. Command Discord baru hanya
+aktif jika ketiga flag Economy Phase 1-3 bernilai `true`. Schema/catalog Phase 3
+diterapkan menggunakan `scripts/migrate_economy_phase3.py` pada database
+temporary atau staging; script menolak database production.
+
+Migrasi hardening bersifat additive dan fail-closed jika checksum versi schema yang
+sudah selesai tidak cocok. Recovery hanya mengubah lifecycle/retry metadata; planned
+outcome tidak dapat ditulis ulang. Legacy quarantine tidak memetakan item atau pet
+lama ke equipment/pet V1 dan tidak mengubah blob sumber.
+
+Runtime database bot, Economy, Deal, dan dashboard memakai `DATABASE_PATH` terpusat.
+Default-nya tetap database production repository. Ketiga flag economy tidak dapat
+aktif kecuali guard staging memvalidasi mode staging, guild khusus, token tersedia,
+dan path SQLite non-production yang sudah ada. Nilai token tidak pernah masuk log.
+
+Setup lokal staging:
+
+```powershell
+python scripts/setup_phase3_staging.py
+```
+
+Isi hanya `STAGING_GUILD_ID` dan `DISCORD_TOKEN` pada `.env.staging`, lalu mulai
+bot dengan:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_phase3_staging.ps1
+```
+
+Gunakan `python scripts/setup_phase3_staging.py --verify` untuk memastikan path,
+checksum, catalog, integrity, dan foreign-key database staging tanpa membuka
+database production.
+
+Profile Phase 3 menghitung effective HP/Attack/Defense dari base profile,
+equipment, set, enhancement, dan pet. Boss status bersifat read-only melalui
+Discord dan menampilkan apakah settlement perlu diulang setelah treasury
+`ETM_BOSS_DUNGEON` tersedia. API internal untuk Boss start/settle harus memakai
+autentikasi dashboard yang sudah ada sebelum adapter HTTP ditambahkan.
+
+Saat Phase 3 aktif, `GET /api/economy/v1-profile/{id}` menambahkan field
+`effective_max_hp`, `effective_attack`, `effective_defense`,
+`effective_crit_bps`, `effective_power_score`, dan `active_loadout`. Read ini
+tidak membuat profile, wallet, item, atau attempt baru.
+
+Endpoint internal yang sudah token-gated:
+
+- `POST /api/boss/spawn` menerima `{"tier":"normal|elite|world","request_id":"..."}` ketika Phase 3 aktif; saat nonaktif tetap memakai Boss legacy.
+- `POST /api/boss/settle` mengulang reward plan persisted untuk raid `AWAITING_FUNDS` dan tidak membuat drop atau payout plan baru.
+- `GET /api/boss` menampilkan status raid Phase 3 hanya ketika ketiga flag aktif; selain itu tetap mengembalikan status legacy.

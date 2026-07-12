@@ -4,6 +4,110 @@ Single-guild Discord bot — **Gemini AI chat** + **RPG/economy** + **Pillow ima
 
 Built with **discord.py** (App Commands + Prefix via FakeInteraction), **aiosqlite**, and **Google Gemini 2.5 Flash**.
 
+## Economy V1 Phase 1
+
+Repository ini memiliki fondasi wallet ETM/ECY, double-entry ledger, treasury,
+whitelist admin, emergency controls, dan migration dry-run. Phase 1 bersifat
+**disabled by default** melalui `ECONOMY_V1_ENABLED=false` dan tidak mengalihkan
+command RPG legacy atau saldo production ke wallet baru.
+
+Dry-run yang aman:
+
+```bash
+python scripts/migrate_economy_v1.py --dry-run
+```
+
+Apply Phase 1 hanya diizinkan untuk database staging/temporary dengan target
+eksplisit. Script menolak apply terhadap `w2ebot.db` production. Semua seed
+Phase 1 tetap `0`; production cutover memerlukan persetujuan terpisah.
+
+## Economy V1 Phase 2 (Disabled)
+
+Phase 2 menambahkan profile RPG V1, reward Daily/Weekly, Work dengan stored
+reward roll, transfer ETM, Eternal Exchange ETM ke ECY, Energy regeneration,
+dan Activity Score rolling 30 hari. Fitur ini tetap nonaktif sampai kedua flag
+berikut diaktifkan secara eksplisit pada environment staging:
+
+```dotenv
+ECONOMY_V1_ENABLED=false
+ECONOMY_PHASE2_ENABLED=false
+```
+
+Saat salah satu flag `false`, `/profile`, `/daily`, `/weekly`, `/work`, dan
+`/transfer` tetap memakai jalur legacy. `/exchange` tanpa amount hanya
+menampilkan rate, fee, level, limit, usage, dan availability tanpa membuat
+wallet, usage row, atau transaksi.
+
+Dry-run migration profile/cooldown Phase 2:
+
+```bash
+python scripts/migrate_economy_phase2.py
+```
+
+Apply hanya tersedia untuk database temporary/staging dengan
+`--allow-staging-apply`; target production `w2ebot.db` selalu ditolak.
+
+## Economy V1 Phase 3 RPG (Disabled)
+
+Phase 3 menambahkan katalog versioned, starter package, equipment instance,
+effective stats, enhancement, crafting, pet, Hunt, Dungeon, Boss Raid, Quest,
+dan recovery outcome acak. Seluruh jalur baru memerlukan tiga flag berikut:
+
+```dotenv
+ECONOMY_V1_ENABLED=false
+ECONOMY_PHASE2_ENABLED=false
+ECONOMY_PHASE3_ENABLED=false
+```
+
+Selama salah satu flag masih `false`, command lama tetap memakai penyimpanan
+legacy. Schema dan katalog Phase 3 tidak diterapkan oleh import/startup bot.
+Migrasi hanya boleh dijalankan terhadap database temporary atau staging:
+
+```bash
+python scripts/migrate_economy_phase3.py --database staging-phase3.db
+python scripts/migrate_economy_phase3.py --database staging-phase3.db --apply
+```
+
+CLI menolak target production `w2ebot.db`. Katalog tidak di-seed ke production,
+Boss tidak spawn otomatis, dan raid `AWAITING_FUNDS` tidak menerima mint diam-diam.
+
+### Harness Staging Phase 3
+
+Runtime memakai satu `DATABASE_PATH` yang di-resolve menjadi path absolut. Default
+production tetap `./w2ebot.db`. Saat ketiga flag economy aktif, startup hanya
+diizinkan jika `STAGING_MODE=true`, database bukan production, file database dapat
+dibuka, `STAGING_GUILD_ID` valid, dan `DISCORD_TOKEN` tersedia. Command disinkronkan
+hanya ke guild staging tersebut. Gunakan `.env.staging.example` sebagai template;
+file staging berisi token tidak boleh di-commit.
+
+Backup staging menggunakan SQLite backup API dan diverifikasi secara logical melalui
+schema object, row count, checksum data deterministik, `integrity_check`, dan
+`foreign_key_check`. Backup logical tidak diklaim byte-identik dengan sumber.
+
+Workflow lokal:
+
+```powershell
+python scripts/setup_phase3_staging.py
+```
+
+Lalu edit hanya `.env.staging` untuk mengisi `STAGING_GUILD_ID` dan
+`DISCORD_TOKEN`, kemudian jalankan:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_phase3_staging.ps1
+```
+
+Hentikan bot dengan `Ctrl+C`. Verifikasi database yang dipakai melalui
+`python scripts/setup_phase3_staging.py --verify`; output harus menunjuk ke
+`staging/w2ebot-staging.db`, bukan `w2ebot.db`.
+
+Hardening Phase 3 memakai migrasi additive yang mencatat checksum schema. Outcome
+acak disimpan sekali di `RpgOperation.outcomeJson`; receipt settlement baru ditulis
+sekali ke `resultJson` saat operasi menjadi `COMMITTED` atau `VOID`. Recovery memakai
+outcome yang sama dan tidak melakukan reroll. Starter package dilacak oleh satu
+`RpgStarterGrant`, sedangkan item/pet/state legacy hanya dikarantina sebagai
+`LEGACY_BOUND` di `RpgLegacyAsset` dan tidak memberi combat power V1.
+
 ---
 
 ## Quick Start

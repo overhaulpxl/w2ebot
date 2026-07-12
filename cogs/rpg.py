@@ -3,6 +3,29 @@ from core import *
 import random, asyncio, sqlite3
 from datetime import datetime
 
+from economy.amounts import AmountParseError, parse_economy_amount
+from economy.constants import ECONOMY_PHASE2_ENABLED, ECONOMY_PHASE3_ENABLED, ECONOMY_V1_ENABLED
+from economy.exchange import exchange_etm_to_ecy, get_exchange_info
+from economy.profile import get_profile_snapshot
+from economy.rewards import claim_reward, reserve_work_roll, settle_work_roll
+from economy.transfers import transfer_etm
+
+
+def _phase2_enabled():
+    return ECONOMY_V1_ENABLED and ECONOMY_PHASE2_ENABLED
+
+
+def _phase3_enabled():
+    return _phase2_enabled() and ECONOMY_PHASE3_ENABLED
+
+
+def _economy_request_id(interaction):
+    interaction_id = getattr(interaction, "id", None)
+    if interaction_id is not None:
+        return str(interaction_id)
+    message_id = getattr(getattr(interaction, "message", None), "id", None)
+    return str(message_id) if message_id is not None else f"actor:{interaction.user.id}"
+
 
 def normalize_user_id(value):
     if value is None or isinstance(value, bool):
@@ -114,6 +137,59 @@ def setup(tree, client):
     async def slash_profile(interaction: discord.Interaction):
         await interaction.response.defer()
         uid = str(interaction.user.id)
+        if _phase3_enabled():
+            from economy.equipment import get_active_loadout, get_effective_stats, initialize_phase3_profile
+            await initialize_phase3_profile(DB_PATH, interaction.guild_id, uid)
+            profile = await get_profile_snapshot(DB_PATH, interaction.guild_id, uid)
+            effective = await get_effective_stats(DB_PATH, interaction.guild_id, uid)
+            loadout = await get_active_loadout(DB_PATH, interaction.guild_id, uid)
+            embed = discord.Embed(title=f"RPG Profile: {interaction.user.display_name}", color=0x5865F2)
+            embed.add_field(name="Level / XP", value=f"{profile.level} / {profile.xp:,}", inline=True)
+            embed.add_field(name="ETM / ECY", value=f"{profile.etm_balance:,} / {profile.ecy_balance:,}", inline=True)
+            embed.add_field(name="HP", value=f"{profile.current_hp:,}/{effective.max_hp:,}", inline=True)
+            embed.add_field(name="Attack", value=f"{effective.attack:,}", inline=True)
+            embed.add_field(name="Defense", value=f"{effective.defense:,}", inline=True)
+            embed.add_field(name="Critical Chance", value=f"{effective.crit_bps / 100:.2f}%", inline=True)
+            embed.add_field(name="Energy", value=f"{profile.energy}/100", inline=True)
+            embed.add_field(name="Power Score", value=f"{effective.power_score:,}", inline=True)
+            embed.add_field(name="Activity 30 Hari", value=f"{profile.activity_score_30d:,}", inline=True)
+            embed.add_field(
+                name="Equipment / Pet Aktif",
+                value="\n".join(
+                    (f"{slot.title()}: {data['name']} (`{data['instance_id']}`)" if slot == "pet"
+                     else f"{slot.title()}: {data['name']} +{data['enhancement_level']} (`{data['instance_id']}`)")
+                    if data else f"{slot.title()}: -" for slot, data in loadout.items()
+                ), inline=False,
+            )
+            await interaction.followup.send(embed=embed)
+            return
+        if _phase2_enabled():
+            profile = await get_profile_snapshot(DB_PATH, interaction.guild_id, uid)
+            embed = discord.Embed(title=f"RPG Profile: {interaction.user.display_name}", color=0x5865F2)
+            embed.add_field(name="Level", value=str(profile.level), inline=True)
+            embed.add_field(name="XP", value=f"{profile.xp:,}", inline=True)
+            embed.add_field(name="Power Score", value=f"{profile.power_score:,}", inline=True)
+            embed.add_field(name="ETM", value=f"{profile.etm_balance:,}", inline=True)
+            embed.add_field(name="ECY", value=f"{profile.ecy_balance:,}", inline=True)
+            embed.add_field(name="Activity 30 Hari", value=f"{profile.activity_score_30d:,}", inline=True)
+            embed.add_field(name="HP", value=f"{profile.current_hp:,}/{profile.max_hp:,}", inline=True)
+            embed.add_field(name="Attack", value=f"{profile.attack:,}", inline=True)
+            embed.add_field(name="Defense", value=f"{profile.defense:,}", inline=True)
+            crit_text = f"{profile.crit_bps // 100}.{profile.crit_bps % 100:02d}%"
+            embed.add_field(name="Critical Chance", value=crit_text, inline=True)
+            embed.add_field(name="Energy", value=f"{profile.energy}/100", inline=True)
+            embed.add_field(
+                name="Equipment / Pet",
+                value=(
+                    f"Weapon: `{profile.active_weapon_instance_id or '-'}`\n"
+                    f"Armor: `{profile.active_armor_instance_id or '-'}`\n"
+                    f"Accessory: `{profile.active_accessory_instance_id or '-'}`\n"
+                    f"Pet: `{profile.active_pet_instance_id or '-'}`"
+                ),
+                inline=False,
+            )
+            await interaction.followup.send(embed=embed)
+            return
         stat = await get_discord_stat(uid)
         users = await load_json('users.json')
         achievements = users.get(uid, {}).get('achievements', [])
@@ -187,6 +263,20 @@ def setup(tree, client):
     @tree.command(name="attack", description="Serang Boss Raid")
     async def slash_attack(interaction: discord.Interaction):
         await interaction.response.defer()
+        if _phase3_enabled():
+            from economy.bosses import commit_boss_attack, reserve_boss_attack
+            try:
+                operation_id, _, _ = await reserve_boss_attack(
+                    DB_PATH, guild_id=interaction.guild_id, user_id=str(interaction.user.id),
+                )
+                result, _ = await commit_boss_attack(
+                    DB_PATH, guild_id=interaction.guild_id, user_id=str(interaction.user.id),
+                    operation_id=operation_id,
+                )
+                await send_embed(interaction, f"Boss menerima **{result['damage']:,} damage**. Sisa HP: **{result['boss_hp']:,}**.")
+            except (ValueError, PermissionError) as exc:
+                await send_embed(interaction, str(exc))
+            return
         boss_data = await load_json(BOSS_FILE)
         if not boss_data.get('active', False):
             await send_embed(interaction, "❌ Tidak ada Boss yang sedang aktif saat ini.")
@@ -307,9 +397,31 @@ def setup(tree, client):
         from w2e_views import BlackjackView
         await send_embed(interaction, msg, view=BlackjackView(interaction.user, bet))
     
-    @tree.command(name="hunt", description="Buru member yang memiliki harga buronan (Bounty)")
-    async def slash_hunt(interaction: discord.Interaction, target: discord.Member):
+    @tree.command(name="hunt", description="Jalankan RPG Hunt atau legacy bounty hunt")
+    async def slash_hunt(interaction: discord.Interaction, target: discord.Member = None):
         await interaction.response.defer()
+        if _phase3_enabled():
+            from economy.adventures import reserve_hunt, settle_hunt
+            from economy.equipment import initialize_phase3_profile
+            try:
+                await initialize_phase3_profile(DB_PATH, interaction.guild_id, str(interaction.user.id))
+                profile = await get_profile_snapshot(DB_PATH, interaction.guild_id, str(interaction.user.id))
+                area_id = "abyss_realm" if profile.level >= 45 else (
+                    "eternal_ruins" if profile.level >= 25 else ("dark_cave" if profile.level >= 10 else "green_forest")
+                )
+                operation_id, _, _ = await reserve_hunt(
+                    DB_PATH, guild_id=interaction.guild_id, user_id=str(interaction.user.id), area_id=area_id,
+                )
+                result = await settle_hunt(
+                    DB_PATH, guild_id=interaction.guild_id, user_id=str(interaction.user.id), operation_id=operation_id,
+                )
+                await send_embed(interaction, result.message)
+            except ValueError as exc:
+                await send_embed(interaction, str(exc))
+            return
+        if target is None:
+            await send_embed(interaction, "Target bounty wajib diisi. Gunakan `/bounty hunt`.")
+            return
         uid = str(interaction.user.id)
         tid = str(target.id)
         if uid == tid: 
@@ -391,9 +503,39 @@ def setup(tree, client):
         await send_embed(interaction, f"🛍️ Berhasil membeli **{item['name']}** seharga {price} Koin! (Cek `/inventory`)")
     
     @tree.command(name="inventory", description="Lihat isi tas kamu")
-    async def slash_inventory(interaction: discord.Interaction):
+    async def slash_inventory(interaction: discord.Interaction, category: str = "all", page: int = 1):
         await interaction.response.defer()
         uid = str(interaction.user.id)
+        if _phase3_enabled():
+            from economy.catalog import EQUIPMENT, STACK_ITEMS
+            from economy.inventory import list_inventory
+            try:
+                page = max(1, int(page))
+                data = await list_inventory(
+                    DB_PATH, interaction.guild_id, uid, category=category, offset=(page - 1) * 20,
+                )
+            except ValueError as exc:
+                await send_embed(interaction, str(exc))
+                return
+            embed = discord.Embed(title=f"Inventory: {interaction.user.display_name}", color=0x5865F2)
+            for row in data["equipment"]:
+                definition = EQUIPMENT.get(row["itemId"], {})
+                embed.add_field(
+                    name=definition.get("name", row["itemId"]),
+                    value=(f"{definition.get('rarity', '-')} | {row['slot']} | +{row['enhancementLevel']}\n"
+                           f"Binding: {row['bindingStatus']} | Status: {row['status']}\n"
+                           f"ID: `{row['equipmentInstanceId']}`"), inline=False,
+                )
+            for row in data["stacks"]:
+                definition = STACK_ITEMS.get(row["itemId"], (row["itemId"],))
+                embed.add_field(
+                    name=definition[0], value=f"ID: `{row['itemId']}` | Qty: **{row['quantity']}**", inline=False,
+                )
+            if not embed.fields:
+                embed.description = "Inventory kosong untuk kategori ini."
+            embed.set_footer(text=f"Halaman {page}")
+            await interaction.followup.send(embed=embed)
+            return
         users = await load_json('users.json')
         items = users.get(uid, {}).get('items', {})
         
@@ -412,6 +554,13 @@ def setup(tree, client):
     async def slash_daily(interaction: discord.Interaction):
         await interaction.response.defer()
         uid = str(interaction.user.id)
+        if _phase2_enabled():
+            result = await claim_reward(
+                DB_PATH, guild_id=interaction.guild_id, user_id=uid,
+                claim_type="DAILY", request_id=_economy_request_id(interaction),
+            )
+            await send_embed(interaction, result.message)
+            return
         stat = await get_discord_stat(uid)
         now = datetime.now()
         
@@ -499,6 +648,16 @@ def setup(tree, client):
     async def slash_work(interaction: discord.Interaction):
         await interaction.response.defer()
         uid = str(interaction.user.id)
+        if _phase2_enabled():
+            reserved = await reserve_work_roll(DB_PATH, guild_id=interaction.guild_id, user_id=uid)
+            if not reserved.ok:
+                await send_embed(interaction, reserved.message)
+                return
+            result = await settle_work_roll(
+                DB_PATH, guild_id=interaction.guild_id, user_id=uid, roll_id=reserved.roll_id,
+            )
+            await send_embed(interaction, result.message)
+            return
         users = await load_json('users.json')
         now = datetime.now()
         last_work = users.get(uid, {}).get('lastWork')
@@ -591,6 +750,13 @@ def setup(tree, client):
     async def slash_weekly(interaction: discord.Interaction):
         await interaction.response.defer()
         uid = str(interaction.user.id)
+        if _phase2_enabled():
+            result = await claim_reward(
+                DB_PATH, guild_id=interaction.guild_id, user_id=uid,
+                claim_type="WEEKLY", request_id=_economy_request_id(interaction),
+            )
+            await send_embed(interaction, result.message)
+            return
         weekly_data = await load_json('weekly.json')
         
         today = datetime.now()
@@ -615,6 +781,14 @@ def setup(tree, client):
         await interaction.response.defer()
         uid = str(interaction.user.id)
         tid = str(target.id)
+        if _phase2_enabled():
+            result = await transfer_etm(
+                DB_PATH, guild_id=interaction.guild_id, sender_id=uid, recipient_id=tid,
+                amount=amount, request_id=_economy_request_id(interaction),
+                recipient_is_bot=bool(target.bot),
+            )
+            await send_embed(interaction, result.message)
+            return
         
         if amount <= 0:
             await send_embed(interaction, "❌ Jumlah koin harus lebih dari 0!")
@@ -637,6 +811,42 @@ def setup(tree, client):
 
         await send_embed(interaction, f"💸 **Transfer Berhasil!**\nKamu mengirim **{amount} Koin** ke {target.mention}.\nPenerima dapat: **{net}** (pajak 5% = {tax} masuk kas).")
     
+    @tree.command(name="exchange", description="Lihat atau gunakan Eternal Exchange ETM ke ECY")
+    async def slash_exchange(interaction: discord.Interaction, amount: str = ""):
+        await interaction.response.defer()
+        uid = str(interaction.user.id)
+        enabled = _phase2_enabled()
+        if not str(amount or "").strip():
+            info = await get_exchange_info(DB_PATH, interaction.guild_id, uid, enabled=enabled)
+            status = "Tersedia" if info.available else "Tidak tersedia"
+            limit_text = f"{info.daily_limit:,} ETM" if info.daily_limit else "Terkunci"
+            await send_embed(
+                interaction,
+                "**Eternal Exchange**\n"
+                "Rate: **10 ETM = 1 ECY**\n"
+                "Fee: **5%**\n"
+                "Input wajib kelipatan **200 ETM**.\n\n"
+                f"RPG Level: **{info.level}**\n"
+                f"Limit harian: **{limit_text}**\n"
+                f"Dipakai hari ini: **{info.used_today:,} ETM**\n"
+                f"Sisa allowance: **{info.remaining:,} ETM**\n"
+                f"Status fitur: **{status}**",
+            )
+            return
+        if not enabled:
+            await send_embed(interaction, "Economy Phase 2 belum diaktifkan. Exchange tidak memproses transaksi.")
+            return
+        try:
+            parsed = parse_economy_amount(amount)
+        except AmountParseError as exc:
+            await send_embed(interaction, str(exc))
+            return
+        result = await exchange_etm_to_ecy(
+            DB_PATH, guild_id=interaction.guild_id, user_id=uid, amount=parsed,
+            request_id=_economy_request_id(interaction),
+        )
+        await send_embed(interaction, result.message)
+
     @tree.command(name="cf", description="Main Coinflip (Judi tebak koin)")
     async def slash_cf(interaction: discord.Interaction, tebakan: str, bet: int):
         await interaction.response.defer()
@@ -1171,10 +1381,34 @@ def setup(tree, client):
 
         await send_embed(interaction, msg)
     
-    @tree.command(name="quest", description="Lihat Misi Harian/Mingguan kamu")
-    async def slash_quest(interaction: discord.Interaction):
+    @tree.command(name="quest", description="Lihat atau klaim Misi Harian/Mingguan")
+    async def slash_quest(interaction: discord.Interaction, action: str = "", quest_type: str = ""):
         await interaction.response.defer()
         uid = str(interaction.user.id)
+        if _phase3_enabled():
+            from economy.quests import claim_quest, quest_progress
+            if str(action).lower() == "claim":
+                result = await claim_quest(
+                    DB_PATH, guild_id=interaction.guild_id, user_id=uid, quest_type=quest_type,
+                )
+                await send_embed(interaction, result.message)
+                return
+            try:
+                progress = await quest_progress(DB_PATH, interaction.guild_id, uid)
+            except ValueError as exc:
+                await send_embed(interaction, str(exc))
+                return
+            embed = discord.Embed(title=f"Quest: {interaction.user.display_name}", color=0x5865F2)
+            for kind, data in progress.items():
+                lines = [
+                    f"{name}: {data['progress'][name]:,}/{target:,}"
+                    for name, target in data["targets"].items()
+                ]
+                lines.append(f"Berakhir: {data['assignment']['periodEndUtc']}")
+                lines.append(f"Status: {data['assignment']['status']}")
+                embed.add_field(name=kind.title(), value="\n".join(lines), inline=False)
+            await interaction.followup.send(embed=embed)
+            return
         quests = await get_user_quests(uid)
         
         if not quests:
@@ -1182,7 +1416,8 @@ def setup(tree, client):
             return
             
         embed = discord.Embed(title=f"📜 Quest Log: {interaction.user.display_name}", color=discord.Color.dark_purple())
-        for q_id, q_data in quests.items():
+        quest_rows = quests.get("quests", []) if isinstance(quests, dict) else []
+        for q_data in quest_rows:
             status = "✅ Selesai" if q_data['progress'] >= q_data['target'] else f"⏳ {q_data['progress']}/{q_data['target']}"
             embed.add_field(name=q_data['name'], value=f"{q_data['desc']}\nProgress: {status}\nReward: {q_data['reward']} Koin", inline=False)
             

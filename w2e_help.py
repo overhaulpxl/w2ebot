@@ -79,6 +79,17 @@ def get_help_embed(category: str, guild=None) -> discord.Embed:
         ]
         for cmd, desc in commands:
             embed.add_field(name=cmd, value=desc, inline=False)
+        embed.add_field(
+            name="Economy V1 Phase 1-3",
+            value=(
+                "Fondasi wallet ETM/ECY, ledger, treasury, dan migration dry-run telah tersedia "
+                "namun **belum diaktifkan untuk production**. Phase 2 menyiapkan profile RPG, "
+                "Daily/Weekly, Work, transfer ETM, dan Eternal Exchange. Phase 3 menyiapkan starter, "
+                "equipment, enhancement, pet, Hunt, Dungeon, Boss, dan Quest. Command RPG legacy tetap "
+                "berjalan selama feature flag nonaktif; ketiga flag Economy default-nya `false`."
+            ),
+            inline=False,
+        )
         embed.set_footer(text=f"Gunakan prefix `{BOT_PREFIX}` sebelum menulis command.")
         return embed
 

@@ -20,6 +20,15 @@ import unicodedata
 
 import math
 
+from runtime_config import (
+    DATABASE_PATH_STRING, STAGING_MODE, STARTUP_CONFIGURATION, command_sync_guild_id,
+)
+
+from economy.database import ensure_phase1_schema
+from economy.constants import ECONOMY_PHASE2_ENABLED, ECONOMY_PHASE3_ENABLED, ECONOMY_V1_ENABLED
+from economy.profile import get_profile_snapshot
+from economy.treasury import get_supply_report
+
 try:
     from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance, ImageChops
     PILLOW_AVAILABLE = True
@@ -28,7 +37,7 @@ except ImportError:
     logging.warning("Pillow not installed. Family tree/profile images will use text fallback.")
 
 
-DB_PATH = "w2ebot.db"
+DB_PATH = DATABASE_PATH_STRING
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -40,7 +49,8 @@ load_dotenv()
 
 DISCORD_API_KEY = os.getenv('DISCORD_TOKEN', 'MMM')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', 'MMM')
-ALLOWED_SERVER_ID = int(os.getenv('ALLOWED_SERVER_ID', '887968847842402355'))
+CONFIGURED_ALLOWED_SERVER_ID = int(os.getenv('ALLOWED_SERVER_ID', '887968847842402355'))
+ALLOWED_SERVER_ID = command_sync_guild_id(CONFIGURED_ALLOWED_SERVER_ID)
 BOT_PREFIX = os.getenv('BOT_PREFIX', 'w!')
 DASHBOARD_TOKEN = os.getenv('DASHBOARD_TOKEN', '')
 # Channel tempat bot auto-reply pakai AI tanpa perlu prefix. 0 = nonaktif.
@@ -137,7 +147,7 @@ import sqlite3
 import os
 
 def _init_db():
-    conn = sqlite3.connect('w2ebot.db')
+    conn = sqlite3.connect(DB_PATH)
     conn.execute("CREATE TABLE IF NOT EXISTS json_store (filename TEXT PRIMARY KEY, content TEXT)")
     conn.execute('''
         CREATE TABLE IF NOT EXISTS DiscordStat (
@@ -718,6 +728,9 @@ def _init_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_vouch_report_vouch ON VouchReport(guildId, vouchId, status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_scam_report_status ON scammerReports(guildId, status, reportedUserId)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_trust_moderation_status ON trustModerationStatus(guildId, status)")
+    # Economy V1 foundation creates only empty, additive tables. It does not
+    # migrate DiscordStat/json_store or enable Phase 1/2 wallet mutations.
+    ensure_phase1_schema(conn)
     conn.commit()
     conn.close()
 
@@ -2108,16 +2121,54 @@ async def on_ready():
         public_trust_panel_loop.start()
     if not staff_operation_panel_loop.is_running():
         staff_operation_panel_loop.start()
+    runtime_guild_id = ALLOWED_SERVER_ID
+    if runtime_guild_id is None:
+        raise RuntimeError("Guild runtime belum dikonfigurasi.")
     # Single Server Lock
     for guild in client.guilds:
-        if guild.id != ALLOWED_SERVER_ID:
+        if guild.id != runtime_guild_id:
             logging.warning(f"Leaving unauthorized server: {guild.name}")
             await guild.leave()
 
-    tree.copy_global_to(guild=discord.Object(id=ALLOWED_SERVER_ID))
+    def collect_command_names(commands, prefix=""):
+        names = []
+        for command in commands:
+            qualified = f"{prefix} {command.name}".strip()
+            names.append(qualified)
+            if isinstance(command, discord.app_commands.Group):
+                names.extend(collect_command_names(command.commands, qualified))
+        return names
+
+    command_names = collect_command_names(tree.get_commands())
+    duplicate_names = sorted({name for name in command_names if command_names.count(name) > 1})
+    if duplicate_names:
+        logging.error("Duplicate command registration names=%s", duplicate_names)
+        raise RuntimeError("Duplicate command registration terdeteksi.")
+
+    sync_guild = discord.Object(id=runtime_guild_id)
+    tree.copy_global_to(guild=sync_guild)
     if not TREE_SYNC_DONE:
-        await tree.sync(guild=discord.Object(id=ALLOWED_SERVER_ID))
+        synced = await tree.sync(guild=sync_guild)
         TREE_SYNC_DONE = True
+        logging.info(
+            "Command sync completed staging_mode=%s guild_id=%s count=%s names=%s",
+            STAGING_MODE, runtime_guild_id, len(synced), sorted(command.name for command in synced),
+        )
+    if STAGING_MODE:
+        from economy.catalog import catalog_hash
+        from economy.constants import RPG_PHASE3_CATALOG_VERSION
+        from economy.phase3_schema import PHASE3_HARDENING_CHECKSUM, PHASE3_HARDENING_VERSION
+        logging.info(
+            "Staging startup database_path=%s database_role=staging guild_id=%s "
+            "economy_flags=%s/%s/%s migration_version=%s migration_checksum=%s "
+            "catalog_version=%s catalog_checksum=%s registered_command_count=%s",
+            DB_PATH, runtime_guild_id,
+            STARTUP_CONFIGURATION.economy_v1_enabled,
+            STARTUP_CONFIGURATION.economy_phase2_enabled,
+            STARTUP_CONFIGURATION.economy_phase3_enabled,
+            PHASE3_HARDENING_VERSION, PHASE3_HARDENING_CHECKSUM,
+            RPG_PHASE3_CATALOG_VERSION, catalog_hash(), len(command_names),
+        )
     _schedule_ready_task("web_server", start_web_server, once=True)
     _schedule_ready_task("check_birthdays", check_birthdays)
     _schedule_ready_task("update_market_prices", update_market_prices)
@@ -2443,6 +2494,9 @@ async def api_treasury(request):
 
 
 async def api_boss(request):
+    if ECONOMY_V1_ENABLED and ECONOMY_PHASE2_ENABLED and ECONOMY_PHASE3_ENABLED:
+        from economy.bosses import boss_status
+        return web.json_response(await boss_status(DB_PATH, ALLOWED_SERVER_ID) or {"active": False})
     boss = await load_json(BOSS_FILE)
     return web.json_response(boss or {'active': False})
 
@@ -2463,6 +2517,7 @@ async def api_economy_stats(request):
     top_holder = None
     if top:
         top_holder = {'id': str(top[0]), 'displayName': top[1] or _resolve_name(top[0]), 'coins': top[2]}
+    v1_supply = await get_supply_report(DB_PATH, ALLOWED_SERVER_ID)
     return web.json_response({
         'player_count': count,
         'total_coins_in_circulation': int(total_coins),
@@ -2470,7 +2525,62 @@ async def api_economy_stats(request):
         'richest_coins': int(max_coins),
         'top_holder': top_holder,
         'treasury_balance': treasury.get('balance', 0) if isinstance(treasury, dict) else 0,
+        'v1_enabled': os.getenv('ECONOMY_V1_ENABLED', 'false').strip().lower() in ('1', 'true', 'yes', 'on'),
+        'v1_supply': v1_supply,
     })
+
+
+async def api_economy_v1_supply(request):
+    return web.json_response({
+        'enabled': os.getenv('ECONOMY_V1_ENABLED', 'false').strip().lower() in ('1', 'true', 'yes', 'on'),
+        'guild_id': str(ALLOWED_SERVER_ID),
+        'supply': await get_supply_report(DB_PATH, ALLOWED_SERVER_ID),
+    })
+
+
+async def api_economy_v1_profile(request):
+    user_id = str(request.match_info.get('id', '')).strip()
+    if not user_id.isdigit():
+        return web.json_response({'error': 'invalid user id'}, status=400)
+    profile = await get_profile_snapshot(
+        DB_PATH, ALLOWED_SERVER_ID, user_id, create=False,
+    )
+    if profile is None:
+        return web.json_response({'error': 'v1 profile not found'}, status=404)
+    payload = {
+        'guild_id': profile.guild_id,
+        'user_id': profile.user_id,
+        'level': profile.level,
+        'xp': profile.xp,
+        'etm_balance': profile.etm_balance,
+        'ecy_balance': profile.ecy_balance,
+        'max_hp': profile.max_hp,
+        'current_hp': profile.current_hp,
+        'attack': profile.attack,
+        'defense': profile.defense,
+        'crit_bps': profile.crit_bps,
+        'energy': profile.energy,
+        'power_score': profile.power_score,
+        'activity_score_30d': profile.activity_score_30d,
+        'active_weapon_instance_id': profile.active_weapon_instance_id,
+        'active_armor_instance_id': profile.active_armor_instance_id,
+        'active_accessory_instance_id': profile.active_accessory_instance_id,
+        'active_pet_instance_id': profile.active_pet_instance_id,
+        'phase3_enabled': ECONOMY_V1_ENABLED and ECONOMY_PHASE2_ENABLED and ECONOMY_PHASE3_ENABLED,
+    }
+    if payload['phase3_enabled']:
+        from economy.equipment import get_active_loadout, get_effective_stats
+        effective = await get_effective_stats(DB_PATH, ALLOWED_SERVER_ID, user_id)
+        if effective:
+            payload.update({
+                'effective_max_hp': effective.max_hp,
+                'effective_attack': effective.attack,
+                'effective_defense': effective.defense,
+                'effective_crit_bps': effective.crit_bps,
+                'effective_power_score': effective.power_score,
+                'active_loadout': await get_active_loadout(DB_PATH, ALLOWED_SERVER_ID, user_id),
+            })
+    return web.json_response(payload)
 
 
 async def api_marriages(request):
@@ -2627,6 +2737,22 @@ async def api_user_reset_cooldown(request):
 async def api_boss_spawn(request):
     if not require_token(request):
         return web.json_response({'error': 'unauthorized'}, status=401)
+    if ECONOMY_V1_ENABLED and ECONOMY_PHASE2_ENABLED and ECONOMY_PHASE3_ENABLED:
+        from economy.bosses import start_boss
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        try:
+            result = await start_boss(
+                DB_PATH, guild_id=ALLOWED_SERVER_ID, tier=body.get("tier", "normal"),
+                start_key=body.get("request_id") or request.headers.get("X-Request-ID") or os.urandom(8).hex(),
+                authorized=True,
+            )
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        await write_audit('boss-spawn-v1', result['raid_id'], result['tier'])
+        return web.json_response({'status': 'success', 'boss': result})
     boss_data = await load_json(BOSS_FILE)
     if boss_data.get('active', False):
         return web.json_response({'error': 'boss already active', 'boss': boss_data}, status=409)
@@ -2641,6 +2767,19 @@ async def api_boss_spawn(request):
                 ch.send(f"⚠️ **BOSS RAID EVENT DIMULAI!** ⚠️\n**{boss_data['name']}** telah muncul dengan {boss_data['hp']} HP!\nKetik `!attack` untuk menyerang! Yang berhasil membunuhnya mendapat hadiah 5000 Koin!")
             )
     return web.json_response({'status': 'success', 'boss': boss_data})
+
+
+async def api_boss_settle(request):
+    if not require_token(request):
+        return web.json_response({'error': 'unauthorized'}, status=401)
+    if not (ECONOMY_V1_ENABLED and ECONOMY_PHASE2_ENABLED and ECONOMY_PHASE3_ENABLED):
+        return web.json_response({'error': 'phase 3 disabled'}, status=409)
+    from economy.bosses import settle_boss
+    result = await settle_boss(DB_PATH, guild_id=ALLOWED_SERVER_ID, authorized=True)
+    return web.json_response({
+        'ok': result.ok, 'code': result.code, 'message': result.message,
+        'transaction_id': result.transaction_id, 'replayed': result.replayed,
+    }, status=200 if result.ok else 409)
 
 
 async def api_announce(request):
@@ -3144,6 +3283,8 @@ async def start_web_server():
     app.router.add_get('/api/treasury', api_treasury)
     app.router.add_get('/api/boss', api_boss)
     app.router.add_get('/api/economy/stats', api_economy_stats)
+    app.router.add_get('/api/economy/v1-supply', api_economy_v1_supply)
+    app.router.add_get('/api/economy/v1-profile/{id}', api_economy_v1_profile)
     app.router.add_get('/api/marriages', api_marriages)
     app.router.add_get('/api/stats/summary', api_stats_summary)
     app.router.add_get('/api/bot/stats', api_bot_stats)
@@ -3165,6 +3306,7 @@ async def start_web_server():
     app.router.add_post('/api/user/{id}/reset', api_user_reset_player)
     app.router.add_post('/api/reset-all-players', api_reset_all_players)
     app.router.add_post('/api/boss/spawn', api_boss_spawn)
+    app.router.add_post('/api/boss/settle', api_boss_settle)
     app.router.add_post('/api/announce', api_announce)
     
     runner = web.AppRunner(app)
@@ -7770,6 +7912,7 @@ class FakeFollowup:
 class FakeInteraction:
     def __init__(self, message):
         self.message = message
+        self.id = getattr(message, "id", None)
         self.user = message.author
         self.guild = message.guild
         self.channel = message.channel
@@ -7780,6 +7923,14 @@ class FakeInteraction:
     @property
     def client(self):
         return client
+
+    @property
+    def guild_id(self):
+        return getattr(self.guild, "id", None)
+
+    @property
+    def channel_id(self):
+        return getattr(self.channel, "id", None)
 
     async def send(self, *args, **kwargs):
         kwargs.pop("ephemeral", None)
@@ -7895,6 +8046,7 @@ async def on_message(message):
             except Exception as e:
                 logging.error("Error executing prefix command command=%s exception=%s", cmd_name, type(e).__name__)
                 if interaction is not None and interaction.response.is_done():
+                    await interaction.followup.send("Gagal mengeksekusi perintah. Silakan coba lagi.")
                     return
                 await message.channel.send("❌ Gagal mengeksekusi perintah. Cek format argumennya ya.")
         return
