@@ -17,7 +17,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
-import type { MarketData, LevelDistribution } from "@/lib/botApi";
+import type { MarketData, LevelDistribution, MarketplaceV1Status } from "@/lib/botApi";
 
 function useReducedMotion() {
   const [reduced, setReduced] = useState(false);
@@ -42,9 +42,11 @@ const tooltipStyle = {
 export function Analytics({
   market,
   levels,
+  marketplace,
 }: {
   market: MarketData | null;
   levels: LevelDistribution | null;
+  marketplace: MarketplaceV1Status | null;
 }) {
   const reduced = useReducedMotion();
   const symbols = market ? Object.keys(market.coins) : [];
@@ -57,6 +59,16 @@ export function Analytics({
 
   return (
     <div className="stack">
+      <section className="card card-pad" aria-labelledby="marketplace-v1-status">
+        <h3 id="marketplace-v1-status" style={{ marginBottom: 12 }}>Eternal Marketplace</h3>
+        <div className="faint">
+          {!marketplace?.enabled
+            ? "Phase 4 nonaktif."
+            : !marketplace.schema_ready
+              ? "Phase 4 aktif tetapi schema belum siap."
+              : `Paused: ${marketplace.paused ? "Ya" : "Tidak"} | Listing unresolved: ${marketplace.unresolved ?? 0} | Purchase review: ${marketplace.purchase_reviews ?? 0}`}
+        </div>
+      </section>
       {/* Tren harga market */}
       <section className="card card-pad" aria-labelledby="chart-market">
         <div

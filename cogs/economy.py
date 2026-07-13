@@ -1,5 +1,7 @@
+import asyncio
 import discord
 import logging
+import uuid
 from discord import app_commands
 
 from core import ALLOWED_SERVER_ID, DB_PATH, register_ready_startup_task
@@ -9,6 +11,7 @@ from economy.constants import (
     ECONOMY_CONFIRM_TIMEOUT_SECONDS,
     ECONOMY_PHASE2_ENABLED,
     ECONOMY_PHASE3_ENABLED,
+    ECONOMY_PHASE4_ENABLED,
     ECONOMY_V1_ENABLED,
     EMERGENCY_FEATURES,
     configured_large_threshold,
@@ -25,12 +28,67 @@ from economy.treasury import get_supply_report, treasury_grant
 from economy.wallets import admin_mint, admin_remove
 from economy.recovery import recover_phase2_runtime
 from economy.phase3_recovery import recover_phase3_operations
+from economy.phase4_recovery import recover_phase4_runtime
+from economy.marketplace import claim_notification_events, finalize_notification_event
 
 
 logger = logging.getLogger(__name__)
 
 
 STAGING_MESSAGE = "Economy V1 Phase 1 belum diaktifkan. Tidak ada saldo production yang diubah."
+
+
+async def _deliver_phase4_watch_notifications(client, *, limit=100):
+    async def find_existing(channel, marker):
+        async for previous in channel.history(limit=20):
+            if marker in str(getattr(previous, "content", "")):
+                return previous
+        return None
+
+    lease_owner = f"discord-worker:{uuid.uuid4()}"
+    rows = await claim_notification_events(DB_PATH, lease_owner=lease_owner, limit=limit)
+    delivered = failed = 0
+    for row in rows:
+        marker = f"W2E-MARKET-EVENT:{row['eventKey']}"
+        try:
+            user = client.get_user(int(row["userId"]))
+            if user is None:
+                user = await asyncio.wait_for(client.fetch_user(int(row["userId"])), timeout=8)
+            channel = await asyncio.wait_for(user.create_dm(), timeout=8)
+            try:
+                adopted = await asyncio.wait_for(find_existing(channel, marker), timeout=8)
+            except (discord.Forbidden, discord.HTTPException, asyncio.TimeoutError):
+                await finalize_notification_event(
+                    DB_PATH, event_id=row["eventId"], lease_owner=lease_owner,
+                    ambiguous=True, error_code="adoption_scan_failed",
+                )
+                failed += 1
+                continue
+            message = adopted
+            if message is None:
+                message = await asyncio.wait_for(
+                    channel.send(
+                        "Listing marketplace yang kamu pantau telah diperbarui. "
+                        f"Listing ID: `{row['listingId']}`.\n-# `{marker}`"
+                    ),
+                    timeout=8,
+                )
+            updated = await finalize_notification_event(
+                DB_PATH, event_id=row["eventId"], lease_owner=lease_owner,
+                sent=True, message_id=getattr(message, "id", None),
+            )
+            delivered += int(updated)
+        except (ValueError, discord.HTTPException, asyncio.TimeoutError):
+            updated = await finalize_notification_event(
+                DB_PATH, event_id=row["eventId"], lease_owner=lease_owner,
+                sent=False, error_code="discord_delivery_failed",
+            )
+            if updated:
+                failed += 1
+        except Exception:
+            logger.exception("phase4 notification delivery failed event=%s", row.get("eventId"))
+            failed += 1
+    return {"scanned": len(rows), "delivered": delivered, "failed": failed}
 
 
 async def _reply(interaction, content, *, ephemeral=True):
@@ -215,6 +273,7 @@ def setup(tree, client):
             f"Economy V1 enabled: **{'Ya' if ECONOMY_V1_ENABLED else 'Tidak'}**",
             f"Economy Phase 2 enabled: **{'Ya' if ECONOMY_PHASE2_ENABLED else 'Tidak'}**",
             f"Economy Phase 3 enabled: **{'Ya' if ECONOMY_PHASE3_ENABLED else 'Tidak'}**",
+            f"Economy Phase 4 enabled: **{'Ya' if ECONOMY_PHASE4_ENABLED else 'Tidak'}**",
             state_text,
         ]
         for currency in CURRENCIES:
@@ -277,3 +336,16 @@ def setup(tree, client):
             logger.warning("Phase 3 recovery inspection failed type=%s", type(exc).__name__)
 
     register_ready_startup_task(_recover_phase3)
+
+    async def _recover_phase4():
+        if not (ECONOMY_V1_ENABLED and ECONOMY_PHASE2_ENABLED and
+                ECONOMY_PHASE3_ENABLED and ECONOMY_PHASE4_ENABLED):
+            return
+        try:
+            counts = await recover_phase4_runtime(DB_PATH)
+            counts["watch_notifications"] = await _deliver_phase4_watch_notifications(client)
+            logger.info("Phase 4 recovery result counts=%s", counts)
+        except Exception as exc:
+            logger.warning("Phase 4 recovery inspection failed type=%s", type(exc).__name__)
+
+    register_ready_startup_task(_recover_phase4)

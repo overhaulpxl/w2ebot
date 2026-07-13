@@ -136,6 +136,14 @@ export interface Phase3BossStatus {
   manual_settlement_required: boolean;
 }
 
+export interface MarketplaceV1Status {
+  enabled: boolean;
+  schema_ready: boolean;
+  paused?: boolean;
+  unresolved?: number;
+  purchase_reviews?: number;
+}
+
 export interface LeaderboardEntry {
   rank: number;
   id: string;

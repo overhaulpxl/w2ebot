@@ -28,6 +28,22 @@ class EffectiveStats:
     all_damage_bps: int
 
 
+async def assert_equipment_not_in_marketplace_escrow(db, guild_id, equipment_instance_id):
+    """Fail closed terhadap escrow aktif tanpa mewajibkan schema Phase 4 untuk Phase 3."""
+    async with db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='MarketplaceEscrow'"
+    ) as cursor:
+        if not await cursor.fetchone():
+            return
+    async with db.execute(
+        "SELECT 1 FROM MarketplaceEscrow WHERE guildId=? AND equipmentInstanceId=? "
+        "AND status IN ('HELD','PARTIAL','REVIEW_REQUIRED') LIMIT 1",
+        (str(guild_id), str(equipment_instance_id)),
+    ) as cursor:
+        if await cursor.fetchone():
+            raise ValueError("Equipment sedang ditahan oleh marketplace.")
+
+
 def enhanced_flat(value, enhancement_level):
     return int(value) * (10_000 + ENHANCEMENT_BONUS_BPS[int(enhancement_level)]) // 10_000
 
@@ -315,6 +331,7 @@ async def equip_instance(db_path, guild_id, user_id, equipment_instance_id, *, n
         db.row_factory = aiosqlite.Row
         await db.execute("BEGIN IMMEDIATE")
         try:
+            await assert_equipment_not_in_marketplace_escrow(db, guild_id, equipment_instance_id)
             async with db.execute(
                 "SELECT itemId,slot,bindingStatus,status FROM RpgEquipmentInstance "
                 "WHERE equipmentInstanceId=? AND guildId=? AND ownerId=?",
@@ -338,7 +355,8 @@ async def equip_instance(db_path, guild_id, user_id, equipment_instance_id, *, n
             )
             if item["bindingStatus"] == "BOUND_ON_EQUIP":
                 await db.execute(
-                    "UPDATE RpgEquipmentInstance SET bindingStatus='ACCOUNT_BOUND',updatedAt=? WHERE equipmentInstanceId=?",
+                    "UPDATE RpgEquipmentInstance SET bindingStatus='ACCOUNT_BOUND',updatedAt=? "
+                    "WHERE equipmentInstanceId=? AND status='OWNED'",
                     (timestamp, str(equipment_instance_id)),
                 )
             stats, latest = await _effective_stats_in_db(db, guild_id, user_id)

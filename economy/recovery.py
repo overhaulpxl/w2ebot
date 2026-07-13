@@ -2,6 +2,7 @@ import aiosqlite
 
 from .database import configure_connection
 from .rewards import recover_stale_work_rolls
+from .phase4_recovery import recover_phase4_runtime
 
 
 async def inspect_recovery_state(db_path):

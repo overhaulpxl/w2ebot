@@ -4,6 +4,10 @@
 !.env.example
 !.env.staging.example
 .env.staging
+staging/*.db
+staging/*.db-*
+backups/economy/
+reports/economy/
 .env.staging.local
 .envrc
 
@@ -23,8 +27,6 @@ config.json
 # Runtime logs and backups
 logs/
 backups/
-reports/economy/
-backups/economy/
 tests/tmp/
 *.economy-manifest.json
 *.economy-test.db

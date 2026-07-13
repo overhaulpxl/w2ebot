@@ -166,7 +166,8 @@ async def _build_reward_plan(db, raid_id, tier):
     minimum = (definition["max_hp"] * definition["minimum_bps"] + 9_999) // 10_000
     valid = [(str(user_id), int(damage)) for user_id, damage in contributions if int(damage) >= minimum]
     if not valid:
-        return {"tier": tier, "minimum_damage": minimum, "participants": [], "no_valid_participants": True}
+        return {"tier": tier, "catalog_version": RPG_PHASE3_CATALOG_VERSION,
+                "minimum_damage": minimum, "participants": [], "no_valid_participants": True}
     pool = definition["pool"]
     equal_pool, proportional_pool = pool * 20 // 100, pool * 65 // 100
     top_pool = pool - equal_pool - proportional_pool
@@ -199,7 +200,8 @@ async def _build_reward_plan(db, raid_id, tier):
                              "equipment_instance_id": str(uuid.uuid4()) if drop.get("equipment") else None,
                              "pet_instance_id": pet[0] if pet else None,
                              "pet_xp": definition["pet_xp"]})
-    return {"tier": tier, "minimum_damage": minimum, "participants": participants,
+    return {"tier": tier, "catalog_version": RPG_PHASE3_CATALOG_VERSION,
+            "minimum_damage": minimum, "participants": participants,
             "no_valid_participants": False}
 
 
@@ -341,7 +343,10 @@ async def settle_boss(db_path, *, guild_id, raid_id=None, authorized=False, now=
             )
             for item_id in row.get("drop", {}).get("stacks", ()):
                 from .inventory import adjust_stack
-                await adjust_stack(db, guild_id, row["user_id"], item_id, 1, context.now)
+                await adjust_stack(
+                    db, guild_id, row["user_id"], item_id, 1, context.now,
+                    catalog_version=plan["catalog_version"],
+                )
             equipment_item_id = row.get("drop", {}).get("equipment")
             if equipment_item_id:
                 definition = EQUIPMENT[equipment_item_id]
@@ -350,7 +355,7 @@ async def settle_boss(db_path, *, guild_id, raid_id=None, authorized=False, now=
                     "(equipmentInstanceId,guildId,ownerId,itemId,catalogVersion,slot,enhancementLevel,pityBps,bindingStatus,status,acquiredSource,createdAt,updatedAt) "
                     "VALUES (?,?,?,?,?,?,0,0,'BOUND_ON_EQUIP','OWNED','BOSS',?,?)",
                     (str(row["equipment_instance_id"]), str(guild_id), row["user_id"], equipment_item_id,
-                     RPG_PHASE3_CATALOG_VERSION, definition["slot"], context.now, context.now),
+                     plan["catalog_version"], definition["slot"], context.now, context.now),
                 )
             await db.execute(
                 "INSERT INTO RpgBossParticipantReward "

@@ -9,6 +9,7 @@ from .catalog import (
 )
 from .constants import RPG_PHASE3_CATALOG_VERSION
 from .database import configure_connection
+from .equipment import assert_equipment_not_in_marketplace_escrow
 from .inventory import adjust_stack, inventory_quantity
 from .ledger import AccountDelta, EconomyMutationError, EconomyResult, execute_transaction
 from .operations import reserve_operation
@@ -17,6 +18,7 @@ from .operations import reserve_operation
 async def reserve_enhancement(db_path, *, guild_id, user_id, equipment_instance_id, now=None):
     async with aiosqlite.connect(db_path) as db:
         await configure_connection(db)
+        await assert_equipment_not_in_marketplace_escrow(db, guild_id, equipment_instance_id)
         async with db.execute(
             "SELECT itemId,enhancementLevel,pityBps,status FROM RpgEquipmentInstance "
             "WHERE equipmentInstanceId=? AND guildId=? AND ownerId=?",
@@ -37,7 +39,9 @@ async def reserve_enhancement(db_path, *, guild_id, user_id, equipment_instance_
             wallet = await cursor.fetchone()
         if not wallet or int(wallet[0]) < cost:
             return EconomyResult(False, "insufficient_balance", "Saldo ETM tidak mencukupi.")
-        if material and await inventory_quantity(db, guild_id, user_id, material[0]) < material[1]:
+        if material and await inventory_quantity(
+            db, guild_id, user_id, material[0], catalog_version=RPG_PHASE3_CATALOG_VERSION,
+        ) < material[1]:
             return EconomyResult(False, "insufficient_material", "Material enhancement tidak mencukupi.")
     roll = secrets.randbelow(10_000)
     outcome = {"target_level": target, "roll": roll, "cost": cost, "material": material,
@@ -76,6 +80,7 @@ async def settle_enhancement(db_path, *, guild_id, user_id, operation_id):
     burn = cost - general - reserve
 
     async def extension(db, context):
+        await assert_equipment_not_in_marketplace_escrow(db, guild_id, row[0])
         async with db.execute(
             "SELECT status,sourceResourceId,outcomeJson FROM RpgOperation WHERE operationId=?",
             (str(operation_id),),
@@ -97,15 +102,21 @@ async def settle_enhancement(db_path, *, guild_id, user_id, operation_id):
             required = int(material[1])
             consumed = required if success else required - required // 2
             try:
-                await adjust_stack(db, guild_id, user_id, material[0], -consumed, context.now)
+                await adjust_stack(
+                    db, guild_id, user_id, material[0], -consumed, context.now,
+                    catalog_version=outcome["catalog_version"],
+                )
             except ValueError as exc:
                 raise EconomyMutationError("insufficient_material", str(exc)) from exc
         next_level = int(outcome["target_level"]) if success else int(item[1])
         next_pity = 0 if success else min(2000, int(item[2]) + 500)
-        await db.execute(
-            "UPDATE RpgEquipmentInstance SET enhancementLevel=?,pityBps=?,updatedAt=? WHERE equipmentInstanceId=?",
-            (next_level, next_pity, context.now, operation[1]),
+        cursor = await db.execute(
+            "UPDATE RpgEquipmentInstance SET enhancementLevel=?,pityBps=?,updatedAt=? "
+            "WHERE equipmentInstanceId=? AND guildId=? AND ownerId=? AND status='OWNED'",
+            (next_level, next_pity, context.now, operation[1], str(guild_id), str(user_id)),
         )
+        if cursor.rowcount != 1:
+            raise EconomyMutationError("stale", "Equipment berubah saat enhancement diproses.")
         result = {"success": success, "enhancement_level": next_level, "pity_bps": next_pity}
         await db.execute(
             "UPDATE RpgOperation SET status='COMMITTED',reservationKey=NULL,resultJson=?,transactionId=?,updatedAt=?,settledAt=? "

@@ -3,6 +3,13 @@
 import aiosqlite
 
 from .database import configure_connection
+from .constants import RPG_PHASE3_CATALOG_VERSION
+
+
+async def stack_schema_is_phase4(db):
+    async with db.execute("PRAGMA table_info(RpgInventoryStack)") as cursor:
+        columns = {row[1] for row in await cursor.fetchall()}
+    return {"catalogVersion", "bindingStatus", "status"}.issubset(columns)
 
 
 async def list_inventory(db_path, guild_id, user_id, *, category="all", limit=20, offset=0):
@@ -30,36 +37,63 @@ async def list_inventory(db_path, guild_id, user_id, *, category="all", limit=20
                 predicate = " AND (itemId LIKE 'mat_%' OR itemId LIKE 'bp_%')"
             elif category == "consumables":
                 predicate = " AND (itemId LIKE 'item_%' OR itemId LIKE 'egg_%')"
+            if await stack_schema_is_phase4(db):
+                select = "SELECT itemId,catalogVersion,bindingStatus,status,quantity FROM RpgInventoryStack"
+            else:
+                select = "SELECT itemId,quantity FROM RpgInventoryStack"
             async with db.execute(
-                "SELECT itemId,quantity FROM RpgInventoryStack WHERE guildId=? AND userId=? AND quantity>0" +
-                predicate + " ORDER BY itemId LIMIT ? OFFSET ?",
-                (*params, limit, offset),
+                select + " WHERE guildId=? AND userId=? AND quantity>0" + predicate +
+                " ORDER BY itemId LIMIT ? OFFSET ?", (*params, limit, offset),
             ) as cursor:
                 stacks = [dict(row) for row in await cursor.fetchall()]
     return {"equipment": equipment, "stacks": stacks}
 
 
-async def inventory_quantity(db, guild_id, user_id, item_id):
-    async with db.execute(
-        "SELECT quantity FROM RpgInventoryStack WHERE guildId=? AND userId=? AND itemId=?",
-        (str(guild_id), str(user_id), str(item_id)),
-    ) as cursor:
+async def inventory_quantity(db, guild_id, user_id, item_id, *, catalog_version=None,
+                             binding_status="UNBOUND"):
+    if await stack_schema_is_phase4(db):
+        catalog_version = str(catalog_version or RPG_PHASE3_CATALOG_VERSION)
+        sql = ("SELECT quantity FROM RpgInventoryStack WHERE guildId=? AND userId=? AND itemId=? "
+               "AND catalogVersion=? AND bindingStatus=? AND status='ACTIVE'")
+        params = (str(guild_id), str(user_id), str(item_id), catalog_version, str(binding_status))
+    else:
+        sql = "SELECT quantity FROM RpgInventoryStack WHERE guildId=? AND userId=? AND itemId=?"
+        params = (str(guild_id), str(user_id), str(item_id))
+    async with db.execute(sql, params) as cursor:
         row = await cursor.fetchone()
     return int(row[0]) if row else 0
 
 
-async def adjust_stack(db, guild_id, user_id, item_id, amount, now):
+async def adjust_stack(db, guild_id, user_id, item_id, amount, now, *, catalog_version=None,
+                       binding_status="UNBOUND", status="ACTIVE"):
     if isinstance(amount, bool) or not isinstance(amount, int) or amount == 0:
         raise ValueError("Mutasi stack tidak valid.")
-    await db.execute(
-        "INSERT OR IGNORE INTO RpgInventoryStack "
-        "(guildId,userId,itemId,quantity,version,createdAt,updatedAt) VALUES (?,?,?,0,0,?,?)",
-        (str(guild_id), str(user_id), str(item_id), now, now),
-    )
-    cursor = await db.execute(
-        "UPDATE RpgInventoryStack SET quantity=quantity+?,version=version+1,updatedAt=? "
-        "WHERE guildId=? AND userId=? AND itemId=? AND quantity+?>=0",
-        (amount, now, str(guild_id), str(user_id), str(item_id), amount),
-    )
+    if await stack_schema_is_phase4(db):
+        catalog_version = str(catalog_version or RPG_PHASE3_CATALOG_VERSION)
+        await db.execute(
+            "INSERT OR IGNORE INTO RpgInventoryStack "
+            "(guildId,userId,itemId,catalogVersion,bindingStatus,status,quantity,version,createdAt,updatedAt) "
+            "VALUES (?,?,?,?,?,?,0,0,?,?)",
+            (str(guild_id), str(user_id), str(item_id), catalog_version,
+             str(binding_status), str(status), now, now),
+        )
+        cursor = await db.execute(
+            "UPDATE RpgInventoryStack SET quantity=quantity+?,version=version+1,updatedAt=? "
+            "WHERE guildId=? AND userId=? AND itemId=? AND catalogVersion=? AND bindingStatus=? "
+            "AND status=? AND quantity+?>=0",
+            (amount, now, str(guild_id), str(user_id), str(item_id), catalog_version,
+             str(binding_status), str(status), amount),
+        )
+    else:
+        await db.execute(
+            "INSERT OR IGNORE INTO RpgInventoryStack "
+            "(guildId,userId,itemId,quantity,version,createdAt,updatedAt) VALUES (?,?,?,0,0,?,?)",
+            (str(guild_id), str(user_id), str(item_id), now, now),
+        )
+        cursor = await db.execute(
+            "UPDATE RpgInventoryStack SET quantity=quantity+?,version=version+1,updatedAt=? "
+            "WHERE guildId=? AND userId=? AND itemId=? AND quantity+?>=0",
+            (amount, now, str(guild_id), str(user_id), str(item_id), amount),
+        )
     if cursor.rowcount != 1:
         raise ValueError("Jumlah item tidak mencukupi.")

@@ -25,7 +25,9 @@ async def reserve_open_item(db_path, *, guild_id, user_id, item_id, now=None):
         raise ValueError("Item ini tidak dapat dibuka.")
     async with aiosqlite.connect(db_path) as db:
         await configure_connection(db)
-        if await inventory_quantity(db, guild_id, user_id, item_id) < 1:
+        if await inventory_quantity(
+            db, guild_id, user_id, item_id, catalog_version=RPG_PHASE3_CATALOG_VERSION,
+        ) < 1:
             raise ValueError("Item tidak tersedia di inventory.")
         async with db.execute(
             "SELECT operationId,status,outcomeJson FROM RpgOperation WHERE guildId=? AND userId=? "
@@ -85,7 +87,10 @@ async def settle_open_item(db_path, *, guild_id, user_id, operation_id, now=None
             if row[0] != "RESERVED":
                 raise ValueError("Attempt open tidak dapat diselesaikan.")
             outcome = json.loads(row[2])
-            await adjust_stack(db, guild_id, user_id, row[1], -1, timestamp)
+            await adjust_stack(
+                db, guild_id, user_id, row[1], -1, timestamp,
+                catalog_version=outcome["catalog_version"],
+            )
             result = dict(outcome)
             if outcome["kind"] == "PET":
                 async with db.execute(
@@ -95,7 +100,10 @@ async def settle_open_item(db_path, *, guild_id, user_id, operation_id, now=None
                     duplicate = await cursor.fetchone()
                 if duplicate:
                     essence = PET_DUPLICATE_ESSENCE[outcome["rarity"]]
-                    await adjust_stack(db, guild_id, user_id, "mat_pet_essence", essence, timestamp)
+                    await adjust_stack(
+                        db, guild_id, user_id, "mat_pet_essence", essence, timestamp,
+                        catalog_version=outcome["catalog_version"],
+                    )
                     result = {**result, "duplicate": True, "pet_essence": essence}
                 else:
                     instance_id = str(outcome["result_instance_id"])
@@ -104,7 +112,7 @@ async def settle_open_item(db_path, *, guild_id, user_id, operation_id, now=None
                         "(petInstanceId,guildId,ownerId,petId,catalogVersion,rarity,level,xp,evolutionState,status,acquiredSource,createdAt,updatedAt) "
                         "VALUES (?,?,?,?,?,?,1,0,'BASE','OWNED','OPEN_ITEM',?,?)",
                         (instance_id, str(guild_id), str(user_id), outcome["definition_id"],
-                         RPG_PHASE3_CATALOG_VERSION, outcome["rarity"], timestamp, timestamp),
+                         outcome["catalog_version"], outcome["rarity"], timestamp, timestamp),
                     )
                     result["pet_instance_id"] = instance_id
             else:
@@ -115,7 +123,7 @@ async def settle_open_item(db_path, *, guild_id, user_id, operation_id, now=None
                     "(equipmentInstanceId,guildId,ownerId,itemId,catalogVersion,slot,enhancementLevel,pityBps,bindingStatus,status,acquiredSource,createdAt,updatedAt) "
                     "VALUES (?,?,?,?,?,?,0,0,'BOUND_ON_EQUIP','OWNED','EPIC_CHEST',?,?)",
                     (instance_id, str(guild_id), str(user_id), definition["item_id"],
-                     RPG_PHASE3_CATALOG_VERSION, definition["slot"], timestamp, timestamp),
+                     outcome["catalog_version"], definition["slot"], timestamp, timestamp),
                 )
                 result["equipment_instance_id"] = instance_id
             cursor = await db.execute(

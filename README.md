@@ -108,6 +108,37 @@ outcome yang sama dan tidak melakukan reroll. Starter package dilacak oleh satu
 `RpgStarterGrant`, sedangkan item/pet/state legacy hanya dikarantina sebagai
 `LEGACY_BOUND` di `RpgLegacyAsset` dan tidak memberi combat power V1.
 
+## Economy V1 Phase 4 Marketplace (Disabled)
+
+Phase 4 menambahkan Eternal Marketplace ETM untuk equipment dan stack tradeable.
+Listing memakai escrow atomik, purchase memakai pasangan reservasi
+`EconomyTransaction` + `MarketplaceSale`, dan return selalu memakai pemilik escrow
+authoritative. Fitur ini tetap nonaktif secara default:
+
+```dotenv
+ECONOMY_PHASE4_ENABLED=false
+```
+
+Phase 3 tetap dapat berjalan tanpa migrasi 400. Marketplace baru tersedia jika
+keempat flag economy aktif pada staging dan marker, checksum, kolom stack, indeks,
+serta trigger Phase 4 terverifikasi. Migrasi tidak berjalan saat startup.
+
+```powershell
+python scripts/migrate_economy_phase4.py dry-run staging/w2ebot-staging.db
+python scripts/migrate_economy_phase4.py apply staging/w2ebot-staging.db --backup staging/pre-phase4.backup.db
+python scripts/migrate_economy_phase4.py verify staging/w2ebot-staging.db
+python scripts/migrate_economy_phase4.py reconcile staging/w2ebot-staging.db
+python scripts/migrate_economy_phase4.py --restore staging/pre-phase4.backup.db --database staging/w2ebot-staging.db --confirm-restore-staging
+```
+
+Restore hanya tersedia untuk staging. Tool memvalidasi manifest, checksum migration
+dan catalog, `integrity_check`, serta `foreign_key_check`; safety backup dibuat
+sebelum target diganti secara atomik.
+
+Launcher `scripts/run_phase4_staging.py` hanya membaca `.env.staging`, menolak
+database production, mewajibkan keempat flag staging, dan memverifikasi schema
+sebelum memulai bot.
+
 ---
 
 ## Quick Start

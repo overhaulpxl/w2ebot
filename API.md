@@ -507,3 +507,20 @@ Endpoint internal yang sudah token-gated:
 - `POST /api/boss/spawn` menerima `{"tier":"normal|elite|world","request_id":"..."}` ketika Phase 3 aktif; saat nonaktif tetap memakai Boss legacy.
 - `POST /api/boss/settle` mengulang reward plan persisted untuk raid `AWAITING_FUNDS` dan tidak membuat drop atau payout plan baru.
 - `GET /api/boss` menampilkan status raid Phase 3 hanya ketika ketiga flag aktif; selain itu tetap mengembalikan status legacy.
+
+## Economy V1 Phase 4 Marketplace
+
+`GET /api/economy/v1-marketplace` bersifat read-only dan mengembalikan status
+flag, kesiapan schema, pause global, jumlah listing unresolved, dan purchase yang
+memerlukan review. Endpoint tidak membuat row marketplace.
+
+`POST /api/economy/v1-marketplace/action` wajib memakai `X-Auth-Token` dan fail
+closed saat `DASHBOARD_TOKEN` kosong. Action staff yang didukung adalah
+`reconcile`, `pause`, `resume`, `return`, dan `user-state`. Action `return` hanya
+menerima listing ID; recipient selalu dibaca dari escrow authoritative. Semua
+action memakai service yang sama dengan adapter Discord dan mencatat audit generik.
+Principal internal marketplace dibuat server-side hanya setelah token valid. Payload
+tidak dapat menetapkan Administrator, bot owner, atau `authorizationSource` sendiri.
+
+Phase 4 tetap `false` secara default. Migration 400 tidak pernah dijalankan oleh
+startup bot dan CLI menolak target database production.

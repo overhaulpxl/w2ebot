@@ -21,6 +21,7 @@ import type {
   AnnounceConfig,
   MarketData,
   LevelDistribution,
+  MarketplaceV1Status,
 } from "@/lib/botApi";
 
 type SectionId = "overview" | "stats" | "analytics" | "players" | "economy" | "server" | "audit";
@@ -57,6 +58,7 @@ export function DashboardShell({
   announceConfig,
   market,
   levels,
+  marketplace,
   loadError,
 }: {
   summary: SummaryResponse | null;
@@ -66,6 +68,7 @@ export function DashboardShell({
   announceConfig: AnnounceConfig | null;
   market: MarketData | null;
   levels: LevelDistribution | null;
+  marketplace: MarketplaceV1Status | null;
   loadError: string | null;
 }) {
   const [section, setSection] = useState<SectionId>("overview");
@@ -176,7 +179,7 @@ export function DashboardShell({
           <div key={section} className="section-anim">
             {section === "overview" && <Overview summary={summary} />}
             {section === "stats" && <BotStatsView stats={botStats} loadError={loadError} />}
-            {section === "analytics" && <Analytics market={market} levels={levels} />}
+            {section === "analytics" && <Analytics market={market} levels={levels} marketplace={marketplace} />}
             {section === "players" && <Players leaderboard={leaderboard} loadError={loadError} onSelectUser={setSelectedUserId} />}
             {section === "economy" && <Economy summary={summary} />}
             {section === "server" && (

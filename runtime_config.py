@@ -46,6 +46,7 @@ STAGING_GUILD_ID = _parse_guild_id(os.getenv("STAGING_GUILD_ID"))
 ECONOMY_V1_ENABLED = _env_bool("ECONOMY_V1_ENABLED", False)
 ECONOMY_PHASE2_ENABLED = _env_bool("ECONOMY_PHASE2_ENABLED", False)
 ECONOMY_PHASE3_ENABLED = _env_bool("ECONOMY_PHASE3_ENABLED", False)
+ECONOMY_PHASE4_ENABLED = _env_bool("ECONOMY_PHASE4_ENABLED", False)
 
 
 @dataclass(frozen=True)
@@ -58,10 +59,15 @@ class StartupConfiguration:
     economy_v1_enabled: bool
     economy_phase2_enabled: bool
     economy_phase3_enabled: bool
+    economy_phase4_enabled: bool = False
 
     @property
     def all_economy_flags_enabled(self):
         return self.economy_v1_enabled and self.economy_phase2_enabled and self.economy_phase3_enabled
+
+    @property
+    def marketplace_flags_enabled(self):
+        return self.all_economy_flags_enabled and self.economy_phase4_enabled
 
     @property
     def uses_production_database(self):
@@ -78,6 +84,7 @@ def current_startup_configuration():
         economy_v1_enabled=ECONOMY_V1_ENABLED,
         economy_phase2_enabled=ECONOMY_PHASE2_ENABLED,
         economy_phase3_enabled=ECONOMY_PHASE3_ENABLED,
+        economy_phase4_enabled=ECONOMY_PHASE4_ENABLED,
     )
 
 
@@ -106,6 +113,8 @@ def validate_startup_configuration(config=None, *, verify_database=True):
                     connection.close()
             except sqlite3.Error as exc:
                 raise RuntimeError("DATABASE_PATH staging tidak dapat dibuka dengan aman.") from exc
+    if config.economy_phase4_enabled and not config.all_economy_flags_enabled:
+        raise RuntimeError("ECONOMY_PHASE4_ENABLED memerlukan flag Economy Phase 1-3.")
     return config
 
 

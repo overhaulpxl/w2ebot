@@ -25,7 +25,10 @@ from runtime_config import (
 )
 
 from economy.database import ensure_phase1_schema
-from economy.constants import ECONOMY_PHASE2_ENABLED, ECONOMY_PHASE3_ENABLED, ECONOMY_V1_ENABLED
+from economy.constants import (
+    ECONOMY_PHASE2_ENABLED, ECONOMY_PHASE3_ENABLED, ECONOMY_PHASE4_ENABLED,
+    ECONOMY_V1_ENABLED,
+)
 from economy.profile import get_profile_snapshot
 from economy.treasury import get_supply_report
 
@@ -2583,6 +2586,90 @@ async def api_economy_v1_profile(request):
     return web.json_response(payload)
 
 
+async def api_marketplace_v1_status(request):
+    if not (ECONOMY_V1_ENABLED and ECONOMY_PHASE2_ENABLED and
+            ECONOMY_PHASE3_ENABLED and ECONOMY_PHASE4_ENABLED):
+        return web.json_response({'enabled': False, 'schema_ready': False})
+    from economy.marketplace import marketplace_status
+    from economy.phase4_schema import phase4_schema_capability
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            ready = await phase4_schema_capability(db)
+        if not ready:
+            return web.json_response({'enabled': True, 'schema_ready': False})
+        payload = await marketplace_status(DB_PATH, ALLOWED_SERVER_ID)
+        return web.json_response({'enabled': True, 'schema_ready': True, **payload})
+    except Exception:
+        logging.error("api_marketplace_v1_status error", exc_info=True)
+        return web.json_response({'error': 'internal error'}, status=500)
+
+
+async def api_marketplace_v1_action(request):
+    if not require_token(request):
+        return web.json_response({'error': 'unauthorized'}, status=401)
+    if not (ECONOMY_V1_ENABLED and ECONOMY_PHASE2_ENABLED and
+            ECONOMY_PHASE3_ENABLED and ECONOMY_PHASE4_ENABLED):
+        return web.json_response({'error': 'marketplace disabled'}, status=409)
+    try:
+        data = await request.json()
+        action = str(data.get('action', '')).strip().lower()
+        actor_id = 'internal-api-principal'
+        reason = _audit_safe_text(data.get('reason'), 100) or 'internal_api'
+        from economy.marketplace import (
+            issue_internal_api_authorization, require_authorization,
+            set_marketplace_pause,
+        )
+        authorization = issue_internal_api_authorization(
+            actor_id=actor_id, guild_id=ALLOWED_SERVER_ID,
+            request_id=str(request.headers.get('X-Request-ID') or f'api:{id(request)}'),
+            verified_api_principal=True,
+        )
+        if action == 'reconcile':
+            from economy.phase4_recovery import recover_phase4_runtime
+            require_authorization(authorization, guild_id=ALLOWED_SERVER_ID, staff=True)
+            result = await recover_phase4_runtime(DB_PATH)
+        elif action in ('pause', 'resume'):
+            response = await set_marketplace_pause(
+                DB_PATH, guild_id=ALLOWED_SERVER_ID, paused=action == 'pause',
+                reason=reason, authorization=authorization,
+            )
+            result = {'ok': response.ok, 'code': response.code}
+        elif action == 'return':
+            from economy.marketplace import cancel_listing
+            listing_id = str(data.get('listing_id', '')).strip()
+            if not listing_id:
+                return web.json_response({'error': 'listing_id required'}, status=400)
+            response = await cancel_listing(
+                DB_PATH, guild_id=ALLOWED_SERVER_ID, listing_id=listing_id,
+                authorization=authorization, reason_code=reason,
+            )
+            result = {'ok': response.ok, 'code': response.code,
+                      'listing_id': response.listing_id}
+        elif action == 'user-state':
+            from economy.marketplace import set_marketplace_user_state
+            user_id = str(data.get('user_id', '')).strip()
+            state = str(data.get('status', '')).strip().upper()
+            if not user_id.isdigit():
+                return web.json_response({'error': 'invalid user_id'}, status=400)
+            response = await set_marketplace_user_state(
+                DB_PATH, guild_id=ALLOWED_SERVER_ID, user_id=user_id, status=state,
+                authorization=authorization, reason_code=reason,
+            )
+            result = {'ok': response.ok, 'code': response.code}
+        else:
+            return web.json_response({'error': 'unsupported action'}, status=400)
+        await write_audit(
+            'marketplace_internal_action', target_id=data.get('listing_id') or data.get('user_id'),
+            detail=f"action={action};result={result.get('code', 'ok')}", source='internal_api',
+        )
+        return web.json_response(result)
+    except (ValueError, json.JSONDecodeError):
+        return web.json_response({'error': 'invalid request'}, status=400)
+    except Exception:
+        logging.error("api_marketplace_v1_action error", exc_info=True)
+        return web.json_response({'error': 'internal error'}, status=500)
+
+
 async def api_marriages(request):
     marriages = await load_json('marriages.json')
     seen = set()
@@ -3285,6 +3372,7 @@ async def start_web_server():
     app.router.add_get('/api/economy/stats', api_economy_stats)
     app.router.add_get('/api/economy/v1-supply', api_economy_v1_supply)
     app.router.add_get('/api/economy/v1-profile/{id}', api_economy_v1_profile)
+    app.router.add_get('/api/economy/v1-marketplace', api_marketplace_v1_status)
     app.router.add_get('/api/marriages', api_marriages)
     app.router.add_get('/api/stats/summary', api_stats_summary)
     app.router.add_get('/api/bot/stats', api_bot_stats)
@@ -3307,6 +3395,7 @@ async def start_web_server():
     app.router.add_post('/api/reset-all-players', api_reset_all_players)
     app.router.add_post('/api/boss/spawn', api_boss_spawn)
     app.router.add_post('/api/boss/settle', api_boss_settle)
+    app.router.add_post('/api/economy/v1-marketplace/action', api_marketplace_v1_action)
     app.router.add_post('/api/announce', api_announce)
     
     runner = web.AppRunner(app)

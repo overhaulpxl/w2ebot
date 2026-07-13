@@ -5,10 +5,12 @@ from cogs.utils import setup as setup_utils
 from cogs.deal import setup as setup_deal
 from cogs.economy import setup as setup_economy
 from cogs.rpg_phase3 import setup as setup_rpg_phase3
+from cogs.marketplace import setup as setup_marketplace
 
 for setup_name, setup_callback in (
     ("rpg", setup_rpg), ("ai", setup_ai), ("utils", setup_utils),
     ("deal", setup_deal), ("economy", setup_economy), ("rpg_phase3", setup_rpg_phase3),
+    ("marketplace", setup_marketplace),
 ):
     try:
         setup_callback(tree, client)

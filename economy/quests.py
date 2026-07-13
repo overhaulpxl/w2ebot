@@ -8,6 +8,7 @@ from datetime import datetime, time, timedelta, timezone
 import aiosqlite
 
 from .activity import activity_metric, append_activity_event
+from .constants import RPG_PHASE3_CATALOG_VERSION
 from .database import configure_connection
 from .inventory import adjust_stack
 from .ledger import AccountDelta, EconomyMutationError, EconomyResult, execute_transaction
@@ -127,7 +128,8 @@ async def claim_quest(db_path, *, guild_id, user_id, quest_type, now=None):
         reservation_key=f"quest-claim:{guild_id}:{user_id}:{quest_type}:{assignment['periodKey']}",
         source_resource_id=f"{quest_type}:{assignment['periodKey']}",
         outcome={"quest_type": quest_type, "period_key": assignment["periodKey"],
-                 "etm": etm, "xp": xp_reward, "item_id": item_id}, now=now,
+                 "etm": etm, "xp": xp_reward, "item_id": item_id,
+                 "catalog_version": RPG_PHASE3_CATALOG_VERSION}, now=now,
     )
 
     async def extension(db, context):
@@ -155,7 +157,10 @@ async def claim_quest(db_path, *, guild_id, user_id, quest_type, now=None):
             "UPDATE RpgProfile SET level=?,xp=?,version=version+1,updatedAt=? WHERE guildId=? AND userId=?",
             (level, xp, context.now, str(guild_id), str(user_id)),
         )
-        await adjust_stack(db, guild_id, user_id, item_id, 1, context.now)
+        await adjust_stack(
+            db, guild_id, user_id, item_id, 1, context.now,
+            catalog_version=outcome["catalog_version"],
+        )
         cursor = await db.execute(
             "UPDATE RpgQuestAssignment SET status='CLAIMED',claimedTransactionId=?,claimedAt=? "
             "WHERE guildId=? AND userId=? AND questType=? AND periodKey=? AND status!='CLAIMED'",

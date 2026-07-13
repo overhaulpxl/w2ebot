@@ -88,7 +88,10 @@ async def reserve_dungeon(db_path, *, guild_id, user_id, dungeon_id, use_ticket=
         if not fund or int(fund[0]) < reward:
             raise ValueError("Fund Boss dan Dungeon belum mencukupi.")
         if use_ticket:
-            if await inventory_quantity(db, guild_id, user_id, "item_dungeon_ticket") < 1:
+            if await inventory_quantity(
+                db, guild_id, user_id, "item_dungeon_ticket",
+                catalog_version=RPG_PHASE3_CATALOG_VERSION,
+            ) < 1:
                 raise ValueError("Dungeon Ticket tidak tersedia.")
         else:
             async with db.execute(
@@ -174,7 +177,10 @@ async def _settle_adventure(db_path, *, guild_id, user_id, operation_id, kind):
         )
         if kind == "DUNGEON" and outcome["entry_method"] == "TICKET":
             try:
-                await adjust_stack(db, guild_id, user_id, "item_dungeon_ticket", -1, context.now)
+                await adjust_stack(
+                    db, guild_id, user_id, "item_dungeon_ticket", -1, context.now,
+                    catalog_version=outcome["catalog_version"],
+                )
             except ValueError as exc:
                 raise EconomyMutationError("missing_ticket", str(exc)) from exc
         drops = outcome.get("drops", {})
@@ -182,7 +188,10 @@ async def _settle_adventure(db_path, *, guild_id, user_id, operation_id, kind):
         stack_drops.extend(item_id for item_id in (drops.get("material"), drops.get("egg")) if item_id)
         for item_id in stack_drops:
             if item_id:
-                await adjust_stack(db, guild_id, user_id, item_id, 1, context.now)
+                await adjust_stack(
+                    db, guild_id, user_id, item_id, 1, context.now,
+                    catalog_version=outcome["catalog_version"],
+                )
         if drops.get("equipment"):
             definition = EQUIPMENT[drops["equipment"]]
             await db.execute(
@@ -190,7 +199,7 @@ async def _settle_adventure(db_path, *, guild_id, user_id, operation_id, kind):
                 "(equipmentInstanceId,guildId,ownerId,itemId,catalogVersion,slot,enhancementLevel,pityBps,bindingStatus,status,acquiredSource,createdAt,updatedAt) "
                 "VALUES (?,?,?,?,?,?,0,0,'BOUND_ON_EQUIP','OWNED',?,?,?)",
                 (str(outcome["equipment_instance_id"]), str(guild_id), str(user_id), definition["item_id"],
-                 RPG_PHASE3_CATALOG_VERSION, definition["slot"], kind, context.now, context.now),
+                 outcome["catalog_version"], definition["slot"], kind, context.now, context.now),
             )
         try:
             await grant_pet_xp_in_transaction(

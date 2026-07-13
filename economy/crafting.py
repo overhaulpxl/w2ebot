@@ -7,6 +7,7 @@ import aiosqlite
 
 from .catalog import CRAFT_RECIPES, EQUIPMENT, RARITIES, RPG_PHASE3_CATALOG_VERSION
 from .database import configure_connection
+from .equipment import assert_equipment_not_in_marketplace_escrow
 from .inventory import adjust_stack, inventory_quantity
 from .ledger import AccountDelta, EconomyMutationError, EconomyResult, execute_transaction
 from .operations import reserve_operation
@@ -18,6 +19,7 @@ BLUEPRINTS = {"WEAPON": "bp_eternal_weapon", "ARMOR": "bp_eternal_armor", "ACCES
 async def reserve_craft(db_path, *, guild_id, user_id, base_equipment_instance_id, now=None):
     async with aiosqlite.connect(db_path) as db:
         await configure_connection(db)
+        await assert_equipment_not_in_marketplace_escrow(db, guild_id, base_equipment_instance_id)
         async with db.execute(
             "SELECT itemId,slot,status FROM RpgEquipmentInstance WHERE equipmentInstanceId=? AND guildId=? AND ownerId=?",
             (str(base_equipment_instance_id), str(guild_id), str(user_id)),
@@ -41,10 +43,14 @@ async def reserve_craft(db_path, *, guild_id, user_id, base_equipment_instance_i
         if not wallet or int(wallet[0]) < cost:
             raise ValueError("Saldo ETM tidak mencukupi.")
         for item_id, amount in materials.items():
-            if await inventory_quantity(db, guild_id, user_id, item_id) < amount:
+            if await inventory_quantity(
+                db, guild_id, user_id, item_id, catalog_version=RPG_PHASE3_CATALOG_VERSION,
+            ) < amount:
                 raise ValueError("Material crafting tidak mencukupi.")
         blueprint = BLUEPRINTS[base[1]] if target_rarity == "ETERNAL" else None
-        if blueprint and await inventory_quantity(db, guild_id, user_id, blueprint) < 1:
+        if blueprint and await inventory_quantity(
+            db, guild_id, user_id, blueprint, catalog_version=RPG_PHASE3_CATALOG_VERSION,
+        ) < 1:
             raise ValueError("Blueprint slot yang sesuai tidak tersedia.")
     outcome = {"target_item_id": target_item_id, "target_rarity": target_rarity,
                "cost": cost, "materials": materials, "blueprint": blueprint,
@@ -82,6 +88,7 @@ async def settle_craft(db_path, *, guild_id, user_id, operation_id):
     burn = cost - general - reserve
 
     async def extension(db, context):
+        await assert_equipment_not_in_marketplace_escrow(db, guild_id, operation[0])
         async with db.execute(
             "SELECT status,sourceResourceId FROM RpgOperation WHERE operationId=?", (operation_id,),
         ) as cursor:
@@ -97,15 +104,23 @@ async def settle_craft(db_path, *, guild_id, user_id, operation_id):
             raise EconomyMutationError("stale", "Base equipment sudah berubah.")
         try:
             for item_id, amount in outcome["materials"].items():
-                await adjust_stack(db, guild_id, user_id, item_id, -int(amount), context.now)
+                await adjust_stack(
+                    db, guild_id, user_id, item_id, -int(amount), context.now,
+                    catalog_version=outcome["catalog_version"],
+                )
             if outcome.get("blueprint"):
-                await adjust_stack(db, guild_id, user_id, outcome["blueprint"], -1, context.now)
+                await adjust_stack(
+                    db, guild_id, user_id, outcome["blueprint"], -1, context.now,
+                    catalog_version=outcome["catalog_version"],
+                )
         except ValueError as exc:
             raise EconomyMutationError("insufficient_material", str(exc)) from exc
-        await db.execute(
+        cursor = await db.execute(
             "UPDATE RpgEquipmentInstance SET status='CONSUMED',updatedAt=? WHERE equipmentInstanceId=? AND status='OWNED'",
             (context.now, latest[1]),
         )
+        if cursor.rowcount != 1:
+            raise EconomyMutationError("stale", "Base equipment berubah saat crafting diproses.")
         definition = EQUIPMENT[outcome["target_item_id"]]
         instance_id = str(outcome["result_instance_id"])
         binding = "ACCOUNT_BOUND" if definition["rarity"] == "ETERNAL" else "BOUND_ON_EQUIP"
@@ -114,7 +129,7 @@ async def settle_craft(db_path, *, guild_id, user_id, operation_id):
             "(equipmentInstanceId,guildId,ownerId,itemId,catalogVersion,slot,enhancementLevel,pityBps,bindingStatus,status,acquiredSource,createdAt,updatedAt) "
             "VALUES (?,?,?,?,?,?,0,0,?,'OWNED','CRAFT',?,?)",
             (instance_id, str(guild_id), str(user_id), definition["item_id"],
-             RPG_PHASE3_CATALOG_VERSION, definition["slot"], binding, context.now, context.now),
+             outcome["catalog_version"], definition["slot"], binding, context.now, context.now),
         )
         result = {"equipment_instance_id": instance_id, "item_id": definition["item_id"]}
         await db.execute(
