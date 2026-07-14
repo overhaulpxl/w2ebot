@@ -4,6 +4,28 @@ Way 2 Eternal Bot (W2E): single-guild Discord bot — Gemini AI chat + RPG/econo
 
 Detailed architecture lives in `CLAUDE.md` (read it first). This file only captures the gotchas an agent would otherwise miss.
 
+## Living PRD Workflow
+
+`docs/project_state.json` is the repository's machine-readable Living PRD and
+`docs/AI_CODER_HANDOFF.md` is generated output. Do not edit the generated file
+manually. Every task that changes behavior, architecture, schema, migrations,
+commands, tests, feature flags, rollout state, commits, blockers, staging,
+production, or project progress is incomplete until the Living PRD is updated.
+
+Before completing such a task:
+
+1. Read `docs/AI_CODER_HANDOFF.md` and inspect Git status, branch, and the relevant baseline.
+2. Implement the requested change and run its required verification.
+3. Update `docs/project_state.json` with current state plus task history.
+4. Run `python scripts/update_ai_handoff.py` and review the generated handoff.
+5. Include `project_state.json` and `AI_CODER_HANDOFF.md` in the same change set and mention the Living PRD update in the final report.
+
+If repository source, migration, tests, or command registration disagrees with
+the handoff, investigate and report the mismatch before changing behavior. The
+source-of-truth order is committed constraints, tests, service implementation,
+runtime configuration/command registration, project state, generated handoff,
+historical reports, then chat history.
+
 ## Commands
 
 ```bash

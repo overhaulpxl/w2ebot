@@ -1,0 +1,165 @@
+{
+  "schemaVersion": 1,
+  "project": {
+    "verificationStatus": "repository_observed",
+    "evidencePaths": ["CLAUDE.md", "AGENTS.md"],
+    "value": {"name": "W2E Bot", "repositoryPath": "E:/w2ebot", "language": "Python", "locale": "Indonesian"}
+  },
+  "purpose": {
+    "verificationStatus": "historical_verified",
+    "evidencePaths": ["docs/W2E_Bot_PRD.md"],
+    "value": "Permanent machine-readable project handoff. Code and committed constraints outrank this state."
+  },
+  "sourceOfTruth": {
+    "verificationStatus": "verified",
+    "evidencePaths": ["AGENTS.md"],
+    "value": ["Committed migrations and database constraints", "Committed automated tests and integrity checks", "Committed service-layer implementation", "Committed runtime configuration and command registration", "docs/project_state.json", "Generated docs/AI_CODER_HANDOFF.md", "Historical implementation reports", "Previous chat history"]
+  },
+  "repositorySnapshot": {
+    "verificationStatus": "repository_observed",
+    "evidencePaths": [".git"],
+    "value": {"lastKnownBranch": "codex/seller-payout-hotfixes", "observedBranch": "codex/seller-payout-hotfixes", "observedHead": "02fcac317fb6d6856fc8a1f6ee27d6cba3661f0d", "workingTreeAtSeed": "seed file untracked only", "remotePushAfterPhase4": false}
+  },
+  "phaseStatuses": {
+    "verificationStatus": "historical_verified",
+    "evidencePaths": ["economy", "tests"],
+    "value": [
+      {"id": "phase1", "name": "Economy Foundation", "status": "complete"},
+      {"id": "phase2", "name": "Economy Progression", "status": "complete"},
+      {"id": "phase3", "name": "RPG", "status": "complete_and_committed"},
+      {"id": "phase4", "name": "Eternal Marketplace", "status": "complete_and_committed"},
+      {"id": "phase5", "name": "Phase 5", "status": "not_started"}
+    ]
+  },
+  "capabilitiesByPhase": {"verificationStatus": "historical_verified", "evidencePaths": ["economy", "cogs"], "value": {"phase1": ["wallet", "ledger", "treasury", "admin controls", "migration framework"], "phase2": ["profile", "Daily", "Weekly", "Work", "Transfer", "Exchange", "activity events"], "phase3": ["catalog", "equipment", "pets", "Hunt", "Dungeon", "Boss", "Quest", "recovery"], "phase4": ["listing", "escrow", "purchase", "return", "watch", "report", "moderation", "recovery"]}},
+  "protectedSystems": {
+    "verificationStatus": "historical_verified",
+    "evidencePaths": ["AGENTS.md", "cogs/deal.py"],
+    "value": ["Deal", "Middleman", "Trusted Vouch", "payment configuration", "reports", "reviews", "archive", "casino", "crypto", "mining", "giveaway", "legacy recovery", "unrelated dashboard systems"]
+  },
+  "featureFlags": {
+    "verificationStatus": "verified",
+    "evidencePaths": ["runtime_config.py"],
+    "value": {"ECONOMY_V1_ENABLED": false, "ECONOMY_PHASE2_ENABLED": false, "ECONOMY_PHASE3_ENABLED": false, "ECONOMY_PHASE4_ENABLED": false}
+  },
+  "currencies": {
+    "verificationStatus": "verified",
+    "evidencePaths": ["economy/constants.py"],
+    "value": [{"id": "ETM", "name": "Eternium"}, {"id": "ECY", "name": "Eterncy"}]
+  },
+  "economyDesign": {
+    "verificationStatus": "verified",
+    "evidencePaths": ["economy/constants.py", "economy/ledger.py"],
+    "value": {"integerOnly": true, "maxAmount": 9000000000000000, "ledgerRule": "Each committed transaction is zero-sum per currency.", "systemAccounts": ["ETM_GENERAL", "ETM_BOSS_DUNGEON", "ETM_EVENT", "ETM_RESERVE", "ETM_BURN", "ETM_ISSUANCE", "ECY_GENERAL", "ECY_GIVEAWAY", "ECY_CASINO", "ECY_MARKET", "ECY_MINING", "ECY_RESERVE", "ECY_BURN", "ECY_ISSUANCE"], "feeAllocation": "80% treasury, 10% reserve, remainder burn"}
+  },
+  "economyConstants": {"verificationStatus": "verified", "evidencePaths": ["economy/constants.py"], "value": {"maxAmount": 9000000000000000, "feeBps": 500, "systemAccounts": ["ETM_GENERAL", "ETM_BOSS_DUNGEON", "ETM_EVENT", "ETM_RESERVE", "ETM_BURN", "ETM_ISSUANCE", "ECY_GENERAL", "ECY_GIVEAWAY", "ECY_CASINO", "ECY_MARKET", "ECY_MINING", "ECY_RESERVE", "ECY_BURN", "ECY_ISSUANCE"]}},
+  "commandOwnership": {
+    "verificationStatus": "verified",
+    "evidencePaths": ["cogs/rpg.py", "cogs/deal.py", "core.py"],
+    "value": {"/leaderboard": "RPG", "w!leaderboard": "RPG", "/rank": "Trusted Vouch", "w!rank": "RPG", "w!deal rank": "Trusted Vouch", "/vouchleaderboard": "Trusted Vouch", "w!deal leaderboard": "Trusted Vouch"}
+  },
+  "forbiddenAliases": {
+    "verificationStatus": "verified",
+    "evidencePaths": ["core.py"],
+    "value": ["w!vouch", "w!vouches", "w!rep", "w!trustlb", "w!trank", "w!vouchleaderboard", "w!vouchremove", "w!vouchreport"]
+  },
+  "legacyCommands": {
+    "verificationStatus": "verified",
+    "evidencePaths": ["cogs/rpg.py"],
+    "value": ["/sell", "/shop", "/buy", "/buypet", "/rob", "/pray", "/curse", "/flip", "/top", "/attack", "/bounty hunt"]
+  },
+  "importantCommits": {
+    "verificationStatus": "repository_observed",
+    "evidencePaths": [".git"],
+    "value": [{"commit": "9b07585", "subject": "feat(economy): complete phase 3 RPG and staging hardening"}, {"commit": "02fcac317fb6d6856fc8a1f6ee27d6cba3661f0d", "subject": "feat(economy): complete phase 4 eternal marketplace"}]
+  },
+  "migrations": {
+    "verificationStatus": "verified",
+    "evidencePaths": ["economy/constants.py", "economy/phase3_schema.py", "economy/phase4_schema.py"],
+    "value": [
+      {"version": 100, "name": "economy foundation", "checksum": null, "verificationStatus": "last_known_requires_verification"},
+      {"version": 200, "name": "phase2 progression", "checksum": null, "verificationStatus": "last_known_requires_verification"},
+      {"version": 300, "name": "phase3 base migration", "checksum": null, "verificationStatus": "verified", "evidencePaths": ["economy/constants.py", "economy/phase3_migrations.py"]},
+      {"version": 301, "name": "phase3-hardening", "checksum": "d594bff8aa86bc75706d322b655e9ed41def36fca45cbf65908374b7b564159c", "verificationStatus": "verified", "evidencePaths": ["economy/phase3_schema.py"]},
+      {"version": 400, "name": "phase4-marketplace", "checksum": "9d8e6f4b8688f8990bed8810bb5dbcd1593d70ee80df4e9d27c219d4207bab0e", "verificationStatus": "verified", "evidencePaths": ["economy/phase4_schema.py"]}
+    ]
+  },
+  "catalogs": {
+    "verificationStatus": "verified",
+    "evidencePaths": ["economy/catalog.py", "economy/constants.py"],
+    "value": [{"version": "rpg-v1.0.0", "checksum": "ba8c15135f68a8d78f3eccb550721e86f99d06b3a37b77906eb9ad9f4fcc729b", "verificationStatus": "verified", "evidencePaths": ["economy/catalog.py"]}]
+  },
+  "dealMiddlemanTrustedVouch": {
+    "verificationStatus": "last_known_requires_verification",
+    "evidencePaths": ["cogs/deal.py", "core.py"],
+    "value": {"deal": "Private staged middleman flow: forms, payment instruction, proof, funds confirmation, payout, dispute, completion, archive.", "middleman": "Middleman cannot be buyer or seller; actor-aware permissions remain required.", "trustedVouch": "Verified deal and approved manual vouch data remain isolated from RPG and Marketplace."}
+  },
+  "interactionRecovery": {
+    "verificationStatus": "last_known_requires_verification",
+    "evidencePaths": ["cogs/deal.py", "core.py"],
+    "value": {"interactionSafety": "Deferred interactions use bounded finalization and actor/stage validation.", "persistentViews": "Tracked staged views recover from persisted message identity without duplicating active controls."}
+  },
+  "paymentConfiguration": {
+    "verificationStatus": "last_known_requires_verification",
+    "evidencePaths": ["cogs/deal.py", "core.py"],
+    "value": {"behavior": "Per-user payment profiles and private proof/payout data remain restricted to the Deal flow.", "privacy": "Never expose payment destinations, proof URLs, credentials, or private notes in this handoff."}
+  },
+  "phase1": {"verificationStatus": "historical_verified", "evidencePaths": ["economy/ledger.py", "economy/wallets.py"], "value": ["wallets", "system accounts", "PENDING/COMMITTED/REVERSED transaction headers", "zero-sum ledger", "mint whitelist", "idempotent mutation", "integer-only balances"]},
+  "phase2": {"verificationStatus": "historical_verified", "evidencePaths": ["economy/profile.py", "economy/rewards.py", "economy/transfers.py", "economy/exchange.py"], "value": {"daily": "50000 ETM and 5000 ECY, 24-hour cooldown", "weekly": "350000 ETM and 35000 ECY, seven-day cooldown", "work": "10000-18000 ETM, two-hour cooldown, four Jakarta-day successes", "transfer": "ETM minimum 10000, 5% fee, daily submitted limit 2000000", "exchange": "10 ETM = 1 ECY, 5% fee, multiple of 200, level-gated daily limits", "profile": "base HP 1000, ATK 50, DEF 25, Crit 500 bps, Energy 100"}},
+  "phase3Rpg": {"verificationStatus": "historical_verified", "evidencePaths": ["economy/phase3_schema.py", "economy/adventures.py", "economy/bosses.py", "economy/quests.py"], "value": ["starter package", "versioned catalog", "inventory/equipment/pets", "enhancement", "crafting", "open attempts", "Hunt", "Dungeon", "Boss", "Quest", "persisted random outcomes", "restart recovery"]},
+  "rpgBalance": {
+    "verificationStatus": "verified",
+    "evidencePaths": ["economy/catalog.py", "economy/combat.py", "economy/xp.py"],
+    "value": {
+      "profileFormula": "Power = attack*4 + defense*3 + maxHp//5 + critBps//100; maximum level 100; maximum crit 5000 bps.",
+      "starter": {"equipment": ["eq_wanderer_blade", "eq_traveler_vest", "eq_copper_charm"], "pet": "pet_moss_slime", "effectiveHp": 1198, "attack": 71, "defense": 35, "critBps": 600, "power": 634},
+      "equipment": [
+        {"id": "eq_wanderer_blade", "rarity": "COMMON", "slot": "WEAPON", "level": 1, "stats": "+20 ATK", "value": 100000}, {"id": "eq_traveler_vest", "rarity": "COMMON", "slot": "ARMOR", "level": 1, "stats": "+120 HP +10 DEF", "value": 120000}, {"id": "eq_copper_charm", "rarity": "COMMON", "slot": "ACCESSORY", "level": 1, "stats": "+100 Crit bps", "value": 80000},
+        {"id": "eq_ironfang_sword", "rarity": "UNCOMMON", "slot": "WEAPON", "level": 10, "stats": "+55 ATK", "value": 300000}, {"id": "eq_ironbark_guard", "rarity": "UNCOMMON", "slot": "ARMOR", "level": 10, "stats": "+250 HP +30 DEF", "value": 350000}, {"id": "eq_gale_sigil", "rarity": "UNCOMMON", "slot": "ACCESSORY", "level": 10, "stats": "+200 Crit bps", "value": 250000},
+        {"id": "eq_nightfang_blade", "rarity": "RARE", "slot": "WEAPON", "level": 25, "stats": "+120 ATK", "value": 1200000}, {"id": "eq_shadowmail_armor", "rarity": "RARE", "slot": "ARMOR", "level": 25, "stats": "+500 HP +65 DEF", "value": 1400000}, {"id": "eq_oracles_eye", "rarity": "RARE", "slot": "ACCESSORY", "level": 25, "stats": "+300 Crit bps +300 Boss Damage bps", "value": 1000000},
+        {"id": "eq_astral_edge", "rarity": "EPIC", "slot": "WEAPON", "level": 45, "stats": "+250 ATK +200 Crit bps", "value": 5000000}, {"id": "eq_starforged_plate", "rarity": "EPIC", "slot": "ARMOR", "level": 45, "stats": "+1000 HP +140 DEF", "value": 5800000}, {"id": "eq_eclipse_pendant", "rarity": "EPIC", "slot": "ACCESSORY", "level": 45, "stats": "+400 Crit bps +400 Boss Damage bps", "value": 4500000},
+        {"id": "eq_void_reaver", "rarity": "LEGENDARY", "slot": "WEAPON", "level": 70, "stats": "+500 ATK +400 Crit bps", "value": 18000000}, {"id": "eq_dragonbone_aegis", "rarity": "LEGENDARY", "slot": "ARMOR", "level": 70, "stats": "+2200 HP +300 DEF", "value": 22000000}, {"id": "eq_crown_lunniera", "rarity": "LEGENDARY", "slot": "ACCESSORY", "level": 70, "stats": "+600 Crit bps +800 Boss Damage bps", "value": 16000000},
+        {"id": "eq_first_eternal_blade", "rarity": "ETERNAL", "slot": "WEAPON", "level": 90, "stats": "+900 ATK +600 Crit bps", "value": 60000000}, {"id": "eq_endless_dawn_aegis", "rarity": "ETERNAL", "slot": "ARMOR", "level": 90, "stats": "+4000 HP +550 DEF", "value": 70000000}, {"id": "eq_heart_eternium", "rarity": "ETERNAL", "slot": "ACCESSORY", "level": 90, "stats": "+800 Crit bps +1000 Boss Damage bps", "value": 55000000}
+      ],
+      "setBonuses": {"Wanderer": "2:+2% ATK, 3:+3% HP", "Ironclad": "2:+4% DEF, 3:+5% HP", "Nightfall": "2:+5% ATK, 3:+2% Crit", "Astral": "2:+8% ATK, 3:+6% Dungeon Damage", "Void": "2:+10% ATK, 3:+10% Boss Damage", "First Eternal": "2:+12% ATK, 3:+10% all damage and context DEF"},
+      "enhancement": {"max": 15, "bonusBps": [0,500,1000,1600,2300,3100,4000,5000,6100,7300,8600,10000,11500,13100,14800,16600], "successBps": [0,10000,10000,10000,10000,10000,8500,8000,7500,6500,5500,4500,4000,3500,3000,2500], "costBps": [0,800,1200,1800,2500,3500,5000,7000,9500,12500,16000,21000,27000,35000,45000,60000], "failure": "ETM consumed, half materials returned, no destroy/downgrade, pity +500 bps capped 2000."},
+      "enhancementMaterials": {"6": "10 Iron Shards", "7": "15 Iron Shards", "8": "10 Shadow Crystals", "9": "15 Shadow Crystals", "10": "12 Astral Fragments", "11": "18 Astral Fragments", "12": "10 Dragon Cores", "13": "15 Dragon Cores", "14": "5 Eternal Fragments", "15": "10 Eternal Fragments"},
+      "pets": {"maxLevel": 50, "definitions": [{"id": "pet_moss_slime", "name": "Moss Slime", "rarity": "COMMON", "level": 1, "passive": "+400 HP bps"}, {"id": "pet_ember_chick", "name": "Ember Chick", "rarity": "COMMON", "level": 1, "passive": "+400 Attack bps"}, {"id": "pet_stonehorn_cub", "name": "Stonehorn Cub", "rarity": "UNCOMMON", "level": 10, "passive": "+600 Defense bps"}, {"id": "pet_gale_fox", "name": "Gale Fox", "rarity": "UNCOMMON", "level": 10, "passive": "+300 Crit bps"}, {"id": "pet_shadow_wolf", "name": "Shadow Wolf", "rarity": "RARE", "level": 25, "passive": "+800 Attack bps"}, {"id": "pet_moonlight_owl", "name": "Moonlight Owl", "rarity": "RARE", "level": 25, "passive": "+800 Defense bps"}, {"id": "pet_abyss_panther", "name": "Abyss Panther", "rarity": "EPIC", "level": 45, "passive": "+1000 Attack bps +200 Crit bps"}, {"id": "pet_celestial_stag", "name": "Celestial Stag", "rarity": "EPIC", "level": 45, "passive": "+1200 HP bps"}, {"id": "pet_dawn_phoenix", "name": "Dawn Phoenix", "rarity": "LEGENDARY", "level": 70, "passive": "+1800 HP bps"}, {"id": "pet_void_wyrm", "name": "Void Wyrm", "rarity": "LEGENDARY", "level": 70, "passive": "+1600 Attack bps"}, {"id": "pet_eternion_dragon", "name": "Eternion Dragon", "rarity": "ETERNAL", "level": 90, "passive": "+2200 Attack bps"}, {"id": "pet_lunniera_seraph", "name": "Lunniera Seraph", "rarity": "ETERNAL", "level": 90, "passive": "+1200 HP bps +1000 Defense bps"}], "duplicateEssence": {"COMMON": 10, "UNCOMMON": 20, "RARE": 40, "EPIC": 80, "LEGENDARY": 160, "ETERNAL": 320}, "petXp": "Hunt max(1, player XP//2); Dungeon player XP//2; Boss NORMAL/ELITE/WORLD 100/300/800."},
+      "crafting": {"UNCOMMON": "300000 ETM +20 Iron Shards", "RARE": "1200000 ETM +35 Shadow Crystals +3 Beast Cores", "EPIC": "5000000 ETM +45 Astral Fragments +5 Beast Cores", "LEGENDARY": "20000000 ETM +30 Dragon Cores +10 Beast Cores", "ETERNAL": "75000000 ETM +50 Eternal Fragments +20 Dragon Cores + matching blueprint"},
+      "hunt": {"green_forest": "Lv1 Energy10 ETM 8000-15000 XP20-35; Iron Shard45%, Beast Core5%, Common equipment3%, Common egg1%", "dark_cave": "Lv10 Energy12 ETM 20000-35000 XP45-70; Iron Shard35%, Shadow Crystal12%, Beast Core8%, Uncommon equipment4%, Rare0.3%, Uncommon egg1.2%", "eternal_ruins": "Lv25 Energy15 ETM 45000-75000 XP90-140; Shadow Crystal22%, Astral Fragment6%, Beast Core10%, Rare equipment3%, Epic0.4%, Rare egg0.8%", "abyss_realm": "Lv45 Energy20 ETM 90000-150000 XP180-280; Astral Fragment15%, Dragon Core3%, Beast Core12%, Epic equipment2%, Legendary0.2%, Epic egg0.5%", "maximum": "One equipment and one egg per Hunt."},
+      "dungeon": {"forgotten_crypt": "Lv10 entry 50000 ETM or ticket; ETM 120000-220000; XP 250-400; Uncommon35%, Rare12%, Shadow Crystal60%, Rare egg1%", "shadow_fortress": "Lv25 entry 150000; ETM 350000-650000; XP 700-1000; Rare30%, Epic10%, Legendary0.5%, Astral Fragment55%, Epic egg1%", "eternal_abyss": "Lv45 entry 500000; ETM 1200000-2000000; XP 1800-2500; Epic25%, Legendary5%, Eternal Blueprint0.25%, Dragon Core45%, Eternal Fragment2%, Legendary egg0.3%", "funding": "ETM_BOSS_DUNGEON insufficient means AWAITING_FUNDS without entry debit or reroll."},
+      "boss": {"NORMAL": "Lv20 HP100000 DEF100 pool2000000 valid100 petXP100; Shadow Crystal35%, Beast Core20%, Epic0.5%, Rare4%", "ELITE": "Lv50 HP750000 DEF300 pool8000000 valid1500 petXP300; Astral Fragment40%, Beast Core30%, Legendary0.5%, Epic5%, Epic egg0.75%", "WORLD": "Lv80 HP5000000 DEF700 pool25000000 valid12500 petXP800; Dragon Core50%, Eternal Fragment1%, Legendary3%, Eternal egg0.05%, Legendary egg0.5%, random blueprint0.25%", "distribution": "20% equal, 65% proportional, 15% top ten; contribution rank then user ID remainder; cooldown 30s."},
+      "quests": {"daily": "3 Hunt, 2 Work, 3 Boss attack; 80000 ETM, 150 XP, 1 ticket", "weekly": "25 Hunt, 5 Dungeon, assignment-level Boss damage; 600000 ETM, 1000 XP, 1 Epic Chest", "weeklyTargets": "Lv1-24:3000; 25-44:10000; 45-69:30000; 70-89:75000; 90-100:150000", "periods": "Jakarta daily midnight and Monday weekly; daily Boss COUNT attack, weekly SUM committed damage."},
+      "assetPolicy": "Common-Epic eggs tradeable; Legendary/Eternal eggs and hatched pets non-tradeable; Epic chest and Dungeon Ticket non-tradeable; blueprints tradeable; LEGACY_BOUND and STARTER_BOUND assets are not marketplace eligible."
+    }
+  },
+  "phase4Marketplace": {
+    "verificationStatus": "historical_verified",
+    "evidencePaths": ["economy/marketplace.py", "economy/phase4_schema.py", "cogs/marketplace.py"],
+    "value": {"currency": "ETM only", "feeBps": 500, "unitPriceEtm": "10000-2000000000", "maxUnresolvedListings": 10, "minimumStackQuantity": 1, "listingDuration": "indefinite", "watchLimit": 50, "reportCooldownSeconds": 3600, "missingUserState": "ACTIVE", "states": ["ACTIVE", "PARTIALLY_FILLED", "PAUSED", "REVIEW_REQUIRED", "CANCELLED", "EXPIRED", "SOLD", "RETURNED"], "commands": ["/rpg-market browse", "/rpg-market search", "/rpg-market details", "/rpg-market sell", "/rpg-market buy", "/rpg-market cancel", "/rpg-market my-listings", "/rpg-market history", "/rpg-market price-check", "/rpg-market watch", "/rpg-market watchlist", "/rpg-market unwatch", "/rpg-market claim-returns", "/rpg-market report", "/rpg-market status"], "staffCommands": ["inspect", "pause", "resume", "pause-listing", "review", "cancel", "return", "freeze-user", "unfreeze-user", "reports", "resolve-report", "reconcile"]}
+  },
+  "marketplaceHardening": {
+    "verificationStatus": "historical_verified",
+    "evidencePaths": ["economy/phase4_schema.py", "economy/phase4_recovery.py"],
+    "value": {"historicalCatalog": "Listing/escrow/sale/return use each asset persisted catalog version.", "stackIdentity": "Migrated stack identity is guildId,userId,itemId,catalogVersion,bindingStatus.", "escrow": "Listing and escrow are mutually deferred foreign keys; unresolved escrow blocks equipment mutations.", "purchase": "PENDING EconomyTransaction and MarketplaceSale form an atomic reservation pair.", "recovery": "PENDING complete pairs resume/replay; missing or ambiguous pairs enter REVIEW_REQUIRED without replacement identity.", "returns": "Seller can atomically return own ACTIVE or PARTIALLY_FILLED remainder even while globally paused.", "outbox": "Notification delivery has stable deduplicated identities.", "quantityAuthority": "Exact stack binding and expected versions govern debit, transfer, and return."}
+  },
+  "marketplaceLifecycleDefinitions": {"verificationStatus": "historical_verified", "evidencePaths": ["economy/phase4_schema.py", "economy/marketplace.py"], "value": {"listingLifecycle": "ACTIVE/PARTIALLY_FILLED to SOLD or atomic RETURNED; PAUSED/REVIEW_REQUIRED/CANCELLED/EXPIRED retain escrow until resolution.", "saleLifecycle": "PENDING, COMMITTED, REVIEW_REQUIRED, VOID; only committed sales have immutable buyer/seller receipts.", "returnLifecycle": "Authoritative seller remainder returns atomically with MarketplaceReturn receipt.", "userStates": "Missing is ACTIVE; RESTRICTED limits new marketplace mutation; FROZEN requires staff-audited return.", "pause": "Pause blocks listings, purchases, watches, reports; read-only, eligible cancellation, returns, recovery, and receipt replay remain allowed."}},
+  "moduleOwnership": {"verificationStatus": "repository_observed", "evidencePaths": ["main.py", "core.py", "cogs", "economy", "scripts", "tests"], "value": {"runtime": {"main.py": "entry point and cog setup", "core.py": "shared persistence, FakeInteraction, events, web API", "runtime_config.py": "database path, staging guards, feature flags"}, "cogs": {"cogs/deal.py": "Deal, Middleman, payment, dispute, archive", "cogs/rpg.py": "legacy RPG and routing", "cogs/rpg_phase3.py": "Phase 3 interactions", "cogs/marketplace.py": "Marketplace commands", "cogs/economy.py": "Economy adapters"}, "economy": {"economy/ledger.py": "atomic transactions and ledger", "economy/catalog.py": "RPG catalog", "economy/phase3_schema.py": "Phase 3 schema hardening", "economy/phase4_schema.py": "Marketplace schema", "economy/marketplace.py": "Marketplace services"}, "tests": {"tests/test_economy_*.py": "Phase 1-3 economy/RPG", "tests/test_marketplace*.py": "Phase 4 Marketplace", "tests/test_ai_handoff_tools.py": "Living PRD deterministic/static tooling"}, "livingPrd": {"docs/project_state.json": "authoritative structured state", "docs/AI_CODER_HANDOFF.md": "generated onboarding document", "scripts/generate_ai_handoff.py": "pure renderer and generator", "scripts/verify_ai_handoff.py": "static verifier", "scripts/update_ai_handoff.py": "generator/verifier wrapper"}}},
+  "verificationHistory": {"verificationStatus": "historical_verified", "evidencePaths": ["docs/W2E_Bot_PRD.md"], "value": {"phase1To3Tests": "87 passed", "marketplaceTests": "64 passed", "total": "151 passed", "pyCompile": "passed", "mainImportTemporaryDatabase": "passed", "gitDiffCheck": "passed", "sqliteIntegrityCheck": "ok", "sqliteForeignKeyErrors": 0, "commandOwnership": "passed", "forbiddenAliases": "absent", "note": "Historical seed result; not rerun by Living PRD tooling task."}},
+  "stagingStatus": {"verificationStatus": "historical_verified", "evidencePaths": ["scripts/setup_phase3_staging.py", "scripts/setup_phase4_staging.py"], "value": {"liveDiscord": "pending", "requirements": ["dedicated staging bot", "non-production SQLite copy", "dedicated staging guild", "all flags enabled only for staging"], "scripts": ["scripts/migrate_economy_phase4.py", "scripts/setup_phase4_staging.py", "scripts/run_phase4_staging.py", "scripts/run_phase4_staging.ps1"]}},
+  "dashboardStatus": {"verificationStatus": "historical_verified", "evidencePaths": ["dashboard-example"], "value": {"productionBuild": "pending", "reason": "local dashboard dependencies were unavailable during the historical check"}},
+  "productionStatus": {"verificationStatus": "repository_observed", "evidencePaths": ["runtime_config.py", ".env.example"], "value": {"migrated": false, "enabled": false, "cutoverApproved": false, "approvedProductionRecord": null, "databaseAccessedByThisTask": false, "restrictions": ["No automatic startup migration", "No production catalog seed", "No production economy enablement", "No production cutover"]}},
+  "knownLimitations": {"verificationStatus": "historical_verified", "evidencePaths": ["docs/W2E_Bot_PRD.md"], "value": ["Live Discord staging remains pending.", "Dashboard production build remains pending.", "Historical test totals are retained but not rerun by this documentation-only task.", "Deal runtime claims are retained as last-known until a separately scoped audit verifies them."]},
+  "blockers": {"verificationStatus": "repository_observed", "evidencePaths": ["runtime_config.py"], "value": ["Production cutover requires separate explicit approval.", "Production flags must remain disabled.", "Phase 5 requires separate scope and approval."]},
+  "pendingWork": {"verificationStatus": "historical_verified", "evidencePaths": ["docs/W2E_Bot_PRD.md"], "value": ["Connected Discord staging validation", "Dashboard production build", "Production rollout approval", "Phase 5 planning only after separate approval"]},
+  "aiCoderOnboarding": {"verificationStatus": "verified", "evidencePaths": ["AGENTS.md"], "value": ["Read docs/AI_CODER_HANDOFF.md.", "Inspect Git status, branch, and relevant baseline.", "Stop and report repository/doc mismatch before changing behavior.", "Keep production migration and flag enablement separately approved."]},
+  "livingPrdWorkflow": {"verificationStatus": "verified", "evidencePaths": ["AGENTS.md"], "value": {"status": "IMPLEMENTED", "steps": ["Read generated handoff", "Inspect baseline", "Implement requested change", "Run required verification", "Update project_state.json", "Run python scripts/update_ai_handoff.py", "Review generated handoff", "Include JSON and generated Markdown in the same change set", "Mention Living PRD update in final report"]}},
+  "taskCompletionTemplate": {"verificationStatus": "historical_verified", "evidencePaths": ["docs/W2E_Bot_PRD.md"], "value": ["Task title", "Date", "Phase", "Status", "Summary", "Files changed", "Behavior/schema/migration/command/flag changes", "Tests and static checks", "Database integrity", "Commit hash", "Manual staging status", "Known limitations", "Remaining work", "Next recommended task"]},
+  "definitionOfDone": {"verificationStatus": "historical_verified", "evidencePaths": ["docs/W2E_Bot_PRD.md"], "value": ["Implementation and relevant tests pass", "Migration/integrity/recovery/concurrency checked when applicable", "Command ownership and aliases preserved", "No secrets or runtime data staged", "Living PRD updated", "Manual staging and production status recorded"]},
+  "documentedMismatches": {"verificationStatus": "documented_mismatch", "evidencePaths": ["docs/W2E_Bot_PRD.md", "cogs/deal.py", "cogs/rpg.py", "core.py"], "value": [{"command": "/rank", "seedClaim": "RPG", "repositoryObservedOwner": "Trusted Vouch", "resolution": "repository_behavior_preserved", "verificationStatus": "documented_mismatch", "requiresCodeChange": false}]},
+  "latestCompletedTask": {"verificationStatus": "repository_observed", "evidencePaths": ["scripts/generate_ai_handoff.py", "scripts/verify_ai_handoff.py", "scripts/update_ai_handoff.py"], "value": {"title": "Living PRD and AI Coder Handoff", "status": "IMPLEMENTED", "commit": "PENDING", "summary": "Added structured state, deterministic handoff generation, static verification, update wrapper, and mandatory workflow."}},
+  "taskHistory": {"verificationStatus": "historical_verified", "evidencePaths": [".git"], "value": [{"title": "Phase 3 RPG", "status": "complete", "commit": "9b07585"}, {"title": "Phase 4 Eternal Marketplace", "status": "complete", "commit": "02fcac317fb6d6856fc8a1f6ee27d6cba3661f0d"}, {"title": "Living PRD and AI Coder Handoff", "status": "complete_uncommitted", "commit": "PENDING"}]},
+  "updateHistory": {"verificationStatus": "historical_verified", "evidencePaths": ["docs/W2E_Bot_PRD.md"], "value": [{"date": "2026-07-13", "title": "Phase 3 RPG Completed", "commit": "9b07585"}, {"date": "2026-07-13", "title": "Phase 4 Eternal Marketplace Completed", "commit": "02fcac317fb6d6856fc8a1f6ee27d6cba3661f0d"}, {"date": "2026-07-14", "title": "Living PRD Automation Implemented", "commit": "PENDING"}]},
+  "currentHandoffSummary": {"verificationStatus": "repository_observed", "evidencePaths": ["runtime_config.py", "economy", "cogs"], "value": {"completed": ["Deal/Middleman interaction hardening", "Phase 1 Economy Foundation", "Phase 2 Economy Progression", "Phase 3 RPG", "Phase 4 Eternal Marketplace", "Living PRD automation"], "current": "All economy flags default false; production not migrated; staging and dashboard production remain pending; Phase 5 not started."}},
+  "lastUpdatedAt": "2026-07-14T00:00:00+07:00"
+}

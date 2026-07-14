@@ -1,4 +1,5 @@
 # Secrets and local environment
+/docs/W2E_Bot_PRD.md
 .env
 .env.*
 !.env.example
