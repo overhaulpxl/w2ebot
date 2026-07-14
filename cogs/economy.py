@@ -4,7 +4,7 @@ import logging
 import uuid
 from discord import app_commands
 
-from core import ALLOWED_SERVER_ID, DB_PATH, register_ready_startup_task
+from core import ALLOWED_SERVER_ID, DB_PATH, get_announce_channel, register_ready_startup_task
 from economy.amounts import AmountParseError, format_economy_amount, parse_economy_amount
 from economy.constants import (
     CURRENCIES,
@@ -13,6 +13,7 @@ from economy.constants import (
     ECONOMY_PHASE3_ENABLED,
     ECONOMY_PHASE4_ENABLED,
     ECONOMY_PHASE5_ENABLED,
+    ECONOMY_PHASE6_ENABLED,
     ECONOMY_V1_ENABLED,
     EMERGENCY_FEATURES,
     configured_large_threshold,
@@ -39,6 +40,14 @@ from economy.casino import (
 )
 from economy.phase5_recovery import (
     claim_casino_outbox, finalize_casino_outbox, recover_phase5_runtime,
+)
+from economy.crypto import (
+    crypto_readiness, is_crypto_authorized, list_crypto_authorizations,
+    seed_market_reserve, set_crypto_authorization,
+)
+from economy.crypto_market import run_market_tick
+from economy.phase6_recovery import (
+    claim_crypto_news_outbox, finalize_crypto_news_outbox, recover_phase6_runtime,
 )
 
 
@@ -86,6 +95,55 @@ async def _deliver_phase5_notifications(client, *, limit=100):
             failed += 1
         except Exception:
             logger.exception("Phase 5 notification delivery failed event=%s", row.get("eventId"))
+            failed += 1
+    return {"scanned": len(rows), "delivered": delivered, "failed": failed}
+
+
+async def _deliver_phase6_news(client, *, limit=100):
+    async def find_existing(channel, marker):
+        async for previous in channel.history(limit=20):
+            if marker in str(getattr(previous, "content", "")):
+                return previous
+        return None
+
+    lease_owner = f"crypto-discord:{uuid.uuid4()}"
+    rows = await claim_crypto_news_outbox(DB_PATH, lease_owner=lease_owner, limit=limit)
+    delivered = failed = 0
+    for row in rows:
+        try:
+            guild = client.get_guild(int(row["guildId"]))
+            channel = get_announce_channel(guild, "market") if guild else None
+            if channel is None:
+                raise ValueError("market_announcement_channel_missing")
+            marker = f"W2E-CRYPTO-NEWS:{row['eventKey']}"
+            change = row["changeBps"] / 100
+            try:
+                message = await asyncio.wait_for(find_existing(channel, marker), timeout=8)
+            except (discord.Forbidden, discord.HTTPException, asyncio.TimeoutError):
+                await finalize_crypto_news_outbox(
+                    DB_PATH, outbox_id=row["outboxId"], lease_owner=lease_owner,
+                    sent=False, error_code="adoption_scan_failed", review_required=True,
+                )
+                failed += 1
+                continue
+            if message is None:
+                message = await asyncio.wait_for(channel.send(
+                    f"**{row['newsType']} CRYPTO** - {row['symbol']} berubah **{change:+.2f}%** "
+                    f"menjadi **{row['currentPriceEcy']:,} ECY**.\n-# `{marker}`"
+                ), timeout=8)
+            await finalize_crypto_news_outbox(
+                DB_PATH, outbox_id=row["outboxId"], lease_owner=lease_owner,
+                sent=True, message_id=getattr(message, "id", None),
+            )
+            delivered += 1
+        except (ValueError, discord.HTTPException, asyncio.TimeoutError):
+            await finalize_crypto_news_outbox(
+                DB_PATH, outbox_id=row["outboxId"], lease_owner=lease_owner,
+                sent=False, error_code="discord_delivery_failed",
+            )
+            failed += 1
+        except Exception:
+            logger.exception("Phase 6 news delivery failed outbox=%s", row.get("outboxId"))
             failed += 1
     return {"scanned": len(rows), "delivered": delivered, "failed": failed}
 
@@ -217,6 +275,7 @@ def setup(tree, client):
     economy_group = app_commands.Group(name="economy", description="Fondasi Economy V1")
     whitelist_group = app_commands.Group(name="whitelist", description="Whitelist mutasi ekonomi")
     casino_auth_group = app_commands.Group(name="casino-auth", description="Otorisasi least-privilege Casino")
+    crypto_auth_group = app_commands.Group(name="crypto-auth", description="Otorisasi least-privilege Crypto")
 
     async def _is_owner(interaction):
         try:
@@ -316,6 +375,18 @@ def setup(tree, client):
             )
             await _reply(interaction, result.message)
             return
+        if str(feature).lower() == "crypto" and ECONOMY_PHASE6_ENABLED:
+            if not await is_crypto_authorized(
+                DB_PATH, interaction.guild_id, interaction.user.id, "CRYPTO_CONTROL"
+            ):
+                await _reply(interaction, "Kamu tidak memiliki CRYPTO_CONTROL.")
+                return
+            await set_feature_paused(
+                DB_PATH, guild_id=interaction.guild_id, feature="crypto", paused=True,
+                actor_id=interaction.user.id, reason=reason,
+            )
+            await _reply(interaction, "Fitur `crypto` berhasil dijeda.")
+            return
         if not await _can_control_feature(interaction, feature):
             await _reply(interaction, "Kamu tidak punya permission untuk mengubah emergency control.")
             return
@@ -336,6 +407,18 @@ def setup(tree, client):
                 paused=False, reason=reason,
             )
             await _reply(interaction, result.message)
+            return
+        if str(feature).lower() == "crypto" and ECONOMY_PHASE6_ENABLED:
+            if not await is_crypto_authorized(
+                DB_PATH, interaction.guild_id, interaction.user.id, "CRYPTO_CONTROL"
+            ):
+                await _reply(interaction, "Kamu tidak memiliki CRYPTO_CONTROL.")
+                return
+            await set_feature_paused(
+                DB_PATH, guild_id=interaction.guild_id, feature="crypto", paused=False,
+                actor_id=interaction.user.id, reason=reason,
+            )
+            await _reply(interaction, "Fitur `crypto` berhasil dilanjutkan.")
             return
         if not await _can_control_feature(interaction, feature):
             await _reply(interaction, "Kamu tidak punya permission untuk mengubah emergency control.")
@@ -538,8 +621,104 @@ def setup(tree, client):
         result = await recover_phase5_runtime(DB_PATH, guild_id=interaction.guild_id)
         await _reply(interaction, f"Recovery Casino selesai: `{result}`")
 
+    @crypto_auth_group.command(name="add", description="Tambah kelas otorisasi Crypto (bot owner only)")
+    async def crypto_auth_add(interaction: discord.Interaction, user: discord.User,
+                              permission_class: str, reason: str):
+        await interaction.response.defer(ephemeral=True)
+        if not await _is_owner(interaction):
+            await _reply(interaction, "Hanya bot owner yang dapat mengelola otorisasi Crypto.")
+            return
+        try:
+            await set_crypto_authorization(
+                DB_PATH, guild_id=interaction.guild_id, user_id=user.id,
+                permission_class=permission_class, enabled=True,
+                actor_id=interaction.user.id, reason=reason,
+            )
+        except ValueError as exc:
+            await _reply(interaction, str(exc))
+            return
+        await _reply(interaction, "Otorisasi Crypto berhasil ditambahkan.")
+
+    @crypto_auth_group.command(name="remove", description="Cabut kelas otorisasi Crypto (bot owner only)")
+    async def crypto_auth_remove(interaction: discord.Interaction, user: discord.User,
+                                 permission_class: str, reason: str):
+        await interaction.response.defer(ephemeral=True)
+        if not await _is_owner(interaction):
+            await _reply(interaction, "Hanya bot owner yang dapat mengelola otorisasi Crypto.")
+            return
+        try:
+            await set_crypto_authorization(
+                DB_PATH, guild_id=interaction.guild_id, user_id=user.id,
+                permission_class=permission_class, enabled=False,
+                actor_id=interaction.user.id, reason=reason,
+            )
+        except ValueError as exc:
+            await _reply(interaction, str(exc))
+            return
+        await _reply(interaction, "Otorisasi Crypto berhasil dicabut.")
+
+    @crypto_auth_group.command(name="list", description="Lihat otorisasi Crypto (bot owner only)")
+    async def crypto_auth_list(interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        if not await _is_owner(interaction):
+            await _reply(interaction, "Hanya bot owner yang dapat melihat otorisasi Crypto.")
+            return
+        rows = await list_crypto_authorizations(DB_PATH, interaction.guild_id)
+        text = "\n".join(
+            f"<@{row[0]}> `{row[1]}`: {'aktif' if row[2] else 'nonaktif'}"
+            for row in rows
+        ) or "Otorisasi Crypto kosong."
+        await _reply(interaction, text)
+
+    @economy_group.command(name="crypto-status", description="Lihat kesiapan Market Reserve Crypto")
+    async def crypto_status_command(interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        if not await is_crypto_authorized(
+            DB_PATH, interaction.guild_id, interaction.user.id, "CRYPTO_CONTROL"
+        ):
+            await _reply(interaction, "Kamu tidak memiliki CRYPTO_CONTROL.")
+            return
+        data = await crypto_readiness(DB_PATH, interaction.guild_id)
+        await _reply(interaction, "\n".join((
+            f"Schema siap: **{'Ya' if data.get('code') != 'schema_unavailable' else 'Tidak'}**",
+            f"Reserve seeded: **{'Ya' if data.get('code') != 'market_unseeded' else 'Tidak'}**",
+            f"Status: **{data.get('code', 'unknown')}**",
+            f"Market Reserve: **{int(data.get('marketReserveEcy', 0)):,} ECY**",
+        )))
+
+    @economy_group.command(name="crypto-seed", description="Seed Market Reserve Crypto staging")
+    async def crypto_seed_command(interaction: discord.Interaction, amount: str):
+        await interaction.response.defer(ephemeral=True)
+        if not await is_crypto_authorized(
+            DB_PATH, interaction.guild_id, interaction.user.id, "CRYPTO_FINANCIAL"
+        ):
+            await _reply(interaction, "Kamu tidak memiliki CRYPTO_FINANCIAL.")
+            return
+        try:
+            parsed = parse_economy_amount(amount)
+            result = await seed_market_reserve(
+                DB_PATH, guild_id=interaction.guild_id, amount=parsed,
+                actor_id=interaction.user.id,
+            )
+        except (AmountParseError, PermissionError, ValueError) as exc:
+            await _reply(interaction, str(exc))
+            return
+        await _reply(interaction, result.message)
+
+    @economy_group.command(name="crypto-recover", description="Jalankan recovery Crypto terotorisasi")
+    async def crypto_recover_command(interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        if not await is_crypto_authorized(
+            DB_PATH, interaction.guild_id, interaction.user.id, "CRYPTO_RECOVERY"
+        ):
+            await _reply(interaction, "Kamu tidak memiliki CRYPTO_RECOVERY.")
+            return
+        result = await recover_phase6_runtime(DB_PATH)
+        await _reply(interaction, f"Recovery Crypto selesai: `{result}`")
+
     economy_group.add_command(whitelist_group)
     economy_group.add_command(casino_auth_group)
+    economy_group.add_command(crypto_auth_group)
     tree.add_command(economy_group)
 
     async def _bootstrap():
@@ -586,3 +765,24 @@ def setup(tree, client):
             logger.warning("Phase 5 recovery failed type=%s", type(exc).__name__)
 
     register_ready_startup_task(_recover_phase5)
+
+    async def _phase6_worker_loop():
+        while not client.is_closed():
+            try:
+                recovery = await recover_phase6_runtime(DB_PATH)
+                if recovery.get("schema_ready"):
+                    await run_market_tick(DB_PATH)
+                    recovery["news"] = await _deliver_phase6_news(client)
+                logger.info("Phase 6 worker result=%s", recovery)
+            except Exception as exc:
+                logger.warning("Phase 6 worker failed type=%s", type(exc).__name__)
+            await asyncio.sleep(60)
+
+    async def _start_phase6_worker():
+        if not (ECONOMY_V1_ENABLED and ECONOMY_PHASE6_ENABLED):
+            return
+        existing = getattr(client, "_phase6_crypto_worker", None)
+        if existing is None or existing.done():
+            client._phase6_crypto_worker = asyncio.create_task(_phase6_worker_loop())
+
+    register_ready_startup_task(_start_phase6_worker)

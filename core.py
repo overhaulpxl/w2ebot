@@ -27,7 +27,7 @@ from runtime_config import (
 from economy.database import ensure_phase1_schema
 from economy.constants import (
     ECONOMY_PHASE2_ENABLED, ECONOMY_PHASE3_ENABLED, ECONOMY_PHASE4_ENABLED, ECONOMY_PHASE5_ENABLED,
-    ECONOMY_V1_ENABLED,
+    ECONOMY_PHASE6_ENABLED, ECONOMY_V1_ENABLED,
 )
 from economy.profile import get_profile_snapshot
 from economy.treasury import get_supply_report
@@ -1973,7 +1973,7 @@ async def update_market_prices():
             logging.info(f"[MARKET] Event harga: {target_coin} {event_type}")
         
         # Broadcast event message
-        if event_message:
+        if event_message and not (ECONOMY_V1_ENABLED and ECONOMY_PHASE6_ENABLED):
             for guild in client.guilds:
                 ch = get_announce_channel(guild, 'market')
                 if ch:
@@ -2486,8 +2486,27 @@ async def api_user(request):
 
 
 async def api_market(request):
+    if ECONOMY_V1_ENABLED and ECONOMY_PHASE6_ENABLED:
+        from economy.crypto_market import market_snapshot
+        return web.json_response(await market_snapshot(DB_PATH))
     market = await load_json(MARKET_FILE)
     return web.json_response(market or {})
+
+
+async def api_crypto_v1_status(request):
+    """Status Crypto read-only; semua mutasi tetap melalui service transaksi."""
+    if not (ECONOMY_V1_ENABLED and ECONOMY_PHASE6_ENABLED):
+        return web.json_response({'enabled': False, 'schema_ready': False})
+    from economy.crypto import crypto_readiness
+    from economy.crypto_market import market_snapshot
+    readiness = await crypto_readiness(DB_PATH, ALLOWED_SERVER_ID)
+    snapshot = await market_snapshot(DB_PATH)
+    return web.json_response({
+        'enabled': True,
+        'schema_ready': bool(snapshot.get('available')),
+        'readiness': readiness,
+        'market': snapshot,
+    })
 
 
 async def api_treasury(request):
@@ -3391,6 +3410,7 @@ async def start_web_server():
     app.router.add_get('/api/economy/v1-profile/{id}', api_economy_v1_profile)
     app.router.add_get('/api/economy/v1-marketplace', api_marketplace_v1_status)
     app.router.add_get('/api/economy/v1-casino', api_casino_v1_status)
+    app.router.add_get('/api/economy/v1-crypto', api_crypto_v1_status)
     app.router.add_get('/api/marriages', api_marriages)
     app.router.add_get('/api/stats/summary', api_stats_summary)
     app.router.add_get('/api/bot/stats', api_bot_stats)

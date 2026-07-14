@@ -6,6 +6,7 @@ from datetime import datetime
 from economy.amounts import AmountParseError, parse_economy_amount
 from economy.constants import (
     ECONOMY_PHASE2_ENABLED, ECONOMY_PHASE3_ENABLED, ECONOMY_PHASE5_ENABLED,
+    ECONOMY_PHASE6_ENABLED,
     ECONOMY_V1_ENABLED,
 )
 from economy.exchange import exchange_etm_to_ecy, get_exchange_info
@@ -24,6 +25,10 @@ def _phase3_enabled():
 
 def _phase5_enabled():
     return _phase2_enabled() and ECONOMY_PHASE5_ENABLED
+
+
+def _phase6_enabled():
+    return ECONOMY_V1_ENABLED and ECONOMY_PHASE6_ENABLED
 
 
 def _economy_request_id(interaction):
@@ -274,6 +279,27 @@ def setup(tree, client):
     async def slash_market(interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer()
+        if _phase6_enabled():
+            from economy.crypto_market import market_snapshot
+            snapshot = await market_snapshot(DB_PATH)
+            if not snapshot["available"]:
+                await send_embed(interaction, "Crypto Phase 6 aktif tetapi migration 600 belum siap.")
+                return
+            embed = discord.Embed(title="W2E Crypto Market V1", color=discord.Color.gold())
+            for symbol, data in snapshot["coins"].items():
+                history = data.get("history", [data["price"]])
+                change = data["price"] - (history[-2] if len(history) > 1 else data["price"])
+                marker = "+" if change >= 0 else ""
+                embed.add_field(
+                    name=f"{symbol} ({data['name']})",
+                    value=(f"Harga: **{data['price']:,} ECY**\n"
+                           f"Tick terakhir: **{marker}{change:,} ECY**\n"
+                           f"Volatilitas normal maks: **{data['maximumNormalChangeBps'] / 100:.2f}%**"),
+                    inline=False,
+                )
+            embed.set_footer(text="1 Crypto = 100.000.000 unit | fee beli/jual 2%")
+            await interaction.followup.send(embed=embed)
+            return
         market = await load_json(MARKET_FILE)
         if not market or 'coins' not in market:
             await send_embed(interaction, "Market belum diinisialisasi.")
@@ -1119,6 +1145,36 @@ def setup(tree, client):
         if not interaction.response.is_done():
             await interaction.response.defer()
         uid = str(interaction.user.id)
+        if _phase6_enabled():
+            from economy.crypto import portfolio
+            data = await portfolio(DB_PATH, guild_id=interaction.guild_id, user_id=uid)
+            if not data["available"]:
+                await send_embed(interaction, "Crypto Phase 6 aktif tetapi migration 600 belum siap.")
+                return
+            embed = discord.Embed(
+                title=f"Crypto Portfolio: {interaction.user.display_name}",
+                color=discord.Color.green(),
+            )
+            if not data["holdings"]:
+                embed.description = "Portfolio Crypto V1 kamu kosong."
+            for holding in data["holdings"]:
+                embed.add_field(
+                    name=holding["symbol"],
+                    value=(f"Jumlah: **{holding['quantity']}**\n"
+                           f"Nilai gross: **{holding['valueEcy']:,} ECY**\n"
+                           f"Harga beli rata-rata: **{holding['averageBuyPriceEcy']:,} ECY**\n"
+                           f"Profit terealisasi: **{holding['realizedProfitEcy']:,} ECY**\n"
+                           f"Profit belum terealisasi: **{holding['unrealizedProfitEcy']:,} ECY**"),
+                    inline=False,
+                )
+            embed.add_field(name="Total nilai gross", value=f"**{data['totalValueEcy']:,} ECY**", inline=False)
+            embed.add_field(
+                name="Total profit belum terealisasi",
+                value=f"**{data['totalUnrealizedProfitEcy']:,} ECY**",
+                inline=False,
+            )
+            await interaction.followup.send(embed=embed)
+            return
         market_data = await load_json('market.json')
         users = await load_json('users.json')
         portfolio = users.get(uid, {}).get('crypto', {})
@@ -1147,6 +1203,26 @@ def setup(tree, client):
         await interaction.response.defer()
         uid = str(interaction.user.id)
         symbol = symbol.upper()
+
+        if _phase6_enabled():
+            from economy.crypto import execute_trade
+            result = await execute_trade(
+                DB_PATH, guild_id=interaction.guild_id, user_id=uid,
+                request_id=_economy_request_id(interaction), side="BUY",
+                symbol=symbol, quantity=jumlah,
+            )
+            if not result.ok:
+                await send_embed(interaction, result.message)
+                return
+            receipt = result.receipt
+            await send_embed(
+                interaction,
+                f"**BELI CRYPTO BERHASIL**{' (replay)' if result.replayed else ''}\n"
+                f"{receipt['quantity']} {symbol} @ {receipt['priceEcy']:,} ECY\n"
+                f"Gross: **{receipt['gross']:,} ECY** | Fee: **{receipt['fee']:,} ECY**\n"
+                f"Holding: **{receipt['holdingQuantity']} {symbol}**",
+            )
+            return
 
         market = await load_json(MARKET_FILE)
         coins_data = market.get('coins', {}) if market else {}
@@ -1201,6 +1277,26 @@ def setup(tree, client):
         uid = str(interaction.user.id)
         symbol = symbol.upper()
 
+        if _phase6_enabled():
+            from economy.crypto import execute_trade
+            result = await execute_trade(
+                DB_PATH, guild_id=interaction.guild_id, user_id=uid,
+                request_id=_economy_request_id(interaction), side="SELL",
+                symbol=symbol, quantity=jumlah,
+            )
+            if not result.ok:
+                await send_embed(interaction, result.message)
+                return
+            receipt = result.receipt
+            await send_embed(
+                interaction,
+                f"**JUAL CRYPTO BERHASIL**{' (replay)' if result.replayed else ''}\n"
+                f"{receipt['quantity']} {symbol} @ {receipt['priceEcy']:,} ECY\n"
+                f"Gross: **{receipt['gross']:,} ECY** | Fee: **{receipt['fee']:,} ECY**\n"
+                f"Profit terealisasi transaksi: **{receipt['realizedProfitDeltaEcy']:,} ECY**",
+            )
+            return
+
         market = await load_json(MARKET_FILE)
         coins_data = market.get('coins', {}) if market else {}
         if symbol not in coins_data:
@@ -1248,6 +1344,23 @@ def setup(tree, client):
         sisa = crypto.get(symbol, 0)
         await send_embed(interaction, f"📤 **JUAL BERHASIL!**\nKamu menjual **{qty} {symbol}** @ {price} Koin.\nDapat: **{net} Koin** (harga {gross} - fee 2% = {fee}).\nSisa {symbol}: **{sisa}**")
     
+    async def crypto_symbol_autocomplete(interaction: discord.Interaction, current: str):
+        if not _phase6_enabled() or not getattr(interaction, "guild_id", None):
+            return []
+        from economy.crypto_market import market_snapshot
+        snapshot = await market_snapshot(DB_PATH)
+        if not snapshot["available"]:
+            return []
+        query = current.strip().lower()
+        return [
+            app_commands.Choice(name=f"{symbol} - {data['name']}", value=symbol)
+            for symbol, data in snapshot["coins"].items()
+            if not query or query in symbol.lower() or query in data["name"].lower()
+        ][:25]
+
+    slash_buycoin.autocomplete("symbol")(crypto_symbol_autocomplete)
+    slash_sellcoin.autocomplete("symbol")(crypto_symbol_autocomplete)
+
     @tree.command(name="buyrig", description="Beli mesin Miner Kripto untuk koin tertentu")
     async def slash_buyrig(interaction: discord.Interaction, tier: int, koin: str = "ETHR"):
         if not interaction.response.is_done():

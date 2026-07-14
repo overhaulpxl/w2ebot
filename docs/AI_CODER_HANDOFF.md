@@ -24,9 +24,9 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 
 - **lastKnownBranch:** codex/seller-payout-hotfixes
 - **observedBranch:** codex/seller-payout-hotfixes
-- **observedHead:** 8e924d4
+- **observedHead:** 25ea3bb318e292044fa4b230ccbd08bf728efb0e
 - **remotePushAfterPhase4:** false
-- **workingTreeAtSeed:** clean before Phase 5 owner decision recording
+- **workingTreeAtSeed:** clean before Phase 6 implementation
 
 ## Project Progress
 
@@ -37,6 +37,7 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 | phase3 | RPG | complete_and_committed |
 | phase4 | Eternal Marketplace | complete_and_committed |
 | phase5 | Casino | implemented_staging_ready |
+| phase6 | Crypto | implemented_staging_ready |
 
 ## Capabilities By Phase
 
@@ -81,6 +82,15 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - restart recovery
   - migration 500
   - D18 simulation passed; ready for connected Discord staging
+- **phase6:**
+  - global Crypto prices and ticks
+  - guild holdings and Market Reserve
+  - atomic ECY buy/sell
+  - cost basis and profit
+  - market news outbox
+  - restart recovery
+  - migration 600
+  - deterministic market simulation passed
 
 ## Protected Systems
 
@@ -104,6 +114,7 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 - **ECONOMY PHASE3 ENABLED:** false
 - **ECONOMY PHASE4 ENABLED:** false
 - **ECONOMY PHASE5 ENABLED:** false
+- **ECONOMY PHASE6 ENABLED:** false
 - **ECONOMY V1 ENABLED:** false
 
 ## Command Ownership
@@ -191,6 +202,13 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - **name:** phase5-casino
   - **verificationStatus:** verified
   - **version:** 500
+-
+  - **checksum:** 33d17df45ef14e4140ce58b3c5718ddea39894a21e176bcb3617e2c4b2f14d3b
+  - **evidencePaths:**
+    - economy/phase6_schema.py
+  - **name:** phase6-crypto
+  - **verificationStatus:** verified
+  - **version:** 600
 
 ## Catalog Versions And Checksums
 
@@ -881,6 +899,128 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 - **wagerIncrementEcy:** 1000
 - **winnerTax:** none
 
+## Phase 6 Crypto
+
+- **accounting:**
+  - **checkedIntegerOnly:** true
+  - **costBasisIncludesBuyFee:** true
+  - **realizedAndUnrealizedProfit:** true
+  - **reserveAccount:** ECY_MARKET
+- **assets:**
+  - **ECLP:**
+    - **basePriceEcy:** 10000
+    - **documentedMismatch:** Source PRD spells Eclipscoin; repository display spelling is preserved.
+    - **maximumNormalChangeBps:** 50
+    - **name:** Eclipsoin
+  - **ETHR:**
+    - **basePriceEcy:** 10000
+    - **maximumNormalChangeBps:** 15
+    - **name:** ETHERnal
+  - **LUNA:**
+    - **basePriceEcy:** 13000
+    - **maximumNormalChangeBps:** 120
+    - **name:** Lunniera
+  - **MTR:**
+    - **basePriceEcy:** 10000
+    - **maximumNormalChangeBps:** 35
+    - **name:** Meteorite
+  - **ORBT:**
+    - **basePriceEcy:** 20000
+    - **maximumNormalChangeBps:** 70
+    - **name:** Orbitcoin
+  - **ORCL:**
+    - **basePriceEcy:** 10000
+    - **maximumNormalChangeBps:** 25
+    - **name:** Cosmic Oracle
+  - **TRST:**
+    - **basePriceEcy:** 14000
+    - **maximumNormalChangeBps:** 90
+    - **name:** TrustCoin
+- **commands:**
+  - /market
+  - w!market
+  - /portfolio
+  - w!portfolio
+  - /buycoin
+  - w!buycoin
+  - /sellcoin
+  - w!sellcoin
+- **featureFlag:**
+  - **default:** false
+  - **name:** ECONOMY_PHASE6_ENABLED
+- **fee:**
+  - **basisPoints:** 200
+  - **burnRemainderPercent:** 20
+  - **marketReservePercent:** 50
+  - **treasuryPercent:** 30
+- **implementationStatus:** implemented
+- **legacyMigration:**
+  - **ambiguousPolicy:** REVIEW_REQUIRED and non-tradeable
+  - **duplicateAcrossGuilds:** false
+  - **sourceFilesMutated:** false
+  - **targetGuildSource:** exactly one completed Phase 1 migration target guild
+- **marketScope:**
+  - **financialState:** guild-scoped
+  - **offlineBackfill:** false
+  - **prices:** one global authoritative series
+  - **tickIntervalSeconds:** 60
+- **migration:**
+  - **checksum:** 33d17df45ef14e4140ce58b3c5718ddea39894a21e176bcb3617e2c4b2f14d3b
+  - **name:** phase6-crypto
+  - **startupAutomatic:** false
+  - **version:** 600
+- **minimumGrossEcy:** 50
+- **moduleOwnership:**
+  - **cogs/economy.py:** staff controls and minute worker
+  - **cogs/rpg.py:** member command adapters
+  - **economy/crypto.py:** atomic trades, holdings, authorization, and portfolio
+  - **economy/crypto market.py:** global tick and news engine
+  - **economy/crypto simulation.py:** deterministic acceptance simulation
+  - **economy/phase6 migrations.py:** staging migration and reconciliation
+  - **economy/phase6 recovery.py:** restart recovery and outbox
+  - **economy/phase6 schema.py:** migration 600 schema and checksum
+- **news:**
+  - **alertThresholdBps:** 1000
+  - **comparisonMinutes:** 30
+  - **globalCooldownMinutesPerAsset:** 30
+  - **surgeCrashThresholdBps:** 2500
+- **pricing:**
+  - **eventReplacesNormalMovement:** true
+  - **majorEventPerMinute:** 0.005%
+  - **maximumBasePercent:** 500
+  - **meanReversionPercentOfDistance:** 2
+  - **minimumBasePercent:** 20
+  - **normalEventPerMinute:** 0.05%
+- **productionEnabled:** false
+- **productionMigrated:** false
+- **productionSeeded:** false
+- **productionStatus:** not_approved
+- **rolloutBlocker:** Production cutover awaits separate approval and Phase 7 integration for ongoing legacy Mining output.
+- **scope:** Crypto prices and trading migrated to ECY
+- **simulation:**
+  - **artifactSha256:** 66cb9ecb7e85c0eec3a9a744ae20323fb423b39c2354db7ce755ba2cf564767a
+  - **completed:** true
+  - **invariantFailures:** 0
+  - **majorEvents:** 38
+  - **normalEvents:** 444
+  - **passed:** true
+  - **seeds:** 20
+  - **ticksPerSeed:** 43200
+  - **totalTicks:** 864000
+- **status:** implemented_staging_ready
+- **unitScale:** 100000000
+- **verificationResults:**
+  - **commandOwnership:** passed through static verifier
+  - **forbiddenAliases:** absent through static verifier
+  - **foreignKeyErrors:** 0
+  - **integrityCheck:** ok
+  - **livingPrdToolingTests:** 14 passed
+  - **marketplaceRegressionTests:** 64 passed
+  - **migration600SecondRun:** idempotent replay
+  - **phase1To6EconomyTests:** 146 passed
+  - **pyCompile:** passed
+  - **temporaryMainImport:** passed
+
 ## Module Ownership
 
 - **cogs:**
@@ -975,18 +1115,22 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 
 ## Known Limitations
 
-- Connected Discord staging remains pending.
+- Connected Discord staging remains pending for Phase 5 and Phase 6.
 - Dashboard production build remains pending.
+- Legacy Mining continues writing isolated legacy Crypto holdings until Phase 7 integration is approved.
 - Deal runtime claims are retained as last-known until a separately scoped audit verifies them.
 
 ## Blockers
 
 - Production cutover requires separate explicit approval.
-- Production migration 500 has not occurred and all production flags must remain disabled.
+- Production migrations 500 and 600 have not occurred and all production flags must remain disabled.
+- Phase 6 production cutover awaits Phase 7 integration for ongoing legacy Mining output.
 
 ## Pending Work
 
 - Phase 5 connected Discord staging validation
+- Phase 6 connected Discord staging validation
+- Phase 7 legacy Mining integration
 - Dashboard production build
 - Production rollout approval
 
@@ -1060,7 +1204,6 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - Phase 3 RPG
   - Phase 4 Eternal Marketplace
   - Living PRD automation
-  - Phase 5 Casino planning and D01-D20 decisions
-  - Phase 5 Casino runtime, migration, recovery, commands, and complete D18 simulation
-  - Phase 5 Blackjack natural-payout D02 gate passed
-- **current:** Phase 5 Casino is implemented with all defaults false and production unmigrated. The final hard-11/Aces-8s/5:4-natural rules measured RTP 0.9748809836156533 and passed D02. Phase 5 is ready for connected Discord staging; dashboard production build and production approval remain pending.
+  - Phase 5 Casino and D02 simulation
+  - Phase 6 Crypto runtime, migration, recovery, commands, and deterministic market simulation
+- **current:** Phase 6 Crypto is implemented with all defaults false and production unmigrated and unseeded. Migration 600 and the 864000-tick market simulation pass. Connected Discord staging remains pending, and production cutover awaits Phase 7 Mining integration plus separate approval.

@@ -111,6 +111,7 @@ def render_handoff(state: dict) -> bytes:
         ("Marketplace Recovery And Hardening", "marketplaceHardening"),
         ("Marketplace Lifecycle Definitions", "marketplaceLifecycleDefinitions"),
         ("Phase 5 Casino", "phase5Casino"),
+        ("Phase 6 Crypto", "phase6Crypto"),
         ("Module Ownership", "moduleOwnership"),
         ("Verification History", "verificationHistory"),
         ("Staging", "stagingStatus"),

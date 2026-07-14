@@ -158,6 +158,53 @@ async def _mutate_system(db, guild_id, delta, now):
     return before, after
 
 
+async def apply_deltas_in_connection(
+    db, *, transaction_id, guild_id, operation, source, deltas,
+    now, reference_id=None,
+):
+    """Apply and ledger balanced deltas on an already locked connection."""
+    deltas = tuple(deltas)
+    if not deltas:
+        raise EconomyMutationError("invalid_entries", "Ledger transaction tidak memiliki entry.")
+    totals = {}
+    for delta in deltas:
+        _validate_delta(delta)
+        totals[delta.currency] = totals.get(delta.currency, 0) + delta.amount
+    if any(total != 0 for total in totals.values()):
+        raise EconomyMutationError("unbalanced", "Ledger transaction tidak seimbang.")
+    await ensure_system_accounts(db, guild_id, now)
+    balances, ledger_rows = {}, []
+    for sequence, delta in enumerate(deltas, start=1):
+        if delta.account_kind == "USER":
+            before, after = await _mutate_wallet(db, guild_id, delta, now)
+            account_id = str(delta.user_id)
+            balances[f"USER:{account_id}:{delta.currency}"] = after
+        else:
+            before, after = await _mutate_system(db, guild_id, delta, now)
+            account_id = delta.account_id
+            balances[f"SYSTEM:{account_id}"] = after
+        ledger_rows.append((
+            str(transaction_id), sequence, str(guild_id), delta.account_kind, account_id,
+            str(delta.user_id) if delta.user_id else None, delta.currency, str(operation),
+            delta.amount, before, after,
+            str(reference_id) if reference_id is not None else None, str(source), now,
+        ))
+    await db.executemany(
+        "INSERT INTO EconomyLedger "
+        "(transactionId,sequence,guildId,accountKind,accountId,userId,currency,transactionType,"
+        "amount,balanceBefore,balanceAfter,referenceId,source,createdAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        ledger_rows,
+    )
+    async with db.execute(
+        "SELECT currency,SUM(amount) FROM EconomyLedger WHERE transactionId=? GROUP BY currency",
+        (str(transaction_id),),
+    ) as cursor:
+        rows = await cursor.fetchall()
+    if not rows or any(int(row[1]) != 0 for row in rows):
+        raise EconomyMutationError("unbalanced", "Ledger invariant gagal setelah penulisan.")
+    return balances
+
+
 async def execute_transaction(
     db_path,
     *,

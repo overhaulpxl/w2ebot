@@ -157,6 +157,17 @@ export interface CasinoV1Status {
   reviewRequired?: number;
 }
 
+export interface CryptoV1Status {
+  enabled: boolean;
+  schema_ready: boolean;
+  readiness?: {
+    ready: boolean;
+    code: string;
+    marketReserveEcy?: number;
+  };
+  market?: MarketData & { available?: boolean; currency?: "ECY"; global?: boolean };
+}
+
 export interface LeaderboardEntry {
   rank: number;
   id: string;
@@ -259,6 +270,10 @@ export interface MarketCoin {
   price: number;
   history: number[];
   emoji?: string;
+  basePriceEcy?: number;
+  maximumNormalChangeBps?: number;
+  volatilityLevel?: "LOW" | "MODERATE" | "HIGH" | "EXTREME";
+  updatedAt?: string;
 }
 
 export interface MarketData {

@@ -157,6 +157,15 @@ Command Casino lama tetap memakai wallet legacy selama flag Phase 5 false. Saat
 flag true, schema, seed, pause state, wallet, dan exposure harus lolos guard;
 kegagalan tidak fallback ke saldo legacy.
 
+## Economy V1 Phase 6 Crypto (Disabled)
+
+Crypto V1 memakai ECY, satu seri harga global, unit aset integer 1e-8, fee
+beli/jual 2%, cost basis, profit terealisasi, dan `ECY_MARKET` guild-scoped.
+Default `ECONOMY_PHASE6_ENABLED=false`; migration eksplisit `600 / phase6-crypto`
+serta seed Market Reserve staging wajib tersedia sebelum command V1 dapat dipakai.
+Startup tidak pernah menjalankan migration atau seed. Mining dan Binomo tetap
+memakai storage legacy.
+
 ---
 
 ## Quick Start

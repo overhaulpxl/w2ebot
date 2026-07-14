@@ -535,3 +535,14 @@ melalui command staff Discord dan shared service layer.
 
 `ECONOMY_PHASE5_ENABLED=false` adalah default. Migration `500 / phase5-casino`
 bersifat eksplisit dan staging-only; startup tidak membuat schema Casino.
+
+## Economy V1 Phase 6 Crypto
+
+`GET /api/market` mengembalikan seri harga Crypto V1 global ketika Economy V1
+dan Phase 6 aktif; saat Phase 6 nonaktif, respons legacy tetap dipertahankan.
+
+`GET /api/economy/v1-crypto` bersifat read-only dan menampilkan capability
+migration 600, kesiapan seed `ECY_MARKET`, Market Reserve guild utama, dan
+snapshot harga. Tidak ada route API mutasi Crypto. Default
+`ECONOMY_PHASE6_ENABLED=false`; migration `600 / phase6-crypto` tidak berjalan
+otomatis saat startup.

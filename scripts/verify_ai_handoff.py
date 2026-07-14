@@ -30,7 +30,7 @@ REQUIRED_TOP_LEVEL = {
     "dealMiddlemanTrustedVouch", "interactionRecovery", "paymentConfiguration",
     "economyDesign", "phase1", "phase2", "phase3Rpg", "rpgBalance",
     "phase4Marketplace", "marketplaceHardening", "moduleOwnership",
-    "marketplaceLifecycleDefinitions", "phase5Casino",
+    "marketplaceLifecycleDefinitions", "phase5Casino", "phase6Crypto",
     "verificationHistory", "stagingStatus", "dashboardStatus", "productionStatus",
     "knownLimitations", "blockers", "pendingWork", "aiCoderOnboarding",
     "livingPrdWorkflow", "taskCompletionTemplate", "definitionOfDone",
@@ -44,6 +44,7 @@ FORBIDDEN_PREFIXES = {
 FLAG_NAMES = (
     "ECONOMY_V1_ENABLED", "ECONOMY_PHASE2_ENABLED",
     "ECONOMY_PHASE3_ENABLED", "ECONOMY_PHASE4_ENABLED", "ECONOMY_PHASE5_ENABLED",
+    "ECONOMY_PHASE6_ENABLED",
 )
 
 
@@ -122,6 +123,11 @@ def _extract_phase_checksums(root: Path) -> dict[int, str]:
     phase5_sql = _literal(phase5["PHASE5_TABLE_SQL"])
     phase5_indexes = _literal(phase5["PHASE5_INDEX_SQL"])
     phase5_triggers = _literal(phase5["PHASE5_TRIGGER_SQL"])
+    phase6 = _assignment_map(_parse_source(root / "economy" / "phase6_schema.py"))
+    phase6_name = _literal(phase6["PHASE6_MIGRATION_NAME"])
+    phase6_sql = _literal(phase6["PHASE6_TABLE_SQL"])
+    phase6_indexes = _literal(phase6["PHASE6_INDEX_SQL"])
+    phase6_triggers = _literal(phase6["PHASE6_TRIGGER_SQL"])
     canonical = lambda value: " ".join(str(value).split())
     return {
         301: hashlib.sha256((phase3_sql + "\n" + "\n".join(phase3_triggers)).encode("utf-8")).hexdigest(),
@@ -129,6 +135,10 @@ def _extract_phase_checksums(root: Path) -> dict[int, str]:
         500: hashlib.sha256(
             (phase5_name + "\n" + canonical(phase5_sql) + "\n" +
              "\n".join(canonical(value) for value in phase5_indexes + phase5_triggers)).encode("utf-8")
+        ).hexdigest(),
+        600: hashlib.sha256(
+            (phase6_name + "\n" + canonical(phase6_sql) + "\n" +
+             "\n".join(canonical(value) for value in phase6_indexes + phase6_triggers)).encode("utf-8")
         ).hexdigest(),
     }
 
@@ -470,6 +480,46 @@ def _phase5_planning_issues(root: Path, state: dict, phase5_status: str | None) 
     return issues
 
 
+def _phase6_issues(root: Path, state: dict, phase6_status: str | None) -> list[str]:
+    issues: list[str] = []
+    phase6 = _claim_value(state.get("phase6Crypto", {}))
+    if phase6_status != "implemented_staging_ready" or phase6.get("status") != phase6_status:
+        issues.append("Phase 6 status harus implemented_staging_ready")
+    if phase6.get("implementationStatus") != "implemented":
+        issues.append("Phase 6 implementation status tidak valid")
+    if (phase6.get("productionStatus") != "not_approved" or
+            phase6.get("productionMigrated") is not False or
+            phase6.get("productionSeeded") is not False or
+            phase6.get("productionEnabled") is not False):
+        issues.append("Phase 6 production guard tidak valid")
+    if phase6.get("featureFlag") != {"name": "ECONOMY_PHASE6_ENABLED", "default": False}:
+        issues.append("Phase 6 feature flag state tidak valid")
+    migration = phase6.get("migration", {})
+    if migration.get("version") != 600 or migration.get("name") != "phase6-crypto" \
+            or migration.get("startupAutomatic") is not False \
+            or not CHECKSUM.fullmatch(str(migration.get("checksum", ""))):
+        issues.append("Phase 6 migration identity tidak valid")
+    simulation = phase6.get("simulation", {})
+    if (simulation.get("completed") is not True or simulation.get("passed") is not True or
+            simulation.get("seeds") != 20 or simulation.get("ticksPerSeed") != 43_200 or
+            simulation.get("totalTicks") != 864_000 or simulation.get("invariantFailures") != 0 or
+            not CHECKSUM.fullmatch(str(simulation.get("artifactSha256", "")))):
+        issues.append("Phase 6 simulation result tidak valid")
+    if phase6.get("marketScope") != {
+        "prices": "one global authoritative series", "financialState": "guild-scoped",
+        "tickIntervalSeconds": 60, "offlineBackfill": False,
+    }:
+        issues.append("Phase 6 global/guild scope tidak valid")
+    pending = _claim_value(state.get("pendingWork", []))
+    if not isinstance(pending, list) or not any("phase 6" in str(item).lower() for item in pending):
+        issues.append("Phase 6 connected staging tidak tercatat sebagai pending work")
+    if not (root / "docs" / "PHASE6_CRYPTO_PRD.md").is_file():
+        issues.append("Phase 6 PRD tidak ditemukan")
+    if not (root / "scripts" / "migrate_economy_phase6.py").is_file():
+        issues.append("Phase 6 migration CLI tidak ditemukan")
+    return issues
+
+
 def verify(root: Path = PROJECT_ROOT) -> list[str]:
     root = root.resolve()
     state_path = root / "docs" / "project_state.json"
@@ -552,6 +602,8 @@ def verify(root: Path = PROJECT_ROOT) -> list[str]:
         issues.append("production ditandai aktif tanpa approval eksplisit")
     phase5 = next((row for row in phases if isinstance(row, dict) and row.get("id") == "phase5"), {})
     issues.extend(_phase5_planning_issues(root, state, phase5.get("status")))
+    phase6 = next((row for row in phases if isinstance(row, dict) and row.get("id") == "phase6"), {})
+    issues.extend(_phase6_issues(root, state, phase6.get("status")))
     issues.extend(_secret_issues(raw_state, "project_state.json"))
     issues.extend(_private_content_issues(raw_state, "project_state.json"))
     if not handoff_path.exists():
