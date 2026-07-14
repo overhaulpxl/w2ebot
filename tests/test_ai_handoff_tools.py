@@ -33,6 +33,7 @@ class LivingPrdToolingTests(unittest.TestCase):
         (root / "docs").mkdir()
         shutil.copy2(ROOT / "docs" / "project_state.json", root / "docs" / "project_state.json")
         shutil.copy2(ROOT / "docs" / "AI_CODER_HANDOFF.md", root / "docs" / "AI_CODER_HANDOFF.md")
+        shutil.copy2(ROOT / "docs" / "PHASE5_CASINO_PRD.md", root / "docs" / "PHASE5_CASINO_PRD.md")
         shutil.copy2(ROOT / "runtime_config.py", root / "runtime_config.py")
         shutil.copy2(ROOT / "core.py", root / "core.py")
         shutil.copytree(ROOT / "economy", root / "economy", ignore=shutil.ignore_patterns("__pycache__"))
@@ -58,6 +59,7 @@ class LivingPrdToolingTests(unittest.TestCase):
             b"Update docs/project_state.json and run:\npython scripts/update_ai_handoff.py\n"
         ))
         self.assertEqual(hashlib.sha256(first).hexdigest(), hashlib.sha256(second).hexdigest())
+        self.assertIn(b"## Phase 5 Casino Planning\n", first)
 
     def test_generator_import_has_no_file_side_effect(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -152,6 +154,51 @@ class LivingPrdToolingTests(unittest.TestCase):
         next(row for row in state["phaseStatuses"]["value"] if row["id"] == "phase5")["status"] = "implemented"
         self._write_state(root, state)
         self.assertIn("Phase 5 tidak berada pada guard status", verify_ai_handoff.verify(root))
+
+    def test_phase5_planning_guards(self):
+        mutations = (
+            ("implementationStatus", "started"),
+            ("productionStatus", "approved"),
+            ("productionMigrated", True),
+            ("productionEnabled", True),
+            ("runtimeFeatureFlagExists", True),
+            ("migrationExists", True),
+            ("planningDocument", "docs/missing.md"),
+        )
+        for field, value in mutations:
+            with self.subTest(field=field):
+                root = self._fixture_root()
+                state = json.loads(json.dumps(self.state))
+                state["phase5Casino"]["value"][field] = value
+                self._write_state(root, state)
+                self.assertTrue(any("Phase 5 planning" in issue for issue in verify_ai_handoff.verify(root)))
+
+        root = self._fixture_root()
+        state = json.loads(json.dumps(self.state))
+        state["phase5Casino"]["value"]["ownerDecisions"] = []
+        self._write_state(root, state)
+        self.assertIn("Phase 5 owner decisions belum direkam", verify_ai_handoff.verify(root))
+
+        root = self._fixture_root()
+        state = json.loads(json.dumps(self.state))
+        state["blockers"]["value"] = ["Production cutover requires approval."]
+        self._write_state(root, state)
+        self.assertIn("Phase 5 owner decisions tidak tercatat sebagai blocker", verify_ai_handoff.verify(root))
+
+        root = self._fixture_root()
+        state = json.loads(json.dumps(self.state))
+        state["pendingWork"]["value"] = ["Connected Discord staging validation"]
+        self._write_state(root, state)
+        self.assertIn("Phase 5 implementation tidak tercatat sebagai pending work", verify_ai_handoff.verify(root))
+
+        root = self._fixture_root()
+        with (root / "runtime_config.py").open("a", encoding="utf-8") as handle:
+            handle.write("\nECONOMY_PHASE5_ENABLED = False\n")
+        self.assertTrue(any("Phase 5 runtime flag sudah ada" in issue for issue in verify_ai_handoff.verify(root)))
+
+        root = self._fixture_root()
+        (root / "economy" / "phase5_schema.py").write_text("PHASE5 = True\n", encoding="utf-8")
+        self.assertIn("Phase 5 migration atau runtime module sudah ada", verify_ai_handoff.verify(root))
 
     def test_verifier_source_is_static_and_update_propagates_failure(self):
         source = (SCRIPTS / "verify_ai_handoff.py").read_text(encoding="utf-8")

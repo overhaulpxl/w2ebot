@@ -30,7 +30,7 @@ REQUIRED_TOP_LEVEL = {
     "dealMiddlemanTrustedVouch", "interactionRecovery", "paymentConfiguration",
     "economyDesign", "phase1", "phase2", "phase3Rpg", "rpgBalance",
     "phase4Marketplace", "marketplaceHardening", "moduleOwnership",
-    "marketplaceLifecycleDefinitions",
+    "marketplaceLifecycleDefinitions", "phase5Casino",
     "verificationHistory", "stagingStatus", "dashboardStatus", "productionStatus",
     "knownLimitations", "blockers", "pendingWork", "aiCoderOnboarding",
     "livingPrdWorkflow", "taskCompletionTemplate", "definitionOfDone",
@@ -300,6 +300,63 @@ def _private_content_issues(text: str, label: str) -> list[str]:
     return [f"{label}: private environment/data pattern terdeteksi" for pattern in patterns if re.search(pattern, text)]
 
 
+def _phase5_planning_issues(root: Path, state: dict, phase5_status: str | None) -> list[str]:
+    issues: list[str] = []
+    if phase5_status != "planning":
+        if phase5_status not in {"not_started", "not_implemented", "not_approved"}:
+            issues.append("Phase 5 tidak berada pada guard status")
+        return issues
+
+    planning = _claim_value(state.get("phase5Casino", {}))
+    expected = {
+        "implementationStatus": "not_started",
+        "productionStatus": "not_approved",
+        "productionMigrated": False,
+        "productionEnabled": False,
+        "runtimeFeatureFlagExists": False,
+        "migrationExists": False,
+        "planningDocument": "docs/PHASE5_CASINO_PRD.md",
+    }
+    if not isinstance(planning, dict):
+        return ["Phase 5 planning state tidak valid"]
+    for field, value in expected.items():
+        if planning.get(field) != value:
+            issues.append(f"Phase 5 planning guard tidak valid: {field}")
+    planning_document = root / str(planning.get("planningDocument", ""))
+    if not planning_document.is_file():
+        issues.append("Phase 5 planning document tidak ditemukan")
+    decisions = planning.get("ownerDecisions")
+    if not isinstance(decisions, list) or not decisions:
+        issues.append("Phase 5 owner decisions belum direkam")
+    blockers = _claim_value(state.get("blockers", []))
+    if not isinstance(blockers, list) or not any(
+        "phase 5" in str(item).lower() and "owner" in str(item).lower() for item in blockers
+    ):
+        issues.append("Phase 5 owner decisions tidak tercatat sebagai blocker")
+    pending = _claim_value(state.get("pendingWork", []))
+    if not isinstance(pending, list) or not any("phase 5" in str(item).lower() for item in pending):
+        issues.append("Phase 5 implementation tidak tercatat sebagai pending work")
+
+    source_paths = (
+        root / "runtime_config.py",
+        root / "economy" / "constants.py",
+        root / ".env.example",
+    )
+    for path in source_paths:
+        if path.is_file() and "ECONOMY_PHASE5_ENABLED" in path.read_text(encoding="utf-8"):
+            issues.append(f"Phase 5 runtime flag sudah ada: {path.relative_to(root)}")
+    if (root / "scripts" / "migrate_economy_phase5.py").exists() or any(
+        path.is_file() for path in (root / "economy").glob("*phase5*")
+    ):
+        issues.append("Phase 5 migration atau runtime module sudah ada")
+    documented_versions = {
+        row.get("version") for row in _claim_value(state.get("migrations", [])) if isinstance(row, dict)
+    }
+    if 500 in documented_versions:
+        issues.append("Phase 5 migration 500 sudah didokumentasikan sebagai ada")
+    return issues
+
+
 def verify(root: Path = PROJECT_ROOT) -> list[str]:
     root = root.resolve()
     state_path = root / "docs" / "project_state.json"
@@ -381,8 +438,7 @@ def verify(root: Path = PROJECT_ROOT) -> list[str]:
     if not approved and (production.get("migrated") or production.get("enabled") or production.get("cutoverApproved")):
         issues.append("production ditandai aktif tanpa approval eksplisit")
     phase5 = next((row for row in phases if isinstance(row, dict) and row.get("id") == "phase5"), {})
-    if phase5.get("status") not in {"not_started", "not_implemented", "not_approved"}:
-        issues.append("Phase 5 tidak berada pada guard status")
+    issues.extend(_phase5_planning_issues(root, state, phase5.get("status")))
     issues.extend(_secret_issues(raw_state, "project_state.json"))
     issues.extend(_private_content_issues(raw_state, "project_state.json"))
     if not handoff_path.exists():

@@ -18,7 +18,7 @@
   "repositorySnapshot": {
     "verificationStatus": "repository_observed",
     "evidencePaths": [".git"],
-    "value": {"lastKnownBranch": "codex/seller-payout-hotfixes", "observedBranch": "codex/seller-payout-hotfixes", "observedHead": "02fcac317fb6d6856fc8a1f6ee27d6cba3661f0d", "workingTreeAtSeed": "seed file untracked only", "remotePushAfterPhase4": false}
+    "value": {"lastKnownBranch": "codex/seller-payout-hotfixes", "observedBranch": "codex/seller-payout-hotfixes", "observedHead": "7ca5e70", "workingTreeAtSeed": "clean before Phase 5 planning", "remotePushAfterPhase4": false}
   },
   "phaseStatuses": {
     "verificationStatus": "historical_verified",
@@ -28,10 +28,10 @@
       {"id": "phase2", "name": "Economy Progression", "status": "complete"},
       {"id": "phase3", "name": "RPG", "status": "complete_and_committed"},
       {"id": "phase4", "name": "Eternal Marketplace", "status": "complete_and_committed"},
-      {"id": "phase5", "name": "Phase 5", "status": "not_started"}
+      {"id": "phase5", "name": "Casino", "status": "planning"}
     ]
   },
-  "capabilitiesByPhase": {"verificationStatus": "historical_verified", "evidencePaths": ["economy", "cogs"], "value": {"phase1": ["wallet", "ledger", "treasury", "admin controls", "migration framework"], "phase2": ["profile", "Daily", "Weekly", "Work", "Transfer", "Exchange", "activity events"], "phase3": ["catalog", "equipment", "pets", "Hunt", "Dungeon", "Boss", "Quest", "recovery"], "phase4": ["listing", "escrow", "purchase", "return", "watch", "report", "moderation", "recovery"]}},
+  "capabilitiesByPhase": {"verificationStatus": "historical_verified", "evidencePaths": ["economy", "cogs", "docs/PHASE5_CASINO_PRD.md"], "value": {"phase1": ["wallet", "ledger", "treasury", "admin controls", "migration framework"], "phase2": ["profile", "Daily", "Weekly", "Work", "Transfer", "Exchange", "activity events"], "phase3": ["catalog", "equipment", "pets", "Hunt", "Dungeon", "Boss", "Quest", "recovery"], "phase4": ["listing", "escrow", "purchase", "return", "watch", "report", "moderation", "recovery"], "phase5": ["Casino planning only; implementation requires owner decisions and separate approval"]}},
   "protectedSystems": {
     "verificationStatus": "historical_verified",
     "evidencePaths": ["AGENTS.md", "cogs/deal.py"],
@@ -71,7 +71,7 @@
   "importantCommits": {
     "verificationStatus": "repository_observed",
     "evidencePaths": [".git"],
-    "value": [{"commit": "9b07585", "subject": "feat(economy): complete phase 3 RPG and staging hardening"}, {"commit": "02fcac317fb6d6856fc8a1f6ee27d6cba3661f0d", "subject": "feat(economy): complete phase 4 eternal marketplace"}]
+    "value": [{"commit": "9b07585", "subject": "feat(economy): complete phase 3 RPG and staging hardening"}, {"commit": "02fcac317fb6d6856fc8a1f6ee27d6cba3661f0d", "subject": "feat(economy): complete phase 4 eternal marketplace"}, {"commit": "7ca5e70", "subject": "feat(docs): add living PRD and AI coder handoff automation"}]
   },
   "migrations": {
     "verificationStatus": "verified",
@@ -144,22 +144,75 @@
     "value": {"historicalCatalog": "Listing/escrow/sale/return use each asset persisted catalog version.", "stackIdentity": "Migrated stack identity is guildId,userId,itemId,catalogVersion,bindingStatus.", "escrow": "Listing and escrow are mutually deferred foreign keys; unresolved escrow blocks equipment mutations.", "purchase": "PENDING EconomyTransaction and MarketplaceSale form an atomic reservation pair.", "recovery": "PENDING complete pairs resume/replay; missing or ambiguous pairs enter REVIEW_REQUIRED without replacement identity.", "returns": "Seller can atomically return own ACTIVE or PARTIALLY_FILLED remainder even while globally paused.", "outbox": "Notification delivery has stable deduplicated identities.", "quantityAuthority": "Exact stack binding and expected versions govern debit, transfer, and return."}
   },
   "marketplaceLifecycleDefinitions": {"verificationStatus": "historical_verified", "evidencePaths": ["economy/phase4_schema.py", "economy/marketplace.py"], "value": {"listingLifecycle": "ACTIVE/PARTIALLY_FILLED to SOLD or atomic RETURNED; PAUSED/REVIEW_REQUIRED/CANCELLED/EXPIRED retain escrow until resolution.", "saleLifecycle": "PENDING, COMMITTED, REVIEW_REQUIRED, VOID; only committed sales have immutable buyer/seller receipts.", "returnLifecycle": "Authoritative seller remainder returns atomically with MarketplaceReturn receipt.", "userStates": "Missing is ACTIVE; RESTRICTED limits new marketplace mutation; FROZEN requires staff-audited return.", "pause": "Pause blocks listings, purchases, watches, reports; read-only, eligible cancellation, returns, recovery, and receipt replay remain allowed."}},
-  "moduleOwnership": {"verificationStatus": "repository_observed", "evidencePaths": ["main.py", "core.py", "cogs", "economy", "scripts", "tests"], "value": {"runtime": {"main.py": "entry point and cog setup", "core.py": "shared persistence, FakeInteraction, events, web API", "runtime_config.py": "database path, staging guards, feature flags"}, "cogs": {"cogs/deal.py": "Deal, Middleman, payment, dispute, archive", "cogs/rpg.py": "legacy RPG and routing", "cogs/rpg_phase3.py": "Phase 3 interactions", "cogs/marketplace.py": "Marketplace commands", "cogs/economy.py": "Economy adapters"}, "economy": {"economy/ledger.py": "atomic transactions and ledger", "economy/catalog.py": "RPG catalog", "economy/phase3_schema.py": "Phase 3 schema hardening", "economy/phase4_schema.py": "Marketplace schema", "economy/marketplace.py": "Marketplace services"}, "tests": {"tests/test_economy_*.py": "Phase 1-3 economy/RPG", "tests/test_marketplace*.py": "Phase 4 Marketplace", "tests/test_ai_handoff_tools.py": "Living PRD deterministic/static tooling"}, "livingPrd": {"docs/project_state.json": "authoritative structured state", "docs/AI_CODER_HANDOFF.md": "generated onboarding document", "scripts/generate_ai_handoff.py": "pure renderer and generator", "scripts/verify_ai_handoff.py": "static verifier", "scripts/update_ai_handoff.py": "generator/verifier wrapper"}}},
+  "phase5Casino": {
+    "verificationStatus": "historical_verified",
+    "evidencePaths": ["docs/PHASE5_CASINO_PRD.md", "docs/PRD_ECONOMY_RPG_V1.md", "cogs/rpg.py", "core.py", "w2e_views.py", "economy/constants.py", "economy/database.py", "economy/treasury.py"],
+    "value": {
+      "scope": "Casino",
+      "roadmapPhase": "Phase 5",
+      "status": "planning",
+      "implementationStatus": "not_started",
+      "productionStatus": "not_approved",
+      "productionMigrated": false,
+      "productionEnabled": false,
+      "runtimeFeatureFlagExists": false,
+      "migrationExists": false,
+      "planningDocument": "docs/PHASE5_CASINO_PRD.md",
+      "eternalOptionsPhase": "Phase 8",
+      "currency": "ECY",
+      "betRangeEcy": {"minimum": 1000, "maximum": 500000},
+      "winnerTax": "none",
+      "approvedGames": ["Blackjack", "Coinflip", "Rock-paper-scissors", "Slots", "Number guessing", "Gacha", "Loot boxes"],
+      "approvedTargets": {"Blackjack": "97.5% RTP", "Coinflip": "97% RTP", "Rock-paper-scissors": "96.7% RTP", "Slots": "95% RTP", "Number guessing": "95% RTP"},
+      "bankroll": {"lossDestination": "ECY_CASINO", "excessDistribution": "60% treasury, 20% locked reserve, 20% burn", "burnMechanism": "Use the existing ECY_BURN system account; do not create another burn account.", "silentMinting": false},
+      "proposedFeatureFlag": "ECONOMY_PHASE5_ENABLED",
+      "proposedMigrationVersion": 500,
+      "existingCasinoObservations": [
+        {"game": "Blackjack", "observation": "Slash /blackjack bet and prefix w!blackjack <bet> use legacy coins, pseudo-scores, and a replay view.", "verificationStatus": "repository_observed", "evidencePaths": ["cogs/rpg.py", "w2e_views.py"]},
+        {"game": "Slots", "observation": "Slash /slot bet and prefix w!slot <bet> use legacy coins, three reels, and a legacy payout table.", "verificationStatus": "repository_observed", "evidencePaths": ["cogs/rpg.py", "w2e_views.py"]},
+        {"game": "Coinflip", "observation": "Slash /cf tebakan bet and prefix w!cf use legacy coins and a two-times gross payout.", "verificationStatus": "repository_observed", "evidencePaths": ["cogs/rpg.py"]},
+        {"game": "Rock-paper-scissors", "observation": "Slash /rps pilihan bet and prefix w!rps use legacy coins, refund draws, and pay two-times gross on wins.", "verificationStatus": "repository_observed", "evidencePaths": ["cogs/rpg.py"]},
+        {"game": "Number guessing", "observation": "Slash /tebak tebakan and prefix w!tebak have no stake and pay a fixed legacy reward.", "verificationStatus": "repository_observed", "evidencePaths": ["cogs/rpg.py"]},
+        {"game": "Gacha", "observation": "Slash /gacha and prefix w!gacha charge a fixed legacy cost and return a cosmetic result.", "verificationStatus": "repository_observed", "evidencePaths": ["cogs/rpg.py", "w2e_views.py"]},
+        {"game": "Loot box", "observation": "Slash /box and prefix w!box charge a fixed legacy cost and return legacy coin rewards.", "verificationStatus": "repository_observed", "evidencePaths": ["cogs/rpg.py", "w2e_views.py"]},
+        {"game": "Shared legacy behavior", "observation": "Current games use legacy wallet helpers, users.json statistics, general-purpose random, and non-persistent replay views; no Casino-specific durable session, ledger, or recovery schema is present.", "verificationStatus": "repository_observed", "evidencePaths": ["cogs/rpg.py", "core.py", "w2e_views.py", "economy/database.py"]},
+        {"game": "ECY burn", "observation": "ECY_BURN already exists as the authoritative ECY BURN system account and is included in supply reporting.", "verificationStatus": "repository_observed", "evidencePaths": ["economy/constants.py", "economy/treasury.py"]}
+      ],
+      "proposedTables": ["CasinoSession", "CasinoSessionAction", "CasinoSettlement", "CasinoBankrollReservation", "CasinoBankrollDistribution", "CasinoNotificationOutbox", "CasinoRecoveryReview"],
+      "ownerDecisions": [
+        "Define whether the 2% Casino Bankroll cap applies to gross payout, net player profit, or total maximum reserved liability.",
+        "Define how the 2% cap applies to Blackjack Double and Split.",
+        "Approve Blackjack deck, shuffle, natural payout, soft-17, Split, Double, surrender, insurance, and timeout rules.",
+        "Approve Slots weights, paylines, and payout table.",
+        "Approve the Coinflip mechanism required for 97% RTP.",
+        "Approve the Rock-paper-scissors payout and draw policy required for 96.7% RTP.",
+        "Approve Number-guessing range, stake, and payout.",
+        "Approve Gacha and Loot-box stakes, rewards, probabilities, ownership effects, expected value, and RTP.",
+        "Approve cooldowns, active-session limits, abandoned-session timeout, and public or ephemeral result behavior.",
+        "Approve legacy statistic migration, High Roller achievement behavior, and Lucky Charm compatibility.",
+        "Define active-member bankroll sizing, exact production seed, adjustment authorization, excess-distribution authorization and schedule, and retained safety threshold.",
+        "Approve ambiguous or expired-session refund policy.",
+        "Approve simulation rounds, seeds, wager distributions, Blackjack strategy, confidence level, tolerance, and failure threshold.",
+        "Approve migration version 500 and feature flag ECONOMY_PHASE5_ENABLED before implementation."
+      ]
+    }
+  },
+  "moduleOwnership": {"verificationStatus": "repository_observed", "evidencePaths": ["main.py", "core.py", "cogs", "economy", "scripts", "tests", "docs/PHASE5_CASINO_PRD.md"], "value": {"runtime": {"main.py": "entry point and cog setup", "core.py": "shared persistence, FakeInteraction, events, web API", "runtime_config.py": "database path, staging guards, feature flags"}, "cogs": {"cogs/deal.py": "Deal, Middleman, payment, dispute, archive", "cogs/rpg.py": "legacy RPG and routing", "cogs/rpg_phase3.py": "Phase 3 interactions", "cogs/marketplace.py": "Marketplace commands", "cogs/economy.py": "Economy adapters"}, "economy": {"economy/ledger.py": "atomic transactions and ledger", "economy/catalog.py": "RPG catalog", "economy/phase3_schema.py": "Phase 3 schema hardening", "economy/phase4_schema.py": "Marketplace schema", "economy/marketplace.py": "Marketplace services"}, "tests": {"tests/test_economy_*.py": "Phase 1-3 economy/RPG", "tests/test_marketplace*.py": "Phase 4 Marketplace", "tests/test_ai_handoff_tools.py": "Living PRD deterministic/static tooling and Phase 5 planning guards"}, "livingPrd": {"docs/project_state.json": "authoritative structured state", "docs/AI_CODER_HANDOFF.md": "generated onboarding document", "docs/PHASE5_CASINO_PRD.md": "approved Phase 5 Casino planning document", "scripts/generate_ai_handoff.py": "pure renderer and generator", "scripts/verify_ai_handoff.py": "static verifier", "scripts/update_ai_handoff.py": "generator/verifier wrapper"}}},
   "verificationHistory": {"verificationStatus": "historical_verified", "evidencePaths": ["docs/W2E_Bot_PRD.md"], "value": {"phase1To3Tests": "87 passed", "marketplaceTests": "64 passed", "total": "151 passed", "pyCompile": "passed", "mainImportTemporaryDatabase": "passed", "gitDiffCheck": "passed", "sqliteIntegrityCheck": "ok", "sqliteForeignKeyErrors": 0, "commandOwnership": "passed", "forbiddenAliases": "absent", "note": "Historical seed result; not rerun by Living PRD tooling task."}},
   "stagingStatus": {"verificationStatus": "historical_verified", "evidencePaths": ["scripts/setup_phase3_staging.py", "scripts/setup_phase4_staging.py"], "value": {"liveDiscord": "pending", "requirements": ["dedicated staging bot", "non-production SQLite copy", "dedicated staging guild", "all flags enabled only for staging"], "scripts": ["scripts/migrate_economy_phase4.py", "scripts/setup_phase4_staging.py", "scripts/run_phase4_staging.py", "scripts/run_phase4_staging.ps1"]}},
   "dashboardStatus": {"verificationStatus": "historical_verified", "evidencePaths": ["dashboard-example"], "value": {"productionBuild": "pending", "reason": "local dashboard dependencies were unavailable during the historical check"}},
   "productionStatus": {"verificationStatus": "repository_observed", "evidencePaths": ["runtime_config.py", ".env.example"], "value": {"migrated": false, "enabled": false, "cutoverApproved": false, "approvedProductionRecord": null, "databaseAccessedByThisTask": false, "restrictions": ["No automatic startup migration", "No production catalog seed", "No production economy enablement", "No production cutover"]}},
   "knownLimitations": {"verificationStatus": "historical_verified", "evidencePaths": ["docs/W2E_Bot_PRD.md"], "value": ["Live Discord staging remains pending.", "Dashboard production build remains pending.", "Historical test totals are retained but not rerun by this documentation-only task.", "Deal runtime claims are retained as last-known until a separately scoped audit verifies them."]},
-  "blockers": {"verificationStatus": "repository_observed", "evidencePaths": ["runtime_config.py"], "value": ["Production cutover requires separate explicit approval.", "Production flags must remain disabled.", "Phase 5 requires separate scope and approval."]},
-  "pendingWork": {"verificationStatus": "historical_verified", "evidencePaths": ["docs/W2E_Bot_PRD.md"], "value": ["Connected Discord staging validation", "Dashboard production build", "Production rollout approval", "Phase 5 planning only after separate approval"]},
+  "blockers": {"verificationStatus": "repository_observed", "evidencePaths": ["runtime_config.py", "docs/PHASE5_CASINO_PRD.md"], "value": ["Production cutover requires separate explicit approval.", "Production flags must remain disabled.", "Phase 5 owner decisions in docs/PHASE5_CASINO_PRD.md must be approved before implementation, including bankroll-cap semantics, game rules, payout models, simulation criteria, seed authority, and recovery policy."]},
+  "pendingWork": {"verificationStatus": "historical_verified", "evidencePaths": ["docs/W2E_Bot_PRD.md", "docs/PHASE5_CASINO_PRD.md"], "value": ["Connected Discord staging validation", "Dashboard production build", "Production rollout approval", "Phase 5 Casino implementation after all owner decisions and a separate implementation approval"]},
   "aiCoderOnboarding": {"verificationStatus": "verified", "evidencePaths": ["AGENTS.md"], "value": ["Read docs/AI_CODER_HANDOFF.md.", "Inspect Git status, branch, and relevant baseline.", "Stop and report repository/doc mismatch before changing behavior.", "Keep production migration and flag enablement separately approved."]},
   "livingPrdWorkflow": {"verificationStatus": "verified", "evidencePaths": ["AGENTS.md"], "value": {"status": "IMPLEMENTED", "steps": ["Read generated handoff", "Inspect baseline", "Implement requested change", "Run required verification", "Update project_state.json", "Run python scripts/update_ai_handoff.py", "Review generated handoff", "Include JSON and generated Markdown in the same change set", "Mention Living PRD update in final report"]}},
   "taskCompletionTemplate": {"verificationStatus": "historical_verified", "evidencePaths": ["docs/W2E_Bot_PRD.md"], "value": ["Task title", "Date", "Phase", "Status", "Summary", "Files changed", "Behavior/schema/migration/command/flag changes", "Tests and static checks", "Database integrity", "Commit hash", "Manual staging status", "Known limitations", "Remaining work", "Next recommended task"]},
   "definitionOfDone": {"verificationStatus": "historical_verified", "evidencePaths": ["docs/W2E_Bot_PRD.md"], "value": ["Implementation and relevant tests pass", "Migration/integrity/recovery/concurrency checked when applicable", "Command ownership and aliases preserved", "No secrets or runtime data staged", "Living PRD updated", "Manual staging and production status recorded"]},
   "documentedMismatches": {"verificationStatus": "documented_mismatch", "evidencePaths": ["docs/W2E_Bot_PRD.md", "cogs/deal.py", "cogs/rpg.py", "core.py"], "value": [{"command": "/rank", "seedClaim": "RPG", "repositoryObservedOwner": "Trusted Vouch", "resolution": "repository_behavior_preserved", "verificationStatus": "documented_mismatch", "requiresCodeChange": false}]},
-  "latestCompletedTask": {"verificationStatus": "repository_observed", "evidencePaths": ["scripts/generate_ai_handoff.py", "scripts/verify_ai_handoff.py", "scripts/update_ai_handoff.py"], "value": {"title": "Living PRD and AI Coder Handoff", "status": "IMPLEMENTED", "commit": "PENDING", "summary": "Added structured state, deterministic handoff generation, static verification, update wrapper, and mandatory workflow."}},
-  "taskHistory": {"verificationStatus": "historical_verified", "evidencePaths": [".git"], "value": [{"title": "Phase 3 RPG", "status": "complete", "commit": "9b07585"}, {"title": "Phase 4 Eternal Marketplace", "status": "complete", "commit": "02fcac317fb6d6856fc8a1f6ee27d6cba3661f0d"}, {"title": "Living PRD and AI Coder Handoff", "status": "complete_uncommitted", "commit": "PENDING"}]},
-  "updateHistory": {"verificationStatus": "historical_verified", "evidencePaths": ["docs/W2E_Bot_PRD.md"], "value": [{"date": "2026-07-13", "title": "Phase 3 RPG Completed", "commit": "9b07585"}, {"date": "2026-07-13", "title": "Phase 4 Eternal Marketplace Completed", "commit": "02fcac317fb6d6856fc8a1f6ee27d6cba3661f0d"}, {"date": "2026-07-14", "title": "Living PRD Automation Implemented", "commit": "PENDING"}]},
-  "currentHandoffSummary": {"verificationStatus": "repository_observed", "evidencePaths": ["runtime_config.py", "economy", "cogs"], "value": {"completed": ["Deal/Middleman interaction hardening", "Phase 1 Economy Foundation", "Phase 2 Economy Progression", "Phase 3 RPG", "Phase 4 Eternal Marketplace", "Living PRD automation"], "current": "All economy flags default false; production not migrated; staging and dashboard production remain pending; Phase 5 not started."}},
+  "latestCompletedTask": {"verificationStatus": "historical_verified", "evidencePaths": ["docs/PHASE5_CASINO_PRD.md", "docs/project_state.json"], "value": {"title": "Phase 5 Casino PRD and Planning", "status": "PLANNING_COMPLETE_AWAITING_OWNER_DECISIONS", "commit": "PENDING", "summary": "Defined the approved Casino planning scope without runtime implementation and recorded unresolved product decisions as blockers."}},
+  "taskHistory": {"verificationStatus": "historical_verified", "evidencePaths": [".git", "docs/PHASE5_CASINO_PRD.md"], "value": [{"title": "Phase 3 RPG", "status": "complete", "commit": "9b07585"}, {"title": "Phase 4 Eternal Marketplace", "status": "complete", "commit": "02fcac317fb6d6856fc8a1f6ee27d6cba3661f0d"}, {"title": "Living PRD and AI Coder Handoff", "status": "complete", "commit": "7ca5e70"}, {"title": "Phase 5 Casino PRD and Planning", "status": "planning_complete", "commit": "PENDING"}]},
+  "updateHistory": {"verificationStatus": "historical_verified", "evidencePaths": ["docs/W2E_Bot_PRD.md", "docs/PHASE5_CASINO_PRD.md"], "value": [{"date": "2026-07-13", "title": "Phase 3 RPG Completed", "commit": "9b07585"}, {"date": "2026-07-13", "title": "Phase 4 Eternal Marketplace Completed", "commit": "02fcac317fb6d6856fc8a1f6ee27d6cba3661f0d"}, {"date": "2026-07-14", "title": "Living PRD Automation Implemented", "commit": "7ca5e70"}, {"date": "2026-07-14", "title": "Phase 5 Casino PRD And Planning", "commit": "PENDING"}]},
+  "currentHandoffSummary": {"verificationStatus": "repository_observed", "evidencePaths": ["runtime_config.py", "economy", "cogs", "docs/PHASE5_CASINO_PRD.md"], "value": {"completed": ["Deal/Middleman interaction hardening", "Phase 1 Economy Foundation", "Phase 2 Economy Progression", "Phase 3 RPG", "Phase 4 Eternal Marketplace", "Living PRD automation", "Phase 5 Casino planning document"], "current": "Phase 5 Casino is planning only and blocked on owner decisions. Implementation is not started; no Phase 5 flag or migration exists; production remains unapproved, unmigrated, and disabled."}},
   "lastUpdatedAt": "2026-07-14T00:00:00+07:00"
 }

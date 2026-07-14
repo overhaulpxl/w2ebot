@@ -24,9 +24,9 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 
 - **lastKnownBranch:** codex/seller-payout-hotfixes
 - **observedBranch:** codex/seller-payout-hotfixes
-- **observedHead:** 02fcac317fb6d6856fc8a1f6ee27d6cba3661f0d
+- **observedHead:** 7ca5e70
 - **remotePushAfterPhase4:** false
-- **workingTreeAtSeed:** seed file untracked only
+- **workingTreeAtSeed:** clean before Phase 5 planning
 
 ## Project Progress
 
@@ -36,7 +36,7 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 | phase2 | Economy Progression | complete |
 | phase3 | RPG | complete_and_committed |
 | phase4 | Eternal Marketplace | complete_and_committed |
-| phase5 | Phase 5 | not_started |
+| phase5 | Casino | planning |
 
 ## Capabilities By Phase
 
@@ -72,6 +72,8 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - report
   - moderation
   - recovery
+- **phase5:**
+  - Casino planning only; implementation requires owner decisions and separate approval
 
 ## Protected Systems
 
@@ -137,6 +139,7 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 | --- | --- |
 | 9b07585 | feat(economy): complete phase 3 RPG and staging hardening |
 | 02fcac317fb6d6856fc8a1f6ee27d6cba3661f0d | feat(economy): complete phase 4 eternal marketplace |
+| 7ca5e70 | feat(docs): add living PRD and AI coder handoff automation |
 
 ## Migrations And Checksums
 
@@ -504,6 +507,132 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 - **saleLifecycle:** PENDING, COMMITTED, REVIEW_REQUIRED, VOID; only committed sales have immutable buyer/seller receipts.
 - **userStates:** Missing is ACTIVE; RESTRICTED limits new marketplace mutation; FROZEN requires staff-audited return.
 
+## Phase 5 Casino Planning
+
+- **approvedGames:**
+  - Blackjack
+  - Coinflip
+  - Rock-paper-scissors
+  - Slots
+  - Number guessing
+  - Gacha
+  - Loot boxes
+- **approvedTargets:**
+  - **Blackjack:** 97.5% RTP
+  - **Coinflip:** 97% RTP
+  - **Number guessing:** 95% RTP
+  - **Rock-paper-scissors:** 96.7% RTP
+  - **Slots:** 95% RTP
+- **bankroll:**
+  - **burnMechanism:** Use the existing ECY_BURN system account; do not create another burn account.
+  - **excessDistribution:** 60% treasury, 20% locked reserve, 20% burn
+  - **lossDestination:** ECY_CASINO
+  - **silentMinting:** false
+- **betRangeEcy:**
+  - **maximum:** 500000
+  - **minimum:** 1000
+- **currency:** ECY
+- **eternalOptionsPhase:** Phase 8
+- **existingCasinoObservations:**
+  -
+    - **evidencePaths:**
+      - cogs/rpg.py
+      - w2e_views.py
+    - **game:** Blackjack
+    - **observation:** Slash /blackjack bet and prefix w!blackjack <bet> use legacy coins, pseudo-scores, and a replay view.
+    - **verificationStatus:** repository_observed
+  -
+    - **evidencePaths:**
+      - cogs/rpg.py
+      - w2e_views.py
+    - **game:** Slots
+    - **observation:** Slash /slot bet and prefix w!slot <bet> use legacy coins, three reels, and a legacy payout table.
+    - **verificationStatus:** repository_observed
+  -
+    - **evidencePaths:**
+      - cogs/rpg.py
+    - **game:** Coinflip
+    - **observation:** Slash /cf tebakan bet and prefix w!cf use legacy coins and a two-times gross payout.
+    - **verificationStatus:** repository_observed
+  -
+    - **evidencePaths:**
+      - cogs/rpg.py
+    - **game:** Rock-paper-scissors
+    - **observation:** Slash /rps pilihan bet and prefix w!rps use legacy coins, refund draws, and pay two-times gross on wins.
+    - **verificationStatus:** repository_observed
+  -
+    - **evidencePaths:**
+      - cogs/rpg.py
+    - **game:** Number guessing
+    - **observation:** Slash /tebak tebakan and prefix w!tebak have no stake and pay a fixed legacy reward.
+    - **verificationStatus:** repository_observed
+  -
+    - **evidencePaths:**
+      - cogs/rpg.py
+      - w2e_views.py
+    - **game:** Gacha
+    - **observation:** Slash /gacha and prefix w!gacha charge a fixed legacy cost and return a cosmetic result.
+    - **verificationStatus:** repository_observed
+  -
+    - **evidencePaths:**
+      - cogs/rpg.py
+      - w2e_views.py
+    - **game:** Loot box
+    - **observation:** Slash /box and prefix w!box charge a fixed legacy cost and return legacy coin rewards.
+    - **verificationStatus:** repository_observed
+  -
+    - **evidencePaths:**
+      - cogs/rpg.py
+      - core.py
+      - w2e_views.py
+      - economy/database.py
+    - **game:** Shared legacy behavior
+    - **observation:** Current games use legacy wallet helpers, users.json statistics, general-purpose random, and non-persistent replay views; no Casino-specific durable session, ledger, or recovery schema is present.
+    - **verificationStatus:** repository_observed
+  -
+    - **evidencePaths:**
+      - economy/constants.py
+      - economy/treasury.py
+    - **game:** ECY burn
+    - **observation:** ECY_BURN already exists as the authoritative ECY BURN system account and is included in supply reporting.
+    - **verificationStatus:** repository_observed
+- **implementationStatus:** not_started
+- **migrationExists:** false
+- **ownerDecisions:**
+  - Define whether the 2% Casino Bankroll cap applies to gross payout, net player profit, or total maximum reserved liability.
+  - Define how the 2% cap applies to Blackjack Double and Split.
+  - Approve Blackjack deck, shuffle, natural payout, soft-17, Split, Double, surrender, insurance, and timeout rules.
+  - Approve Slots weights, paylines, and payout table.
+  - Approve the Coinflip mechanism required for 97% RTP.
+  - Approve the Rock-paper-scissors payout and draw policy required for 96.7% RTP.
+  - Approve Number-guessing range, stake, and payout.
+  - Approve Gacha and Loot-box stakes, rewards, probabilities, ownership effects, expected value, and RTP.
+  - Approve cooldowns, active-session limits, abandoned-session timeout, and public or ephemeral result behavior.
+  - Approve legacy statistic migration, High Roller achievement behavior, and Lucky Charm compatibility.
+  - Define active-member bankroll sizing, exact production seed, adjustment authorization, excess-distribution authorization and schedule, and retained safety threshold.
+  - Approve ambiguous or expired-session refund policy.
+  - Approve simulation rounds, seeds, wager distributions, Blackjack strategy, confidence level, tolerance, and failure threshold.
+  - Approve migration version 500 and feature flag ECONOMY_PHASE5_ENABLED before implementation.
+- **planningDocument:** docs/PHASE5_CASINO_PRD.md
+- **productionEnabled:** false
+- **productionMigrated:** false
+- **productionStatus:** not_approved
+- **proposedFeatureFlag:** ECONOMY_PHASE5_ENABLED
+- **proposedMigrationVersion:** 500
+- **proposedTables:**
+  - CasinoSession
+  - CasinoSessionAction
+  - CasinoSettlement
+  - CasinoBankrollReservation
+  - CasinoBankrollDistribution
+  - CasinoNotificationOutbox
+  - CasinoRecoveryReview
+- **roadmapPhase:** Phase 5
+- **runtimeFeatureFlagExists:** false
+- **scope:** Casino
+- **status:** planning
+- **winnerTax:** none
+
 ## Module Ownership
 
 - **cogs:**
@@ -520,6 +649,7 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - **economy/phase4 schema.py:** Marketplace schema
 - **livingPrd:**
   - **docs/AI CODER HANDOFF.md:** generated onboarding document
+  - **docs/PHASE5 CASINO PRD.md:** approved Phase 5 Casino planning document
   - **docs/project state.json:** authoritative structured state
   - **scripts/generate ai handoff.py:** pure renderer and generator
   - **scripts/update ai handoff.py:** generator/verifier wrapper
@@ -529,7 +659,7 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - **main.py:** entry point and cog setup
   - **runtime config.py:** database path, staging guards, feature flags
 - **tests:**
-  - **tests/test ai handoff tools.py:** Living PRD deterministic/static tooling
+  - **tests/test ai handoff tools.py:** Living PRD deterministic/static tooling and Phase 5 planning guards
   - **tests/test economy *.py:** Phase 1-3 economy/RPG
   - **tests/test marketplace*.py:** Phase 4 Marketplace
 
@@ -590,14 +720,14 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 
 - Production cutover requires separate explicit approval.
 - Production flags must remain disabled.
-- Phase 5 requires separate scope and approval.
+- Phase 5 owner decisions in docs/PHASE5_CASINO_PRD.md must be approved before implementation, including bankroll-cap semantics, game rules, payout models, simulation criteria, seed authority, and recovery policy.
 
 ## Pending Work
 
 - Connected Discord staging validation
 - Dashboard production build
 - Production rollout approval
-- Phase 5 planning only after separate approval
+- Phase 5 Casino implementation after all owner decisions and a separate implementation approval
 
 ## AI Coder Onboarding
 
@@ -652,7 +782,8 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 | --- | --- | --- |
 | 9b07585 | 2026-07-13 | Phase 3 RPG Completed |
 | 02fcac317fb6d6856fc8a1f6ee27d6cba3661f0d | 2026-07-13 | Phase 4 Eternal Marketplace Completed |
-| PENDING | 2026-07-14 | Living PRD Automation Implemented |
+| 7ca5e70 | 2026-07-14 | Living PRD Automation Implemented |
+| PENDING | 2026-07-14 | Phase 5 Casino PRD And Planning |
 
 ## Current Handoff Summary
 
@@ -663,4 +794,5 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - Phase 3 RPG
   - Phase 4 Eternal Marketplace
   - Living PRD automation
-- **current:** All economy flags default false; production not migrated; staging and dashboard production remain pending; Phase 5 not started.
+  - Phase 5 Casino planning document
+- **current:** Phase 5 Casino is planning only and blocked on owner decisions. Implementation is not started; no Phase 5 flag or migration exists; production remains unapproved, unmigrated, and disabled.
