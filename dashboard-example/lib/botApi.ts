@@ -168,6 +168,15 @@ export interface CryptoV1Status {
   market?: MarketData & { available?: boolean; currency?: "ECY"; global?: boolean };
 }
 
+export interface MiningV1Status {
+  enabled: boolean;
+  schema_ready: boolean;
+  ready?: boolean;
+  code?: string;
+  level?: number;
+  slotLimit?: number;
+}
+
 export interface LeaderboardEntry {
   rank: number;
   id: string;

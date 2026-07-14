@@ -19,6 +19,9 @@ ECONOMY_PHASE5_ENABLED = os.getenv("ECONOMY_PHASE5_ENABLED", "false").strip().lo
 ECONOMY_PHASE6_ENABLED = os.getenv("ECONOMY_PHASE6_ENABLED", "false").strip().lower() in {
     "1", "true", "yes", "on"
 }
+ECONOMY_PHASE7_ENABLED = os.getenv("ECONOMY_PHASE7_ENABLED", "false").strip().lower() in {
+    "1", "true", "yes", "on"
+}
 ECONOMY_BACKUP_DIR = os.getenv("ECONOMY_BACKUP_DIR", "./backups/economy")
 ECONOMY_REPORT_DIR = os.getenv("ECONOMY_REPORT_DIR", "./reports/economy")
 ECONOMY_MAX_AMOUNT = int(os.getenv("ECONOMY_MAX_AMOUNT", "9000000000000000"))
@@ -29,6 +32,7 @@ ECONOMY_PHASE3_MIGRATION_VERSION = 300
 ECONOMY_PHASE4_MIGRATION_VERSION = 400
 ECONOMY_PHASE5_MIGRATION_VERSION = 500
 ECONOMY_PHASE6_MIGRATION_VERSION = 600
+ECONOMY_PHASE7_MIGRATION_VERSION = 700
 LEGACY_SCALE = 1_000
 ASSET_UNIT_SCALE = 100_000_000
 
@@ -115,6 +119,14 @@ CRYPTO_ASSETS = {
     "TRST": ("TrustCoin", 14_000, 90, "HIGH"),
     "LUNA": ("Lunniera", 13_000, 120, "EXTREME"),
 }
+
+MINING_RIG_CATALOG = {
+    "rig_basic": ("Basic Rig", 500_000, 10_000, 2_500),
+    "rig_advanced": ("Advanced Rig", 3_000_000, 60_000, 15_000),
+    "rig_elite": ("Elite Rig", 15_000_000, 300_000, 75_000),
+    "rig_eternal": ("Eternal Rig", 75_000_000, 1_500_000, 375_000),
+}
+MINING_AUTH_CLASSES = ("MINING_CONTROL", "MINING_RECOVERY")
 
 SEED_ENVIRONMENTS = {
     "ETM_GENERAL": "ECONOMY_SEED_ETM_GENERAL",

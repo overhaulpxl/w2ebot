@@ -51,6 +51,22 @@ async def apply_phase3_staging(target_db, *, production_db, seed=True):
         await db.execute("BEGIN IMMEDIATE")
         try:
             digest = await seed_catalog(db) if seed else catalog_hash()
+            async with db.execute(
+                "SELECT checksum,status FROM EconomySchemaMigration WHERE version=?",
+                (ECONOMY_PHASE3_MIGRATION_VERSION,),
+            ) as cursor:
+                marker = await cursor.fetchone()
+            now = utc_iso()
+            if marker and tuple(marker) != (digest, "COMPLETED"):
+                raise ValueError("Checksum migration Phase 3 tidak cocok.")
+            if not marker:
+                await db.execute(
+                    "INSERT INTO EconomySchemaMigration "
+                    "(version,name,checksum,status,startedAt,completedAt,detailsJson) "
+                    "VALUES (?,?,?,'COMPLETED',?,?,?)",
+                    (ECONOMY_PHASE3_MIGRATION_VERSION, "phase3-rpg", digest, now, now,
+                     json.dumps({"catalogVersion": "rpg-v1.0.0"}, separators=(",", ":"))),
+                )
             await db.commit()
         except Exception:
             await db.rollback()

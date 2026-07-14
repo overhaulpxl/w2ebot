@@ -63,6 +63,7 @@ def get_help_embed(category: str, guild=None) -> discord.Embed:
             (f"`{BOT_PREFIX}inventory`", "Lihat isi inventory kamu."),
             (f"`{BOT_PREFIX}sell <item>`", "Jual item dengan harga 50%."),
             (f"`{BOT_PREFIX}buyrig <tier> <koin>`", "Beli mining rig untuk koin tertentu."),
+            (f"`{BOT_PREFIX}mining <aksi>`", "Mining V1: status, katalog, rig, maintenance, target, klaim, dan riwayat."),
             (f"`{BOT_PREFIX}moverig <tier> <dari> <ke>`", "Pindahkan rig ke koin lain."),
             (f"`{BOT_PREFIX}miner`", "Lihat status mining rig kamu."),
             (f"`{BOT_PREFIX}market`", "Lihat harga kripto saat ini."),

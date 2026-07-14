@@ -30,7 +30,7 @@ REQUIRED_TOP_LEVEL = {
     "dealMiddlemanTrustedVouch", "interactionRecovery", "paymentConfiguration",
     "economyDesign", "phase1", "phase2", "phase3Rpg", "rpgBalance",
     "phase4Marketplace", "marketplaceHardening", "moduleOwnership",
-    "marketplaceLifecycleDefinitions", "phase5Casino", "phase6Crypto",
+    "marketplaceLifecycleDefinitions", "phase5Casino", "phase6Crypto", "phase7Mining",
     "verificationHistory", "stagingStatus", "dashboardStatus", "productionStatus",
     "knownLimitations", "blockers", "pendingWork", "aiCoderOnboarding",
     "livingPrdWorkflow", "taskCompletionTemplate", "definitionOfDone",
@@ -44,7 +44,7 @@ FORBIDDEN_PREFIXES = {
 FLAG_NAMES = (
     "ECONOMY_V1_ENABLED", "ECONOMY_PHASE2_ENABLED",
     "ECONOMY_PHASE3_ENABLED", "ECONOMY_PHASE4_ENABLED", "ECONOMY_PHASE5_ENABLED",
-    "ECONOMY_PHASE6_ENABLED",
+    "ECONOMY_PHASE6_ENABLED", "ECONOMY_PHASE7_ENABLED",
 )
 
 
@@ -128,6 +128,11 @@ def _extract_phase_checksums(root: Path) -> dict[int, str]:
     phase6_sql = _literal(phase6["PHASE6_TABLE_SQL"])
     phase6_indexes = _literal(phase6["PHASE6_INDEX_SQL"])
     phase6_triggers = _literal(phase6["PHASE6_TRIGGER_SQL"])
+    phase7 = _assignment_map(_parse_source(root / "economy" / "phase7_schema.py"))
+    phase7_name = _literal(phase7["PHASE7_MIGRATION_NAME"])
+    phase7_sql = _literal(phase7["PHASE7_TABLE_SQL"])
+    phase7_indexes = _literal(phase7["PHASE7_INDEX_SQL"])
+    phase7_triggers = _literal(phase7["PHASE7_TRIGGER_SQL"])
     canonical = lambda value: " ".join(str(value).split())
     return {
         301: hashlib.sha256((phase3_sql + "\n" + "\n".join(phase3_triggers)).encode("utf-8")).hexdigest(),
@@ -139,6 +144,10 @@ def _extract_phase_checksums(root: Path) -> dict[int, str]:
         600: hashlib.sha256(
             (phase6_name + "\n" + canonical(phase6_sql) + "\n" +
              "\n".join(canonical(value) for value in phase6_indexes + phase6_triggers)).encode("utf-8")
+        ).hexdigest(),
+        700: hashlib.sha256(
+            (phase7_name + "\n" + canonical(phase7_sql) + "\n" +
+             "\n".join(canonical(value) for value in phase7_indexes + phase7_triggers)).encode("utf-8")
         ).hexdigest(),
     }
 
@@ -520,6 +529,52 @@ def _phase6_issues(root: Path, state: dict, phase6_status: str | None) -> list[s
     return issues
 
 
+def _phase7_issues(root: Path, state: dict, phase7_status: str | None) -> list[str]:
+    issues: list[str] = []
+    phase7 = _claim_value(state.get("phase7Mining", {}))
+    if phase7_status != "implemented_staging_ready" or phase7.get("status") != phase7_status:
+        issues.append("Phase 7 status harus implemented_staging_ready")
+    if phase7.get("implementationStatus") != "implemented":
+        issues.append("Phase 7 implementation status tidak valid")
+    if (phase7.get("productionStatus") != "not_approved" or
+            phase7.get("productionMigrated") is not False or
+            phase7.get("productionSeeded") is not False or
+            phase7.get("productionEnabled") is not False):
+        issues.append("Phase 7 production guard tidak valid")
+    if phase7.get("featureFlag") != {"name": "ECONOMY_PHASE7_ENABLED", "default": False}:
+        issues.append("Phase 7 feature flag state tidak valid")
+    migration = phase7.get("migration", {})
+    if (migration.get("version") != 700 or migration.get("name") != "phase7-mining" or
+            migration.get("startupAutomatic") is not False or
+            not CHECKSUM.fullmatch(str(migration.get("checksum", "")))):
+        issues.append("Phase 7 migration identity tidak valid")
+    dependencies = phase7.get("dependencies", {})
+    if (dependencies.get("phase3ProfileCapability") is not True or
+            dependencies.get("phase3RuntimeFlagRequired") is not False or
+            dependencies.get("existingProfileRequired") is not True):
+        issues.append("Phase 7 profile capability contract tidak valid")
+    accounting = phase7.get("accounting", {})
+    if (accounting.get("claimUsesEconomyTransaction") is not False or
+            accounting.get("holdingCostBasisChangedByClaim") is not False):
+        issues.append("Phase 7 asset-only claim contract tidak valid")
+    simulation = phase7.get("simulation", {})
+    if (simulation.get("completed") is not True or simulation.get("passed") is not True or
+            simulation.get("seeds") != 20 or simulation.get("days") != 90 or
+            simulation.get("scenarioCount") != 2240 or simulation.get("overflowAttempts") != 0 or
+            simulation.get("duplicateOutput") != 0 or simulation.get("durabilityViolations") != 0 or
+            simulation.get("invariantFailures") != 0 or
+            not CHECKSUM.fullmatch(str(simulation.get("artifactSha256", "")))):
+        issues.append("Phase 7 simulation result tidak valid")
+    pending = _claim_value(state.get("pendingWork", []))
+    if not isinstance(pending, list) or not any("phase 7" in str(item).lower() for item in pending):
+        issues.append("Phase 7 connected staging tidak tercatat sebagai pending work")
+    if not (root / "docs" / "PHASE7_MINING_PRD.md").is_file():
+        issues.append("Phase 7 PRD tidak ditemukan")
+    if not (root / "scripts" / "migrate_economy_phase7.py").is_file():
+        issues.append("Phase 7 migration CLI tidak ditemukan")
+    return issues
+
+
 def verify(root: Path = PROJECT_ROOT) -> list[str]:
     root = root.resolve()
     state_path = root / "docs" / "project_state.json"
@@ -589,6 +644,8 @@ def verify(root: Path = PROJECT_ROOT) -> list[str]:
         catalogs = {row.get("version"): row.get("checksum") for row in _claim_value(state.get("catalogs", []))}
         if catalogs.get(catalog_version) != catalog_checksum:
             issues.append("catalog checksum tidak cocok source")
+        if verified_migrations.get(300) != catalog_checksum:
+            issues.append("checksum migrasi 300 tidak cocok catalog source")
         issues.extend(_static_command_issues(root, state))
     except (OSError, KeyError, SyntaxError, ValueError) as exc:
         issues.append(f"static inspection gagal: {exc}")
@@ -604,6 +661,8 @@ def verify(root: Path = PROJECT_ROOT) -> list[str]:
     issues.extend(_phase5_planning_issues(root, state, phase5.get("status")))
     phase6 = next((row for row in phases if isinstance(row, dict) and row.get("id") == "phase6"), {})
     issues.extend(_phase6_issues(root, state, phase6.get("status")))
+    phase7 = next((row for row in phases if isinstance(row, dict) and row.get("id") == "phase7"), {})
+    issues.extend(_phase7_issues(root, state, phase7.get("status")))
     issues.extend(_secret_issues(raw_state, "project_state.json"))
     issues.extend(_private_content_issues(raw_state, "project_state.json"))
     if not handoff_path.exists():

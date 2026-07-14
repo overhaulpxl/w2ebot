@@ -24,9 +24,9 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 
 - **lastKnownBranch:** codex/seller-payout-hotfixes
 - **observedBranch:** codex/seller-payout-hotfixes
-- **observedHead:** 25ea3bb318e292044fa4b230ccbd08bf728efb0e
+- **observedHead:** a7da7f1f243a045c88f1d304c2b6be4e865c23cf
 - **remotePushAfterPhase4:** false
-- **workingTreeAtSeed:** clean before Phase 6 implementation
+- **workingTreeAtSeed:** clean before Phase 7 implementation
 
 ## Project Progress
 
@@ -38,6 +38,7 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 | phase4 | Eternal Marketplace | complete_and_committed |
 | phase5 | Casino | implemented_staging_ready |
 | phase6 | Crypto | implemented_staging_ready |
+| phase7 | Mining | implemented_staging_ready |
 
 ## Capabilities By Phase
 
@@ -91,6 +92,16 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - restart recovery
   - migration 600
   - deterministic market simulation passed
+- **phase7:**
+  - ECY rig purchases and maintenance
+  - profile-level slots
+  - seven-day price accrual
+  - overflow-safe fractional carry
+  - asset-only claims
+  - legacy rig quarantine
+  - restart recovery
+  - migration 700
+  - deterministic Mining simulation passed
 
 ## Protected Systems
 
@@ -115,6 +126,7 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 - **ECONOMY PHASE4 ENABLED:** false
 - **ECONOMY PHASE5 ENABLED:** false
 - **ECONOMY PHASE6 ENABLED:** false
+- **ECONOMY PHASE7 ENABLED:** false
 - **ECONOMY V1 ENABLED:** false
 
 ## Command Ownership
@@ -160,6 +172,8 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 | 02fcac317fb6d6856fc8a1f6ee27d6cba3661f0d | feat(economy): complete phase 4 eternal marketplace |
 | 7ca5e70 | feat(docs): add living PRD and AI coder handoff automation |
 | 8e924d4 | feat(docs): add phase 5 casino PRD and guarded planning state |
+| 25ea3bb318e292044fa4b230ccbd08bf728efb0e | feat(economy): implement phase 5 casino |
+| a7da7f1f243a045c88f1d304c2b6be4e865c23cf | feat(economy): implement phase 6 crypto |
 
 ## Migrations And Checksums
 
@@ -174,11 +188,11 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - **verificationStatus:** last_known_requires_verification
   - **version:** 200
 -
-  - **checksum:** -
+  - **checksum:** ba8c15135f68a8d78f3eccb550721e86f99d06b3a37b77906eb9ad9f4fcc729b
   - **evidencePaths:**
-    - economy/constants.py
     - economy/phase3_migrations.py
-  - **name:** phase3 base migration
+    - economy/catalog.py
+  - **name:** phase3-rpg
   - **verificationStatus:** verified
   - **version:** 300
 -
@@ -209,6 +223,13 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - **name:** phase6-crypto
   - **verificationStatus:** verified
   - **version:** 600
+-
+  - **checksum:** 5ab02d518818b7f3449d8008ed2712d9ccd6ba684bf237df6d080870563742e3
+  - **evidencePaths:**
+    - economy/phase7_schema.py
+  - **name:** phase7-mining
+  - **verificationStatus:** verified
+  - **version:** 700
 
 ## Catalog Versions And Checksums
 
@@ -1021,29 +1042,148 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - **pyCompile:** passed
   - **temporaryMainImport:** passed
 
+## Phase 7 Mining
+
+- **accounting:**
+  - **claimAuthority:**
+    - MiningClaim
+    - MiningClaimAsset
+    - MiningAssetLedger
+  - **claimUsesEconomyTransaction:** false
+  - **holdingCostBasisChangedByClaim:** false
+  - **purchaseAndMaintenanceAllocation:**
+    - **burnRemainderPercent:** 10
+    - **miningPercent:** 80
+    - **reservePercent:** 10
+- **accrual:**
+  - **assetUnitScale:** 100000000
+  - **durabilityBps:** 10000
+  - **fractionalCarryScale:** 1000000000
+  - **maximumOfflineSeconds:** 86400
+  - **priceWindowDays:** 7
+  - **pythonBigIntegerArithmetic:** true
+  - **sqliteIntermediateMultiplication:** false
+- **authorizationClasses:**
+  - MINING_CONTROL
+  - MINING_RECOVERY
+- **commands:**
+  - /mining
+  - w!mining
+  - /buyrig
+  - w!buyrig
+  - /miner
+  - w!miner
+  - /moverig
+  - w!moverig
+- **connectedDiscordStaging:** pending
+- **dependencies:**
+  - **economyV1:** true
+  - **existingProfileRequired:** true
+  - **phase2:** true
+  - **phase3ProfileCapability:** true
+  - **phase3RuntimeFlagRequired:** false
+  - **phase6Capability:** true
+- **featureFlag:**
+  - **default:** false
+  - **name:** ECONOMY_PHASE7_ENABLED
+- **implementationStatus:** implemented
+- **legacyMigration:**
+  - **cryptoBalancesRecredited:** false
+  - **mappedTiers:**
+    - **1:** rig_basic
+    - **2:** rig_advanced
+    - **3:** rig_elite
+  - **sourceFilesMutated:** false
+  - **tier4Policy:** REVIEW_REQUIRED
+  - **unknownTierPolicy:** REVIEW_REQUIRED
+- **migration:**
+  - **checksum:** 5ab02d518818b7f3449d8008ed2712d9ccd6ba684bf237df6d080870563742e3
+  - **name:** phase7-mining
+  - **startupAutomatic:** false
+  - **version:** 700
+- **moduleOwnership:**
+  - **cogs/economy.py:** staff authorization and recovery
+  - **cogs/mining.py:** member command group
+  - **cogs/rpg.py:** legacy compatibility adapters
+  - **economy/mining.py:** atomic Mining services and overflow-safe accrual
+  - **economy/mining simulation.py:** deterministic acceptance simulation
+  - **economy/phase7 migrations.py:** staging migration and legacy quarantine
+  - **economy/phase7 recovery.py:** restart recovery
+  - **economy/phase7 schema.py:** migration 700 schema and capability
+- **productionEnabled:** false
+- **productionMigrated:** false
+- **productionSeeded:** false
+- **productionStatus:** not_approved
+- **profileSlots:**
+  - **10:** 1
+  - **25:** 2
+  - **45:** 3
+  - **70:** 4
+- **rigs:**
+  - **rig advanced:**
+    - **grossEquivalentPerDay:** 60000
+    - **maintenanceEcy:** 15000
+    - **purchaseEcy:** 3000000
+  - **rig basic:**
+    - **grossEquivalentPerDay:** 10000
+    - **maintenanceEcy:** 2500
+    - **purchaseEcy:** 500000
+  - **rig elite:**
+    - **grossEquivalentPerDay:** 300000
+    - **maintenanceEcy:** 75000
+    - **purchaseEcy:** 15000000
+  - **rig eternal:**
+    - **grossEquivalentPerDay:** 1500000
+    - **maintenanceEcy:** 375000
+    - **purchaseEcy:** 75000000
+- **scope:** Crypto asset Mining migrated to ECY-funded rigs with asset-only claims
+- **simulation:**
+  - **artifactSha256:** e7599dbf34beca0fffa777cbe3fab9c0d6b7fb77d0546e6f48646b464224b187
+  - **completed:** true
+  - **days:** 90
+  - **duplicateOutput:** 0
+  - **durabilityViolations:** 0
+  - **invariantFailures:** 0
+  - **maximumRoiDays:** 66.66666666666667
+  - **minimumRoiDays:** 66.66666666666667
+  - **overflowAttempts:** 0
+  - **passed:** true
+  - **scenarioCount:** 2240
+  - **seeds:** 20
+- **status:** implemented_staging_ready
+- **verificationResults:**
+  - **commandOwnership:** passed through static verifier
+  - **forbiddenAliases:** absent through static verifier
+  - **foreignKeyErrors:** 0
+  - **integrityCheck:** ok
+  - **livingPrdToolingTests:** 15 passed
+  - **marketplaceRegressionTests:** 64 passed
+  - **migration700SecondRun:** idempotent replay
+  - **migrationRestore:** passed
+  - **miningFocusedTests:** 25 passed
+  - **phase1To7EconomyTests:** 171 passed
+  - **pyCompile:** passed
+  - **temporaryMainImport:** passed
+
 ## Module Ownership
 
 - **cogs:**
   - **cogs/deal.py:** Deal, Middleman, payment, dispute, archive
-  - **cogs/economy.py:** Economy and Casino staff adapters
+  - **cogs/economy.py:** Economy staff adapters
   - **cogs/marketplace.py:** Marketplace commands
-  - **cogs/rpg.py:** legacy RPG plus flag-gated Casino game routing
+  - **cogs/mining.py:** Phase 7 member commands
+  - **cogs/rpg.py:** legacy RPG and flag-gated compatibility routing
   - **cogs/rpg phase3.py:** Phase 3 interactions
 - **economy:**
-  - **economy/casino.py:** Casino transactions, bankroll, authorization, and recovery resolution
-  - **economy/casino games.py:** pure integer Casino game engines
-  - **economy/casino simulation.py:** deterministic D18 simulation
-  - **economy/catalog.py:** RPG catalog
-  - **economy/ledger.py:** atomic transactions and ledger
-  - **economy/marketplace.py:** Marketplace services
-  - **economy/phase3 schema.py:** Phase 3 schema hardening
-  - **economy/phase4 schema.py:** Marketplace schema
-  - **economy/phase5 migrations.py:** staging-only migration and reconciliation
-  - **economy/phase5 recovery.py:** restart recovery and outbox
-  - **economy/phase5 schema.py:** canonical migration 500 schema and checksum
+  - **economy/ledger.py:** atomic currency transactions and ledger
+  - **economy/mining.py:** Mining settlement, asset claims, and accrual
+  - **economy/mining simulation.py:** deterministic Mining simulation
+  - **economy/phase7 migrations.py:** staging-only migration and reconciliation
+  - **economy/phase7 recovery.py:** restart recovery
+  - **economy/phase7 schema.py:** canonical migration 700 schema and checksum
 - **livingPrd:**
   - **docs/AI CODER HANDOFF.md:** generated onboarding document
-  - **docs/PHASE5 CASINO PRD.md:** approved Phase 5 Casino specification and implementation status
+  - **docs/PHASE7 MINING PRD.md:** Phase 7 Mining specification and implementation status
   - **docs/project state.json:** authoritative structured state
   - **scripts/generate ai handoff.py:** pure renderer and generator
   - **scripts/update ai handoff.py:** generator/verifier wrapper
@@ -1053,27 +1193,28 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - **main.py:** entry point and cog setup
   - **runtime config.py:** database path, staging guards, feature flags
 - **tests:**
-  - **tests/test ai handoff tools.py:** Living PRD deterministic/static tooling and Phase 5 guards
-  - **tests/test economy *.py:** Phase 1-5 economy/RPG/Casino
-  - **tests/test economy casino*.py:** Phase 5 engine, migration, transaction, recovery, command, and simulation
+  - **tests/test ai handoff tools.py:** Living PRD deterministic/static tooling
+  - **tests/test economy *.py:** Phase 1-7 economy/RPG/Casino/Crypto/Mining
+  - **tests/test economy mining*.py:** Phase 7 engine, migration, concurrency, recovery, command, and simulation
   - **tests/test marketplace*.py:** Phase 4 Marketplace
 
 ## Verification History
 
 - **commandOwnership:** passed through static verifier
-- **d18Simulation:** complete full-volume run passed; Blackjack RTP 0.9748809836156533, one seed outside acceptance, zero invariant failures
 - **forbiddenAliases:** absent through static verifier
 - **gitDiffCheck:** passed
 - **historicalBaseline:**
   - **marketplaceTests:** 64 passed
   - **phase1To3Tests:** 87 passed
   - **total:** 151 passed
-- **livingPrdToolingTests:** 13 passed
+- **livingPrdToolingTests:** 15 passed
 - **mainImportTemporaryDatabase:** passed
 - **marketplaceTests:** 64 passed
-- **migration500SecondRun:** idempotent replay
-- **phase1To5EconomyTests:** 120 effective passes: 119 passed in isolated no-Git copy and the single Git-ignore test passed separately in the repository
-- **phase5NaturalPayoutAffectedTests:** 8 passed
+- **migration700Restore:** passed
+- **migration700SecondRun:** idempotent replay
+- **miningFocusedTests:** 25 passed
+- **phase1To7EconomyTests:** 171 passed
+- **phase7Simulation:** 20 seeds x 90 days, 2240 scenarios, ROI 66.66666666666667 days, zero invariant failures
 - **pyCompile:** passed
 - **sqliteForeignKeyErrors:** 0
 - **sqliteIntegrityCheck:** ok
@@ -1082,18 +1223,20 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 
 - **liveDiscord:** pending
 - **phase5Readiness:** ready_for_connected_discord_staging
+- **phase6Readiness:** ready_for_connected_discord_staging
+- **phase7Readiness:** ready_for_connected_discord_staging
 - **requirements:**
   - dedicated staging bot
   - non-production SQLite copy
   - dedicated staging guild
-  - all required flags enabled only for staging
+  - required flags enabled only for staging
   - manual command and restart smoke test
 - **scripts:**
-  - scripts/migrate_economy_phase5.py
-  - scripts/setup_phase5_staging.py
-  - scripts/run_phase5_staging.py
-  - scripts/run_phase5_staging.ps1
-  - scripts/simulate_phase5_casino.py
+  - scripts/migrate_economy_phase7.py
+  - scripts/setup_phase7_staging.py
+  - scripts/run_phase7_staging.py
+  - scripts/run_phase7_staging.ps1
+  - scripts/simulate_phase7_mining.py
 
 ## Dashboard
 
@@ -1115,22 +1258,21 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 
 ## Known Limitations
 
-- Connected Discord staging remains pending for Phase 5 and Phase 6.
+- Connected Discord staging remains pending for Phase 5, Phase 6, and Phase 7.
 - Dashboard production build remains pending.
-- Legacy Mining continues writing isolated legacy Crypto holdings until Phase 7 integration is approved.
 - Deal runtime claims are retained as last-known until a separately scoped audit verifies them.
 
 ## Blockers
 
 - Production cutover requires separate explicit approval.
-- Production migrations 500 and 600 have not occurred and all production flags must remain disabled.
-- Phase 6 production cutover awaits Phase 7 integration for ongoing legacy Mining output.
+- Production migrations 500, 600, and 700 have not occurred and all production flags must remain disabled.
+- Connected Discord staging has not been executed.
 
 ## Pending Work
 
 - Phase 5 connected Discord staging validation
 - Phase 6 connected Discord staging validation
-- Phase 7 legacy Mining integration
+- Phase 7 connected Discord staging validation
 - Dashboard production build
 - Production rollout approval
 
@@ -1188,12 +1330,9 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 | 9b07585 | 2026-07-13 | Phase 3 RPG Completed |
 | 02fcac317fb6d6856fc8a1f6ee27d6cba3661f0d | 2026-07-13 | Phase 4 Eternal Marketplace Completed |
 | 7ca5e70 | 2026-07-14 | Living PRD Automation Implemented |
-| 8e924d4 | 2026-07-14 | Phase 5 Casino PRD And Planning |
-| PENDING | 2026-07-14 | Phase 5 Casino Owner Decision Recording |
-| PENDING | 2026-07-14 | Phase 5 Casino Implemented; D02 Staging Blocker Recorded |
-| PENDING | 2026-07-14 | Phase 5 Blackjack D02 Revision Candidate Failed |
-| PENDING | 2026-07-14 | Phase 5 Blackjack Final D02 Candidate Failed |
-| PENDING | 2026-07-14 | Phase 5 Blackjack Natural-Payout D02 Passed |
+| 25ea3bb318e292044fa4b230ccbd08bf728efb0e | 2026-07-14 | Phase 5 Casino Implemented |
+| a7da7f1f243a045c88f1d304c2b6be4e865c23cf | 2026-07-14 | Phase 6 Crypto Implemented |
+| PENDING | 2026-07-14 | Phase 7 Mining Implemented |
 
 ## Current Handoff Summary
 
@@ -1205,5 +1344,6 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - Phase 4 Eternal Marketplace
   - Living PRD automation
   - Phase 5 Casino and D02 simulation
-  - Phase 6 Crypto runtime, migration, recovery, commands, and deterministic market simulation
-- **current:** Phase 6 Crypto is implemented with all defaults false and production unmigrated and unseeded. Migration 600 and the 864000-tick market simulation pass. Connected Discord staging remains pending, and production cutover awaits Phase 7 Mining integration plus separate approval.
+  - Phase 6 Crypto
+  - Phase 7 Mining runtime, migration, recovery, commands, and deterministic simulation
+- **current:** Phase 7 Mining is implemented with all defaults false and production unmigrated and unseeded. Migration 700 and the 2240-scenario Mining simulation pass. Connected Discord staging remains pending and production cutover requires separate approval.

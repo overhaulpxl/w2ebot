@@ -546,3 +546,12 @@ migration 600, kesiapan seed `ECY_MARKET`, Market Reserve guild utama, dan
 snapshot harga. Tidak ada route API mutasi Crypto. Default
 `ECONOMY_PHASE6_ENABLED=false`; migration `600 / phase6-crypto` tidak berjalan
 otomatis saat startup.
+
+## Economy V1 Phase 7 Mining
+
+`GET /api/economy/v1-mining` adalah endpoint read-only untuk capability dan
+status Mining guild utama. Tidak ada endpoint API mutasi Mining. Pembelian,
+maintenance, target, klaim, authorization, pause, dan recovery hanya melalui
+command Discord dan shared service layer. Default
+`ECONOMY_PHASE7_ENABLED=false`; migration `700 / phase7-mining` eksplisit,
+staging-only, dan tidak berjalan otomatis saat startup.

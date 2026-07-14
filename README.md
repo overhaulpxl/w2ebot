@@ -166,6 +166,15 @@ serta seed Market Reserve staging wajib tersedia sebelum command V1 dapat dipaka
 Startup tidak pernah menjalankan migration atau seed. Mining dan Binomo tetap
 memakai storage legacy.
 
+## Economy V1 Phase 7 Mining (Disabled)
+
+Mining V1 memakai ECY untuk pembelian dan maintenance, menghasilkan unit aset
+Crypto V1, dan menyimpan accrual, carry pecahan, klaim, serta asset ledger secara
+atomik. Default `ECONOMY_PHASE7_ENABLED=false`; migration eksplisit
+`700 / phase7-mining` memerlukan schema profil RPG Phase 3 dan Crypto Phase 6.
+Startup tidak menjalankan migration atau seed. Selama flag false, `/buyrig`,
+`/miner`, `/moverig`, dan prefix kompatibilitas tetap memakai perilaku legacy.
+
 ---
 
 ## Quick Start

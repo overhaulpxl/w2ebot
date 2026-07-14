@@ -14,6 +14,7 @@ from economy.constants import (
     ECONOMY_PHASE4_ENABLED,
     ECONOMY_PHASE5_ENABLED,
     ECONOMY_PHASE6_ENABLED,
+    ECONOMY_PHASE7_ENABLED,
     ECONOMY_V1_ENABLED,
     EMERGENCY_FEATURES,
     configured_large_threshold,
@@ -49,6 +50,12 @@ from economy.crypto_market import run_market_tick
 from economy.phase6_recovery import (
     claim_crypto_news_outbox, finalize_crypto_news_outbox, recover_phase6_runtime,
 )
+from economy.mining import (
+    is_mining_authorized, list_mining_authorizations, mining_readiness,
+    set_mining_authorization,
+)
+from economy.phase7_recovery import recover_phase7
+from economy.constants import MINING_RIG_CATALOG
 
 
 logger = logging.getLogger(__name__)
@@ -276,6 +283,7 @@ def setup(tree, client):
     whitelist_group = app_commands.Group(name="whitelist", description="Whitelist mutasi ekonomi")
     casino_auth_group = app_commands.Group(name="casino-auth", description="Otorisasi least-privilege Casino")
     crypto_auth_group = app_commands.Group(name="crypto-auth", description="Otorisasi least-privilege Crypto")
+    mining_auth_group = app_commands.Group(name="mining-auth", description="Otorisasi least-privilege Mining")
 
     async def _is_owner(interaction):
         try:
@@ -289,6 +297,8 @@ def setup(tree, client):
     async def _can_control_feature(interaction, feature):
         if str(feature).lower() == "casino" and ECONOMY_PHASE5_ENABLED:
             return await is_casino_authorized(DB_PATH, interaction.guild_id, interaction.user.id, "CASINO_CONTROL")
+        if str(feature).lower() == "mining" and ECONOMY_PHASE7_ENABLED:
+            return await is_mining_authorized(DB_PATH, interaction.guild_id, interaction.user.id, "MINING_CONTROL")
         return await _can_control(interaction)
 
     async def _active_member_count(interaction):
@@ -387,6 +397,18 @@ def setup(tree, client):
             )
             await _reply(interaction, "Fitur `crypto` berhasil dijeda.")
             return
+        if str(feature).lower() == "mining" and ECONOMY_PHASE7_ENABLED:
+            if not await is_mining_authorized(
+                DB_PATH, interaction.guild_id, interaction.user.id, "MINING_CONTROL"
+            ):
+                await _reply(interaction, "Kamu tidak memiliki MINING_CONTROL.")
+                return
+            await set_feature_paused(
+                DB_PATH, guild_id=interaction.guild_id, feature="mining", paused=True,
+                actor_id=interaction.user.id, reason=reason,
+            )
+            await _reply(interaction, "Fitur `mining` berhasil dijeda.")
+            return
         if not await _can_control_feature(interaction, feature):
             await _reply(interaction, "Kamu tidak punya permission untuk mengubah emergency control.")
             return
@@ -407,6 +429,18 @@ def setup(tree, client):
                 paused=False, reason=reason,
             )
             await _reply(interaction, result.message)
+            return
+        if str(feature).lower() == "mining" and ECONOMY_PHASE7_ENABLED:
+            if not await is_mining_authorized(
+                DB_PATH, interaction.guild_id, interaction.user.id, "MINING_CONTROL"
+            ):
+                await _reply(interaction, "Kamu tidak memiliki MINING_CONTROL.")
+                return
+            await set_feature_paused(
+                DB_PATH, guild_id=interaction.guild_id, feature="mining", paused=False,
+                actor_id=interaction.user.id, reason=reason,
+            )
+            await _reply(interaction, "Fitur `mining` berhasil dilanjutkan.")
             return
         if str(feature).lower() == "crypto" and ECONOMY_PHASE6_ENABLED:
             if not await is_crypto_authorized(
@@ -446,6 +480,8 @@ def setup(tree, client):
             f"Economy Phase 3 enabled: **{'Ya' if ECONOMY_PHASE3_ENABLED else 'Tidak'}**",
             f"Economy Phase 4 enabled: **{'Ya' if ECONOMY_PHASE4_ENABLED else 'Tidak'}**",
             f"Economy Phase 5 enabled: **{'Ya' if ECONOMY_PHASE5_ENABLED else 'Tidak'}**",
+            f"Economy Phase 6 enabled: **{'Ya' if ECONOMY_PHASE6_ENABLED else 'Tidak'}**",
+            f"Economy Phase 7 enabled: **{'Ya' if ECONOMY_PHASE7_ENABLED else 'Tidak'}**",
             state_text,
         ]
         for currency in CURRENCIES:
@@ -716,9 +752,91 @@ def setup(tree, client):
         result = await recover_phase6_runtime(DB_PATH)
         await _reply(interaction, f"Recovery Crypto selesai: `{result}`")
 
+    @mining_auth_group.command(name="add", description="Tambah kelas otorisasi Mining (bot owner only)")
+    async def mining_auth_add(interaction: discord.Interaction, user: discord.User,
+                              permission_class: str, reason: str):
+        await interaction.response.defer(ephemeral=True)
+        if not await _is_owner(interaction):
+            await _reply(interaction, "Hanya bot owner yang dapat mengelola otorisasi Mining.")
+            return
+        try:
+            await set_mining_authorization(
+                DB_PATH, guild_id=interaction.guild_id, user_id=user.id,
+                permission_class=permission_class, enabled=True,
+                actor_id=interaction.user.id, reason=reason,
+            )
+        except ValueError as exc:
+            await _reply(interaction, str(exc))
+            return
+        await _reply(interaction, "Otorisasi Mining berhasil ditambahkan.")
+
+    @mining_auth_group.command(name="remove", description="Cabut kelas otorisasi Mining (bot owner only)")
+    async def mining_auth_remove(interaction: discord.Interaction, user: discord.User,
+                                 permission_class: str, reason: str):
+        await interaction.response.defer(ephemeral=True)
+        if not await _is_owner(interaction):
+            await _reply(interaction, "Hanya bot owner yang dapat mengelola otorisasi Mining.")
+            return
+        try:
+            await set_mining_authorization(
+                DB_PATH, guild_id=interaction.guild_id, user_id=user.id,
+                permission_class=permission_class, enabled=False,
+                actor_id=interaction.user.id, reason=reason,
+            )
+        except ValueError as exc:
+            await _reply(interaction, str(exc))
+            return
+        await _reply(interaction, "Otorisasi Mining berhasil dicabut.")
+
+    @mining_auth_group.command(name="list", description="Lihat otorisasi Mining (bot owner only)")
+    async def mining_auth_list(interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        if not await _is_owner(interaction):
+            await _reply(interaction, "Hanya bot owner yang dapat melihat otorisasi Mining.")
+            return
+        rows = await list_mining_authorizations(DB_PATH, interaction.guild_id)
+        text = "\n".join(f"<@{row[0]}> `{row[1]}`: {'aktif' if row[2] else 'nonaktif'}" for row in rows)
+        await _reply(interaction, text or "Otorisasi Mining kosong.")
+
+    @economy_group.command(name="mining-status", description="Lihat kesiapan Mining Phase 7")
+    async def mining_status_command(interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        if not await is_mining_authorized(
+            DB_PATH, interaction.guild_id, interaction.user.id, "MINING_CONTROL"
+        ):
+            await _reply(interaction, "Kamu tidak memiliki MINING_CONTROL.")
+            return
+        data = await mining_readiness(DB_PATH, interaction.guild_id)
+        await _reply(interaction, f"Status Mining: **{data.get('code', 'unknown')}**")
+
+    @economy_group.command(name="mining-config", description="Lihat konfigurasi ekonomi rig Mining")
+    async def mining_config_command(interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        if not await is_mining_authorized(
+            DB_PATH, interaction.guild_id, interaction.user.id, "MINING_CONTROL"
+        ):
+            await _reply(interaction, "Kamu tidak memiliki MINING_CONTROL.")
+            return
+        await _reply(interaction, "\n".join(
+            f"{key}: purchase={value[1]:,}, gross/day={value[2]:,}, maintenance={value[3]:,}"
+            for key, value in MINING_RIG_CATALOG.items()
+        ))
+
+    @economy_group.command(name="mining-recover", description="Jalankan recovery Mining terotorisasi")
+    async def mining_recover_command(interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        if not await is_mining_authorized(
+            DB_PATH, interaction.guild_id, interaction.user.id, "MINING_RECOVERY"
+        ):
+            await _reply(interaction, "Kamu tidak memiliki MINING_RECOVERY.")
+            return
+        result = await recover_phase7(DB_PATH)
+        await _reply(interaction, f"Recovery Mining selesai: `{result}`")
+
     economy_group.add_command(whitelist_group)
     economy_group.add_command(casino_auth_group)
     economy_group.add_command(crypto_auth_group)
+    economy_group.add_command(mining_auth_group)
     tree.add_command(economy_group)
 
     async def _bootstrap():
@@ -786,3 +904,14 @@ def setup(tree, client):
             client._phase6_crypto_worker = asyncio.create_task(_phase6_worker_loop())
 
     register_ready_startup_task(_start_phase6_worker)
+
+    async def _recover_phase7():
+        if not (ECONOMY_V1_ENABLED and ECONOMY_PHASE2_ENABLED and ECONOMY_PHASE7_ENABLED):
+            return
+        try:
+            result = await recover_phase7(DB_PATH)
+            logger.info("Phase 7 recovery result=%s", result)
+        except Exception as exc:
+            logger.warning("Phase 7 recovery failed type=%s", type(exc).__name__)
+
+    register_ready_startup_task(_recover_phase7)

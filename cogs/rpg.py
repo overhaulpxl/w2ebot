@@ -7,6 +7,7 @@ from economy.amounts import AmountParseError, parse_economy_amount
 from economy.constants import (
     ECONOMY_PHASE2_ENABLED, ECONOMY_PHASE3_ENABLED, ECONOMY_PHASE5_ENABLED,
     ECONOMY_PHASE6_ENABLED,
+    ECONOMY_PHASE7_ENABLED,
     ECONOMY_V1_ENABLED,
 )
 from economy.exchange import exchange_etm_to_ecy, get_exchange_info
@@ -29,6 +30,10 @@ def _phase5_enabled():
 
 def _phase6_enabled():
     return ECONOMY_V1_ENABLED and ECONOMY_PHASE6_ENABLED
+
+
+def _phase7_enabled():
+    return _phase2_enabled() and ECONOMY_PHASE7_ENABLED
 
 
 def _economy_request_id(interaction):
@@ -1365,6 +1370,30 @@ def setup(tree, client):
     async def slash_buyrig(interaction: discord.Interaction, tier: int, koin: str = "ETHR"):
         if not interaction.response.is_done():
             await interaction.response.defer()
+        if _phase7_enabled():
+            from cogs.mining import MiningConfirmationView, new_request_id
+            from economy.mining import mining_readiness, purchase_rig
+            definitions = {1: "rig_basic", 2: "rig_advanced", 3: "rig_elite", 4: "rig_eternal"}
+            definition = definitions.get(tier)
+            if not definition:
+                await send_embed(interaction, "Tier Mining V1 harus 1, 2, 3, atau 4.")
+                return
+            readiness = await mining_readiness(DB_PATH, interaction.guild_id, interaction.user.id)
+            if not readiness.get("ready"):
+                await send_embed(interaction, f"Pembelian Mining ditolak: **{readiness.get('code')}**.")
+                return
+            request_id = new_request_id()
+            async def callback(stable_request_id):
+                return await purchase_rig(
+                    DB_PATH, guild_id=interaction.guild_id, user_id=interaction.user.id,
+                    request_id=stable_request_id, rig_definition_id=definition,
+                    target_symbol=koin.upper(),
+                )
+            await send_embed(
+                interaction, f"Konfirmasi pembelian Rig Tier {tier} untuk {koin.upper()} dalam 90 detik.",
+                view=MiningConfirmationView(interaction.user, callback, request_id=request_id),
+            )
+            return
         uid = str(interaction.user.id)
         users = await load_json('users.json')
         koin = koin.upper()
@@ -1403,6 +1432,16 @@ def setup(tree, client):
     async def slash_miner(interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer()
+        if _phase7_enabled():
+            from economy.mining import list_rigs
+            rows = await list_rigs(DB_PATH, interaction.guild_id, interaction.user.id)
+            if not rows:
+                await send_embed(interaction, "Kamu belum memiliki rig Mining V1.")
+                return
+            await send_embed(interaction, "\n".join(
+                f"`{row[0]}` | {row[1]} | {row[2]} | {row[3]}" for row in rows
+            ))
+            return
         uid = str(interaction.user.id)
         users = await load_json('users.json')
         rigs = users.get(uid, {}).get('rigs', {})
@@ -1436,6 +1475,27 @@ def setup(tree, client):
     @tree.command(name="moverig", description="Pindahkan rig ke koin lain (gratis)")
     async def slash_moverig(interaction: discord.Interaction, tier: int, dari: str, ke: str):
         await interaction.response.defer()
+        if _phase7_enabled():
+            from cogs.mining import MiningConfirmationView, new_request_id
+            from economy.mining import change_target, list_rigs
+            names = {1: "Basic Rig", 2: "Advanced Rig", 3: "Elite Rig", 4: "Eternal Rig"}
+            expected = names.get(tier)
+            rows = await list_rigs(DB_PATH, interaction.guild_id, interaction.user.id)
+            selected = next((row for row in rows if row[1] == expected and row[2] == dari.upper()), None)
+            if not selected:
+                await send_embed(interaction, "Rig kompatibilitas tidak ditemukan.")
+                return
+            request_id = new_request_id()
+            async def callback(stable_request_id):
+                return await change_target(
+                    DB_PATH, guild_id=interaction.guild_id, user_id=interaction.user.id,
+                    request_id=stable_request_id, rig_instance_id=selected[0], target_symbol=ke.upper(),
+                )
+            await send_embed(
+                interaction, f"Konfirmasi pindah rig `{selected[0]}` ke {ke.upper()} dalam 90 detik.",
+                view=MiningConfirmationView(interaction.user, callback, request_id=request_id),
+            )
+            return
         uid = str(interaction.user.id)
         dari = dari.upper()
         ke = ke.upper()
