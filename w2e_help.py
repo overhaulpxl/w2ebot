@@ -80,13 +80,14 @@ def get_help_embed(category: str, guild=None) -> discord.Embed:
         for cmd, desc in commands:
             embed.add_field(name=cmd, value=desc, inline=False)
         embed.add_field(
-            name="Economy V1 Phase 1-4",
+            name="Economy V1 Phase 1-5",
             value=(
                 "Fondasi wallet ETM/ECY, ledger, treasury, dan migration dry-run telah tersedia "
                 "namun **belum diaktifkan untuk production**. Phase 2 menyiapkan profile RPG, "
                 "Daily/Weekly, Work, transfer ETM, dan Eternal Exchange. Phase 3 menyiapkan starter, "
                 "equipment, enhancement, pet, Hunt, Dungeon, Boss, dan Quest. Phase 4 menyiapkan "
-                "Eternal Marketplace dengan escrow dan settlement ETM. Command legacy tetap berjalan "
+                "Eternal Marketplace dengan escrow dan settlement ETM. Phase 5 menyiapkan Casino ECY "
+                "dengan bankroll dan exposure reservation. Command legacy tetap berjalan "
                 "selama feature flag nonaktif; seluruh flag Economy default-nya `false`."
             ),
             inline=False,

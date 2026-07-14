@@ -43,7 +43,7 @@ FORBIDDEN_PREFIXES = {
 }
 FLAG_NAMES = (
     "ECONOMY_V1_ENABLED", "ECONOMY_PHASE2_ENABLED",
-    "ECONOMY_PHASE3_ENABLED", "ECONOMY_PHASE4_ENABLED",
+    "ECONOMY_PHASE3_ENABLED", "ECONOMY_PHASE4_ENABLED", "ECONOMY_PHASE5_ENABLED",
 )
 
 
@@ -117,9 +117,19 @@ def _extract_phase_checksums(root: Path) -> dict[int, str]:
     phase4_algorithm = _literal(phase4["STACK_MIGRATION_ALGORITHM"])
     phase4_sql = _literal(phase4["PHASE4_SCHEMA_SQL"])
     phase4_triggers = _literal(phase4["PHASE4_TRIGGER_SQL"])
+    phase5 = _assignment_map(_parse_source(root / "economy" / "phase5_schema.py"))
+    phase5_name = _literal(phase5["PHASE5_MIGRATION_NAME"])
+    phase5_sql = _literal(phase5["PHASE5_TABLE_SQL"])
+    phase5_indexes = _literal(phase5["PHASE5_INDEX_SQL"])
+    phase5_triggers = _literal(phase5["PHASE5_TRIGGER_SQL"])
+    canonical = lambda value: " ".join(str(value).split())
     return {
         301: hashlib.sha256((phase3_sql + "\n" + "\n".join(phase3_triggers)).encode("utf-8")).hexdigest(),
         400: hashlib.sha256((phase4_algorithm + "\n" + phase4_sql + "\n" + "\n".join(phase4_triggers)).encode("utf-8")).hexdigest(),
+        500: hashlib.sha256(
+            (phase5_name + "\n" + canonical(phase5_sql) + "\n" +
+             "\n".join(canonical(value) for value in phase5_indexes + phase5_triggers)).encode("utf-8")
+        ).hexdigest(),
     }
 
 
@@ -294,7 +304,7 @@ def _secret_issues(text: str, label: str) -> list[str]:
 def _private_content_issues(text: str, label: str) -> list[str]:
     patterns = (
         r"(?i)(?:database_path|staging_guild_id|allowed_server_id)\s*[:=]\s*(?!\s*(?:null|false|PENDING|REDACTED))[\"']?[^\s\"',}]+",
-        r"(?i)(?:payment(?:_account|destination)?|payout(?:_account)?|proof_url|qris)\s*[:=]",
+        r"(?i)(?:payment(?:_|\s)+(?:account|destination)|paymentAccount|paymentDestination|payout(?:_|\s)+account|payoutAccount|proof(?:_|\s)+url|proofUrl|qris)[\"'`*]*\s*[:=]",
         r"(?i)\b(?:INSERT INTO|UPDATE\s+\w+\s+SET|DELETE FROM)\b",
     )
     return [f"{label}: private environment/data pattern terdeteksi" for pattern in patterns if re.search(pattern, text)]
@@ -302,13 +312,23 @@ def _private_content_issues(text: str, label: str) -> list[str]:
 
 def _phase5_planning_issues(root: Path, state: dict, phase5_status: str | None) -> list[str]:
     issues: list[str] = []
-    if phase5_status != "planning":
+    supported_statuses = {"planning", "implemented_blocked_staging", "implemented_staging_ready"}
+    if phase5_status not in supported_statuses:
         if phase5_status not in {"not_started", "not_implemented", "not_approved"}:
             issues.append("Phase 5 tidak berada pada guard status")
         return issues
 
     planning = _claim_value(state.get("phase5Casino", {}))
+    implemented = phase5_status in {"implemented_blocked_staging", "implemented_staging_ready"}
     expected = {
+        "implementationStatus": "implemented",
+        "productionStatus": "not_approved",
+        "productionMigrated": False,
+        "productionEnabled": False,
+        "runtimeFeatureFlagExists": True,
+        "migrationExists": True,
+        "planningDocument": "docs/PHASE5_CASINO_PRD.md",
+    } if implemented else {
         "implementationStatus": "not_started",
         "productionStatus": "not_approved",
         "productionMigrated": False,
@@ -325,35 +345,128 @@ def _phase5_planning_issues(root: Path, state: dict, phase5_status: str | None) 
     planning_document = root / str(planning.get("planningDocument", ""))
     if not planning_document.is_file():
         issues.append("Phase 5 planning document tidak ditemukan")
-    decisions = planning.get("ownerDecisions")
-    if not isinstance(decisions, list) or not decisions:
-        issues.append("Phase 5 owner decisions belum direkam")
-    blockers = _claim_value(state.get("blockers", []))
-    if not isinstance(blockers, list) or not any(
-        "phase 5" in str(item).lower() and "owner" in str(item).lower() for item in blockers
+    if planning.get("ownerDecisionStatus") != "approved_with_conditions":
+        issues.append("Phase 5 owner decision status tidak valid")
+    unresolved = planning.get("unresolvedOwnerDecisions")
+    if unresolved != []:
+        issues.append("Phase 5 masih memiliki unresolved owner decisions")
+
+    decisions = planning.get("ownerDecisionRecords")
+    expected_ids = {f"D{number:02d}" for number in range(1, 21)}
+    decision_ids = [row.get("id") for row in decisions if isinstance(row, dict)] if isinstance(decisions, list) else []
+    if set(decision_ids) != expected_ids or len(decision_ids) != len(expected_ids):
+        issues.append("Phase 5 decision records harus tepat D01-D20 dan unik")
+    valid_statuses = {"approved_recommended", "approved_with_revision", "provisionally_approved"}
+    if not isinstance(decisions, list) or any(
+        not isinstance(row, dict)
+        or row.get("status") not in valid_statuses
+        or not isinstance(row.get("decision"), str)
+        or not row["decision"].strip()
+        for row in decisions
     ):
-        issues.append("Phase 5 owner decisions tidak tercatat sebagai blocker")
+        issues.append("Phase 5 decision approval status tidak valid")
+    d02 = next((row for row in decisions if isinstance(row, dict) and row.get("id") == "D02"), None) if isinstance(decisions, list) else None
+    if not isinstance(d02, dict) or not isinstance(d02.get("condition"), str) or not d02["condition"].strip():
+        issues.append("Phase 5 D02 simulation/reapproval gate tidak valid")
+    gates = planning.get("simulationAcceptanceGates")
+    if not isinstance(gates, list) or not any(
+        isinstance(gate, dict)
+        and gate.get("decisionId") == "D02"
+        and isinstance(gate.get("gate"), str)
+        and "simulation" in gate["gate"].lower()
+        and ("owner approval" in gate["gate"].lower() or gate.get("status") == "passed")
+        for gate in gates
+    ):
+        issues.append("Phase 5 D02 structured simulation gate tidak valid")
+
+    if planning.get("wagerIncrementEcy") != 1000:
+        issues.append("Phase 5 wager increment harus 1000 ECY")
+    if planning.get("fixedPricesEcy") != {"gacha": 1000, "lootBox": 1000}:
+        issues.append("Phase 5 fixed Casino prices harus 1000 ECY")
+    expected_authorization = {
+        "CASINO_CONTROL": ["pause", "resume", "status"],
+        "CASINO_FINANCIAL": ["initial_seed", "bankroll_adjustment", "excess_distribution"],
+        "CASINO_RECOVERY": ["reviewed_refund", "review_resolution", "compensating_settlement"],
+    }
+    if planning.get("authorizationClasses") != expected_authorization:
+        issues.append("Phase 5 Casino authorization classes tidak valid")
+    if planning.get("approvedMigration") != {"version": 500, "name": "phase5-casino"}:
+        issues.append("Phase 5 approved migration identity tidak valid")
+    if planning.get("migrationExists") is not implemented:
+        issues.append("Phase 5 migration existence guard tidak valid")
+    if planning.get("approvedFutureFeatureFlagName") != "ECONOMY_PHASE5_ENABLED":
+        issues.append("Phase 5 approved feature flag identity tidak valid")
+    if planning.get("runtimeFeatureFlagExists") is not implemented:
+        issues.append("Phase 5 runtime feature flag existence guard tidak valid")
+
+    simulation = planning.get("simulationResult")
+    simulation_passed = isinstance(simulation, dict) and simulation.get("passed") is True
+    simulation_shape_valid = isinstance(simulation, dict) and simulation.get("completed") is True
+    if phase5_status == "implemented_staging_ready":
+        blackjack = simulation.get("blackjack", {}) if isinstance(simulation, dict) else {}
+        configuration = simulation.get("configuration", {}) if isinstance(simulation, dict) else {}
+        metrics_valid = isinstance(blackjack, dict) \
+            and blackjack.get("theoreticalRtp") == 0.975 \
+            and isinstance(blackjack.get("simulatedRtp"), (int, float)) \
+            and blackjack.get("tolerance") == 0.002 \
+            and abs(blackjack["simulatedRtp"] - blackjack["theoreticalRtp"]) <= blackjack["tolerance"] \
+            and isinstance(blackjack.get("seedsOutsideAcceptance"), int) \
+            and blackjack["seedsOutsideAcceptance"] <= 1 \
+            and configuration == {"seeds": 20, "roundsPerSeedFixedGames": 1_000_000,
+                                  "blackjackSessionsPerSeed": 500_000} \
+            and simulation.get("otherGamesPassed") is True \
+            and simulation.get("invariantFailures") == 0 \
+            and isinstance(simulation.get("artifactSha256"), str) \
+            and re.fullmatch(r"[0-9a-f]{64}", simulation["artifactSha256"]) is not None
+        simulation_shape_valid = simulation_shape_valid and simulation_passed \
+            and simulation.get("stagingReady") is True and simulation.get("blockingDecision") is None \
+            and isinstance(d02, dict) and d02.get("status") == "approved_recommended" \
+            and d02.get("simulationGateStatus") == "passed" and metrics_valid
+    elif phase5_status == "implemented_blocked_staging":
+        simulation_shape_valid = simulation_shape_valid and not simulation_passed \
+            and simulation.get("stagingReady") is False and simulation.get("blockingDecision") == "D02" \
+            and isinstance(d02, dict) and d02.get("status") == "provisionally_approved"
+    if implemented and not simulation_shape_valid:
+        issues.append("Phase 5 D18/D02 implementation result tidak valid")
+
+    blockers = _claim_value(state.get("blockers", []))
+    if not isinstance(blockers, list):
+        issues.append("Phase 5 blockers tidak valid")
+    elif any(
+        "phase 5" in str(item).lower()
+        and "owner decision" in str(item).lower()
+        and ("must be approved" in str(item).lower() or "unresolved" in str(item).lower())
+        for item in blockers
+    ):
+        issues.append("Phase 5 stale owner-decision blocker masih ada")
+    if not simulation_passed and (not isinstance(blockers, list) or not any(
+        "d02" in str(item).lower() and "simulation" in str(item).lower() for item in blockers
+    )):
+        issues.append("Phase 5 D02 simulation gate tidak tercatat sebagai blocker")
+    if simulation_passed and isinstance(blockers, list) and any("d02" in str(item).lower() for item in blockers):
+        issues.append("Phase 5 D02 blocker masih tercatat setelah simulation pass")
     pending = _claim_value(state.get("pendingWork", []))
     if not isinstance(pending, list) or not any("phase 5" in str(item).lower() for item in pending):
-        issues.append("Phase 5 implementation tidak tercatat sebagai pending work")
+        issues.append("Phase 5 follow-up tidak tercatat sebagai pending work")
 
-    source_paths = (
-        root / "runtime_config.py",
-        root / "economy" / "constants.py",
-        root / ".env.example",
-    )
-    for path in source_paths:
-        if path.is_file() and "ECONOMY_PHASE5_ENABLED" in path.read_text(encoding="utf-8"):
-            issues.append(f"Phase 5 runtime flag sudah ada: {path.relative_to(root)}")
-    if (root / "scripts" / "migrate_economy_phase5.py").exists() or any(
+    try:
+        runtime_flag_found = "ECONOMY_PHASE5_ENABLED" in _assignment_map(
+            _parse_source(root / "runtime_config.py")
+        )
+    except (OSError, SyntaxError):
+        runtime_flag_found = False
+    if runtime_flag_found is not implemented:
+        issues.append("Phase 5 runtime flag existence tidak cocok state")
+    runtime_modules_found = (root / "scripts" / "migrate_economy_phase5.py").exists() and any(
         path.is_file() for path in (root / "economy").glob("*phase5*")
-    ):
-        issues.append("Phase 5 migration atau runtime module sudah ada")
+    )
+    if runtime_modules_found is not implemented:
+        issues.append("Phase 5 migration/runtime module existence tidak cocok state")
     documented_versions = {
         row.get("version") for row in _claim_value(state.get("migrations", [])) if isinstance(row, dict)
     }
-    if 500 in documented_versions:
-        issues.append("Phase 5 migration 500 sudah didokumentasikan sebagai ada")
+    if (500 in documented_versions) is not implemented:
+        issues.append("Phase 5 migration 500 documentation tidak cocok state")
     return issues
 
 

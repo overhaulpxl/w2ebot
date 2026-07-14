@@ -26,7 +26,7 @@ from runtime_config import (
 
 from economy.database import ensure_phase1_schema
 from economy.constants import (
-    ECONOMY_PHASE2_ENABLED, ECONOMY_PHASE3_ENABLED, ECONOMY_PHASE4_ENABLED,
+    ECONOMY_PHASE2_ENABLED, ECONOMY_PHASE3_ENABLED, ECONOMY_PHASE4_ENABLED, ECONOMY_PHASE5_ENABLED,
     ECONOMY_V1_ENABLED,
 )
 from economy.profile import get_profile_snapshot
@@ -2604,6 +2604,23 @@ async def api_marketplace_v1_status(request):
         return web.json_response({'error': 'internal error'}, status=500)
 
 
+async def api_casino_v1_status(request):
+    """Status Casino read-only; tidak menyediakan jalur mutasi API."""
+    if not (ECONOMY_V1_ENABLED and ECONOMY_PHASE2_ENABLED and ECONOMY_PHASE5_ENABLED):
+        return web.json_response({'enabled': False, 'schema_ready': False})
+    from economy.casino import casino_status
+    try:
+        payload = await casino_status(DB_PATH, ALLOWED_SERVER_ID)
+        return web.json_response({
+            'enabled': True,
+            'schema_ready': bool(payload.pop('schemaCapable', False)),
+            **payload,
+        })
+    except Exception:
+        logging.error("api_casino_v1_status error", exc_info=True)
+        return web.json_response({'error': 'internal error'}, status=500)
+
+
 async def api_marketplace_v1_action(request):
     if not require_token(request):
         return web.json_response({'error': 'unauthorized'}, status=401)
@@ -3373,6 +3390,7 @@ async def start_web_server():
     app.router.add_get('/api/economy/v1-supply', api_economy_v1_supply)
     app.router.add_get('/api/economy/v1-profile/{id}', api_economy_v1_profile)
     app.router.add_get('/api/economy/v1-marketplace', api_marketplace_v1_status)
+    app.router.add_get('/api/economy/v1-casino', api_casino_v1_status)
     app.router.add_get('/api/marriages', api_marriages)
     app.router.add_get('/api/stats/summary', api_stats_summary)
     app.router.add_get('/api/bot/stats', api_bot_stats)

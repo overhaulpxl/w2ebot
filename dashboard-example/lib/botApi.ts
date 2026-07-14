@@ -144,6 +144,19 @@ export interface MarketplaceV1Status {
   purchase_reviews?: number;
 }
 
+export interface CasinoV1Status {
+  enabled: boolean;
+  schema_ready: boolean;
+  seeded?: boolean;
+  paused?: boolean;
+  bankrollEcy?: number;
+  reservedLiabilityEcy?: number;
+  availableBankrollEcy?: number;
+  exposureCapEcy?: number;
+  unresolvedSessions?: number;
+  reviewRequired?: number;
+}
+
 export interface LeaderboardEntry {
   rank: number;
   id: string;

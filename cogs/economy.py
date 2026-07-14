@@ -12,6 +12,7 @@ from economy.constants import (
     ECONOMY_PHASE2_ENABLED,
     ECONOMY_PHASE3_ENABLED,
     ECONOMY_PHASE4_ENABLED,
+    ECONOMY_PHASE5_ENABLED,
     ECONOMY_V1_ENABLED,
     EMERGENCY_FEATURES,
     configured_large_threshold,
@@ -30,12 +31,63 @@ from economy.recovery import recover_phase2_runtime
 from economy.phase3_recovery import recover_phase3_operations
 from economy.phase4_recovery import recover_phase4_runtime
 from economy.marketplace import claim_notification_events, finalize_notification_event
+from economy.casino import (
+    adjust_casino_bankroll, casino_status, distribute_casino_excess,
+    is_casino_authorized, list_casino_authorizations, seed_casino_bankroll,
+    set_casino_authorization, set_casino_paused, record_owner_recovery_override,
+    resolve_review_session,
+)
+from economy.phase5_recovery import (
+    claim_casino_outbox, finalize_casino_outbox, recover_phase5_runtime,
+)
 
 
 logger = logging.getLogger(__name__)
 
 
 STAGING_MESSAGE = "Economy V1 Phase 1 belum diaktifkan. Tidak ada saldo production yang diubah."
+
+
+async def _deliver_phase5_notifications(client, *, limit=100):
+    async def find_existing(channel, marker):
+        async for previous in channel.history(limit=20):
+            if marker in str(getattr(previous, "content", "")):
+                return previous
+        return None
+
+    lease_owner = f"casino-discord:{uuid.uuid4()}"
+    rows = await claim_casino_outbox(DB_PATH, lease_owner=lease_owner, limit=limit)
+    delivered = failed = 0
+    for row in rows:
+        marker = f"W2E-CASINO-EVENT:{row['eventKey']}"
+        try:
+            user = client.get_user(int(row["userId"])) or await asyncio.wait_for(
+                client.fetch_user(int(row["userId"])), timeout=8,
+            )
+            channel = await asyncio.wait_for(user.create_dm(), timeout=8)
+            payload = __import__("json").loads(row["payloadJson"])
+            message = await asyncio.wait_for(find_existing(channel, marker), timeout=8)
+            if message is None:
+                message = await asyncio.wait_for(channel.send(
+                    "Settlement Casino selesai. "
+                    f"Game: **{payload.get('game', '-')}**, stake: **{int(payload.get('stakeEcy', 0)):,} ECY**, "
+                    f"payout: **{int(payload.get('grossPayoutEcy', 0)):,} ECY**.\n-# `{marker}`"
+                ), timeout=8)
+            await finalize_casino_outbox(
+                DB_PATH, event_id=row["eventId"], lease_owner=lease_owner,
+                sent=True, message_id=getattr(message, "id", None),
+            )
+            delivered += 1
+        except (ValueError, discord.HTTPException, asyncio.TimeoutError):
+            await finalize_casino_outbox(
+                DB_PATH, event_id=row["eventId"], lease_owner=lease_owner,
+                sent=False, error_code="discord_delivery_failed",
+            )
+            failed += 1
+        except Exception:
+            logger.exception("Phase 5 notification delivery failed event=%s", row.get("eventId"))
+            failed += 1
+    return {"scanned": len(rows), "delivered": delivered, "failed": failed}
 
 
 async def _deliver_phase4_watch_notifications(client, *, limit=100):
@@ -164,6 +216,7 @@ class EconomyConfirmationView(discord.ui.View):
 def setup(tree, client):
     economy_group = app_commands.Group(name="economy", description="Fondasi Economy V1")
     whitelist_group = app_commands.Group(name="whitelist", description="Whitelist mutasi ekonomi")
+    casino_auth_group = app_commands.Group(name="casino-auth", description="Otorisasi least-privilege Casino")
 
     async def _is_owner(interaction):
         try:
@@ -173,6 +226,27 @@ def setup(tree, client):
 
     async def _can_control(interaction):
         return await _is_owner(interaction) or await is_whitelisted(DB_PATH, interaction.guild_id, interaction.user.id)
+
+    async def _can_control_feature(interaction, feature):
+        if str(feature).lower() == "casino" and ECONOMY_PHASE5_ENABLED:
+            return await is_casino_authorized(DB_PATH, interaction.guild_id, interaction.user.id, "CASINO_CONTROL")
+        return await _can_control(interaction)
+
+    async def _active_member_count(interaction):
+        from datetime import datetime, timedelta, timezone
+        import aiosqlite
+        eligible_members = {str(member.id) for member in interaction.guild.members if not member.bot}
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT DISTINCT userId FROM EconomyActivityEvent WHERE guildId=? AND occurredAt>=? "
+                "AND transactionId IS NOT NULL AND eventType IN "
+                "('DAILY_CLAIM','WEEKLY_CLAIM','WORK_SUCCESS','HUNT_COMPLETED','DUNGEON_COMPLETED',"
+                "'BOSS_ATTACK','BOSS_PARTICIPATION','DAILY_QUEST_COMPLETED','WEEKLY_QUEST_COMPLETED')",
+                (str(interaction.guild_id), cutoff),
+            ) as cursor:
+                active = {str(row[0]) for row in await cursor.fetchall()}
+        return len(active & eligible_members)
 
     async def _stage(interaction, action, target, currency, amount, reason, account_code=None):
         if not ECONOMY_V1_ENABLED:
@@ -235,7 +309,14 @@ def setup(tree, client):
     @economy_group.command(name="pause", description="Jeda fitur ekonomi")
     async def pause(interaction: discord.Interaction, feature: str, reason: str):
         await interaction.response.defer(ephemeral=True)
-        if not await _can_control(interaction):
+        if str(feature).lower() == "casino" and ECONOMY_PHASE5_ENABLED:
+            result = await set_casino_paused(
+                DB_PATH, guild_id=interaction.guild_id, actor_id=interaction.user.id,
+                paused=True, reason=reason,
+            )
+            await _reply(interaction, result.message)
+            return
+        if not await _can_control_feature(interaction, feature):
             await _reply(interaction, "Kamu tidak punya permission untuk mengubah emergency control.")
             return
         try:
@@ -249,7 +330,14 @@ def setup(tree, client):
     @economy_group.command(name="resume", description="Aktifkan kembali fitur ekonomi")
     async def resume(interaction: discord.Interaction, feature: str, reason: str):
         await interaction.response.defer(ephemeral=True)
-        if not await _can_control(interaction):
+        if str(feature).lower() == "casino" and ECONOMY_PHASE5_ENABLED:
+            result = await set_casino_paused(
+                DB_PATH, guild_id=interaction.guild_id, actor_id=interaction.user.id,
+                paused=False, reason=reason,
+            )
+            await _reply(interaction, result.message)
+            return
+        if not await _can_control_feature(interaction, feature):
             await _reply(interaction, "Kamu tidak punya permission untuk mengubah emergency control.")
             return
         try:
@@ -274,6 +362,7 @@ def setup(tree, client):
             f"Economy Phase 2 enabled: **{'Ya' if ECONOMY_PHASE2_ENABLED else 'Tidak'}**",
             f"Economy Phase 3 enabled: **{'Ya' if ECONOMY_PHASE3_ENABLED else 'Tidak'}**",
             f"Economy Phase 4 enabled: **{'Ya' if ECONOMY_PHASE4_ENABLED else 'Tidak'}**",
+            f"Economy Phase 5 enabled: **{'Ya' if ECONOMY_PHASE5_ENABLED else 'Tidak'}**",
             state_text,
         ]
         for currency in CURRENCIES:
@@ -314,7 +403,143 @@ def setup(tree, client):
         text = "\n".join(f"<@{row[0]}> — {'enabled' if row[1] else 'disabled'}" for row in rows) or "Whitelist kosong."
         await _reply(interaction, text)
 
+    @casino_auth_group.command(name="add", description="Tambah kelas otorisasi Casino (bot owner only)")
+    async def casino_auth_add(interaction: discord.Interaction, user: discord.User, permission_class: str, reason: str):
+        await interaction.response.defer(ephemeral=True)
+        if not await _is_owner(interaction):
+            await _reply(interaction, "Hanya bot owner yang dapat mengelola otorisasi Casino.")
+            return
+        try:
+            await set_casino_authorization(
+                DB_PATH, guild_id=interaction.guild_id, user_id=user.id,
+                permission_class=permission_class.upper(), enabled=True,
+                actor_id=interaction.user.id, reason=reason,
+            )
+        except ValueError as exc:
+            await _reply(interaction, str(exc))
+            return
+        await _reply(interaction, "Otorisasi Casino berhasil ditambahkan.")
+
+    @casino_auth_group.command(name="remove", description="Cabut kelas otorisasi Casino (bot owner only)")
+    async def casino_auth_remove(interaction: discord.Interaction, user: discord.User, permission_class: str, reason: str):
+        await interaction.response.defer(ephemeral=True)
+        if not await _is_owner(interaction):
+            await _reply(interaction, "Hanya bot owner yang dapat mengelola otorisasi Casino.")
+            return
+        try:
+            await set_casino_authorization(
+                DB_PATH, guild_id=interaction.guild_id, user_id=user.id,
+                permission_class=permission_class.upper(), enabled=False,
+                actor_id=interaction.user.id, reason=reason,
+            )
+        except ValueError as exc:
+            await _reply(interaction, str(exc))
+            return
+        await _reply(interaction, "Otorisasi Casino berhasil dicabut.")
+
+    @casino_auth_group.command(name="list", description="Lihat otorisasi Casino (bot owner only)")
+    async def casino_auth_list(interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        if not await _is_owner(interaction):
+            await _reply(interaction, "Hanya bot owner yang dapat melihat otorisasi Casino.")
+            return
+        rows = await list_casino_authorizations(DB_PATH, interaction.guild_id)
+        text = "\n".join(f"<@{row[0]}> `{row[1]}`: {'aktif' if row[2] else 'nonaktif'}" for row in rows) or "Otorisasi Casino kosong."
+        await _reply(interaction, text)
+
+    @economy_group.command(name="casino-status", description="Lihat bankroll dan exposure Casino")
+    async def casino_status_command(interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        if not await is_casino_authorized(DB_PATH, interaction.guild_id, interaction.user.id, "CASINO_CONTROL"):
+            await _reply(interaction, "Kamu tidak memiliki CASINO_CONTROL.")
+            return
+        data = await casino_status(DB_PATH, interaction.guild_id)
+        await _reply(interaction, "\n".join((
+            f"Schema siap: **{'Ya' if data['schemaCapable'] else 'Tidak'}**",
+            f"Seeded: **{'Ya' if data['seeded'] else 'Tidak'}**",
+            f"Paused: **{'Ya' if data['paused'] else 'Tidak'}**",
+            f"Bankroll: **{data['bankrollEcy']:,} ECY**",
+            f"Reserved: **{data['reservedLiabilityEcy']:,} ECY**",
+            f"Available: **{data['availableBankrollEcy']:,} ECY**",
+            f"Exposure cap: **{data['exposureCapEcy']:,} ECY**",
+            f"Unresolved/review: **{data['unresolvedSessions']}/{data['reviewRequired']}**",
+        )))
+
+    @economy_group.command(name="casino-seed", description="Seed awal Casino staging")
+    async def casino_seed_command(interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        if not await is_casino_authorized(DB_PATH, interaction.guild_id, interaction.user.id, "CASINO_FINANCIAL"):
+            await _reply(interaction, "Kamu tidak memiliki CASINO_FINANCIAL.")
+            return
+        active = await _active_member_count(interaction)
+        result = await seed_casino_bankroll(
+            DB_PATH, guild_id=interaction.guild_id, actor_id=interaction.user.id, active_members=active,
+        )
+        await _reply(interaction, f"{result.message}\nActive member terverifikasi: **{active}**.")
+
+    @economy_group.command(name="casino-adjust", description="Transfer bankroll Casino dari/ke ECY_GENERAL")
+    async def casino_adjust_command(interaction: discord.Interaction, direction: str, amount: str, reason: str):
+        await interaction.response.defer(ephemeral=True)
+        if not await is_casino_authorized(DB_PATH, interaction.guild_id, interaction.user.id, "CASINO_FINANCIAL"):
+            await _reply(interaction, "Kamu tidak memiliki CASINO_FINANCIAL.")
+            return
+        try:
+            parsed = parse_economy_amount(amount)
+        except AmountParseError as exc:
+            await _reply(interaction, str(exc))
+            return
+        result = await adjust_casino_bankroll(
+            DB_PATH, guild_id=interaction.guild_id, actor_id=interaction.user.id,
+            amount=parsed, direction=direction, request_id=str(interaction.id), reason=reason,
+        )
+        await _reply(interaction, result.message)
+
+    @economy_group.command(name="casino-distribute", description="Distribusikan excess bankroll saat pause")
+    async def casino_distribute_command(interaction: discord.Interaction, reason: str):
+        await interaction.response.defer(ephemeral=True)
+        if not await is_casino_authorized(DB_PATH, interaction.guild_id, interaction.user.id, "CASINO_FINANCIAL"):
+            await _reply(interaction, "Kamu tidak memiliki CASINO_FINANCIAL.")
+            return
+        active = await _active_member_count(interaction)
+        result = await distribute_casino_excess(
+            DB_PATH, guild_id=interaction.guild_id, actor_id=interaction.user.id,
+            active_members=active, request_id=str(interaction.id), reason=reason,
+        )
+        await _reply(interaction, result.message)
+
+    @economy_group.command(name="casino-recover", description="Jalankan recovery Casino terotorisasi")
+    async def casino_recover_command(interaction: discord.Interaction, session_id: str = "", resolution: str = "inspect",
+                                     owner_override: bool = False, reason: str = ""):
+        await interaction.response.defer(ephemeral=True)
+        authorized = await is_casino_authorized(DB_PATH, interaction.guild_id, interaction.user.id, "CASINO_RECOVERY")
+        override_used = False
+        if not authorized:
+            owner = await _is_owner(interaction)
+            if not (owner and owner_override):
+                await _reply(interaction, "Kamu tidak memiliki CASINO_RECOVERY. Owner override harus eksplisit.")
+                return
+            try:
+                await record_owner_recovery_override(
+                    DB_PATH, guild_id=interaction.guild_id, actor_id=interaction.user.id, reason=reason,
+                )
+            except ValueError as exc:
+                await _reply(interaction, str(exc))
+                return
+            logger.warning("Audited Casino owner recovery override actor_id=%s guild_id=%s", interaction.user.id, interaction.guild_id)
+            override_used = True
+        if str(session_id).strip():
+            result = await resolve_review_session(
+                DB_PATH, guild_id=interaction.guild_id, actor_id=interaction.user.id,
+                session_id=session_id.strip(), resolution=resolution, request_id=str(interaction.id),
+                reason=reason or "Casino reviewed recovery", authorization_override=override_used,
+            )
+            await _reply(interaction, result.message)
+            return
+        result = await recover_phase5_runtime(DB_PATH, guild_id=interaction.guild_id)
+        await _reply(interaction, f"Recovery Casino selesai: `{result}`")
+
     economy_group.add_command(whitelist_group)
+    economy_group.add_command(casino_auth_group)
     tree.add_command(economy_group)
 
     async def _bootstrap():
@@ -349,3 +574,15 @@ def setup(tree, client):
             logger.warning("Phase 4 recovery inspection failed type=%s", type(exc).__name__)
 
     register_ready_startup_task(_recover_phase4)
+
+    async def _recover_phase5():
+        if not (ECONOMY_V1_ENABLED and ECONOMY_PHASE2_ENABLED and ECONOMY_PHASE5_ENABLED):
+            return
+        try:
+            counts = await recover_phase5_runtime(DB_PATH)
+            counts["notifications"] = await _deliver_phase5_notifications(client)
+            logger.info("Phase 5 recovery result counts=%s", counts)
+        except Exception as exc:
+            logger.warning("Phase 5 recovery failed type=%s", type(exc).__name__)
+
+    register_ready_startup_task(_recover_phase5)

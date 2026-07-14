@@ -47,6 +47,7 @@ ECONOMY_V1_ENABLED = _env_bool("ECONOMY_V1_ENABLED", False)
 ECONOMY_PHASE2_ENABLED = _env_bool("ECONOMY_PHASE2_ENABLED", False)
 ECONOMY_PHASE3_ENABLED = _env_bool("ECONOMY_PHASE3_ENABLED", False)
 ECONOMY_PHASE4_ENABLED = _env_bool("ECONOMY_PHASE4_ENABLED", False)
+ECONOMY_PHASE5_ENABLED = _env_bool("ECONOMY_PHASE5_ENABLED", False)
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,7 @@ class StartupConfiguration:
     economy_phase2_enabled: bool
     economy_phase3_enabled: bool
     economy_phase4_enabled: bool = False
+    economy_phase5_enabled: bool = False
 
     @property
     def all_economy_flags_enabled(self):
@@ -68,6 +70,10 @@ class StartupConfiguration:
     @property
     def marketplace_flags_enabled(self):
         return self.all_economy_flags_enabled and self.economy_phase4_enabled
+
+    @property
+    def casino_flags_enabled(self):
+        return self.economy_v1_enabled and self.economy_phase2_enabled and self.economy_phase5_enabled
 
     @property
     def uses_production_database(self):
@@ -85,6 +91,7 @@ def current_startup_configuration():
         economy_phase2_enabled=ECONOMY_PHASE2_ENABLED,
         economy_phase3_enabled=ECONOMY_PHASE3_ENABLED,
         economy_phase4_enabled=ECONOMY_PHASE4_ENABLED,
+        economy_phase5_enabled=ECONOMY_PHASE5_ENABLED,
     )
 
 
@@ -115,6 +122,13 @@ def validate_startup_configuration(config=None, *, verify_database=True):
                 raise RuntimeError("DATABASE_PATH staging tidak dapat dibuka dengan aman.") from exc
     if config.economy_phase4_enabled and not config.all_economy_flags_enabled:
         raise RuntimeError("ECONOMY_PHASE4_ENABLED memerlukan flag Economy Phase 1-3.")
+    if config.economy_phase5_enabled and not (config.economy_v1_enabled and config.economy_phase2_enabled):
+        raise RuntimeError("ECONOMY_PHASE5_ENABLED memerlukan Economy V1 dan Phase 2.")
+    if config.casino_flags_enabled:
+        if not config.staging_mode or config.uses_production_database:
+            raise RuntimeError("Economy Phase 5 hanya dapat diaktifkan pada database staging.")
+        if config.staging_guild_id is None or not config.discord_token_configured:
+            raise RuntimeError("Phase 5 staging memerlukan guild dan Discord token khusus staging.")
     return config
 
 

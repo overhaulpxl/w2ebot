@@ -4,7 +4,10 @@ import random, asyncio, sqlite3
 from datetime import datetime
 
 from economy.amounts import AmountParseError, parse_economy_amount
-from economy.constants import ECONOMY_PHASE2_ENABLED, ECONOMY_PHASE3_ENABLED, ECONOMY_V1_ENABLED
+from economy.constants import (
+    ECONOMY_PHASE2_ENABLED, ECONOMY_PHASE3_ENABLED, ECONOMY_PHASE5_ENABLED,
+    ECONOMY_V1_ENABLED,
+)
 from economy.exchange import exchange_etm_to_ecy, get_exchange_info
 from economy.profile import get_profile_snapshot
 from economy.rewards import claim_reward, reserve_work_roll, settle_work_roll
@@ -17,6 +20,10 @@ def _phase2_enabled():
 
 def _phase3_enabled():
     return _phase2_enabled() and ECONOMY_PHASE3_ENABLED
+
+
+def _phase5_enabled():
+    return _phase2_enabled() and ECONOMY_PHASE5_ENABLED
 
 
 def _economy_request_id(interaction):
@@ -44,6 +51,43 @@ def normalize_user_id(value):
 
 
 def setup(tree, client):
+    async def _phase5_wager(interaction, game, stake, payload=None):
+        from economy.casino import (
+            casino_status, effective_maximum_stake, new_request_id,
+            validate_game_payload, validate_stake,
+        )
+        from w2e_views import CasinoConfirmationView
+        try:
+            validate_stake(game, stake)
+            validate_game_payload(game, payload)
+        except ValueError as exc:
+            await send_embed(interaction, str(exc))
+            return
+        status = await casino_status(DB_PATH, interaction.guild_id)
+        if not status["schemaCapable"]:
+            await send_embed(interaction, "Casino Phase 5 aktif tetapi migration 500 belum siap.")
+            return
+        if status["paused"] or not status["seeded"]:
+            await send_embed(interaction, "Casino Phase 5 belum tersedia: fitur dijeda atau bankroll belum di-seed.")
+            return
+        maximum = effective_maximum_stake(game, status["availableBankrollEcy"])
+        if int(stake) > maximum:
+            await send_embed(
+                interaction,
+                f"Stake melewati maksimum efektif saat ini: **{maximum:,} ECY**.",
+            )
+            return
+        request_id = new_request_id()
+        view = CasinoConfirmationView(
+            interaction.user, request_id=request_id, game=game, stake=stake, payload=payload or {},
+        )
+        await send_embed(
+            interaction,
+            f"Konfirmasi **{game} Casino V1** dengan stake **{stake:,} ECY**.\n"
+            f"Maksimum efektif saat ini: **{maximum:,} ECY**.\n"
+            "Konfirmasi berlaku 90 detik dan belum membuat sesi atau debit.",
+            view=view,
+        )
     async def format_leaderboard_user(bot, guild, user_id):
         normalized_id = normalize_user_id(user_id)
         if normalized_id is None:
@@ -353,6 +397,9 @@ def setup(tree, client):
     async def slash_blackjack(interaction: discord.Interaction, bet: int):
         if not interaction.response.is_done():
             await interaction.response.defer()
+        if _phase5_enabled():
+            await _phase5_wager(interaction, "BLACKJACK", bet)
+            return
         if bet < 50:
             await send_embed(interaction, "❌ Taruhan minimal 50 Koin.")
             return
@@ -592,6 +639,9 @@ def setup(tree, client):
     async def slash_slot(interaction: discord.Interaction, bet: int):
         if not interaction.response.is_done():
             await interaction.response.defer()
+        if _phase5_enabled():
+            await _phase5_wager(interaction, "SLOT", bet)
+            return
         if bet < 50:
             await send_embed(interaction, "❌ Minimal taruhan 50 Koin.")
             return
@@ -850,6 +900,10 @@ def setup(tree, client):
     @tree.command(name="cf", description="Main Coinflip (Judi tebak koin)")
     async def slash_cf(interaction: discord.Interaction, tebakan: str, bet: int):
         await interaction.response.defer()
+        if _phase5_enabled():
+            mapped = {"head": "angka", "tail": "gambar", "angka": "angka", "gambar": "gambar"}.get(tebakan.lower())
+            await _phase5_wager(interaction, "COINFLIP", bet, {"choice": mapped or tebakan})
+            return
         uid = str(interaction.user.id)
         tebakan = tebakan.lower()
         if tebakan not in ['head', 'tail']:
@@ -883,6 +937,9 @@ def setup(tree, client):
     @tree.command(name="rps", description="Main Batu Gunting Kertas")
     async def slash_rps(interaction: discord.Interaction, pilihan: str, bet: int):
         await interaction.response.defer()
+        if _phase5_enabled():
+            await _phase5_wager(interaction, "RPS", bet, {"choice": pilihan})
+            return
         pilihan = pilihan.lower()
         valid = ['batu', 'gunting', 'kertas']
         if pilihan not in valid:
@@ -920,7 +977,10 @@ def setup(tree, client):
     @tree.command(name="gacha", description="Gacha Waifu/Item (Biaya 500 Koin)")
     async def slash_gacha(interaction: discord.Interaction):
         if not interaction.response.is_done():
-            await interaction.response.defer()
+            await interaction.response.defer(ephemeral=_phase5_enabled())
+        if _phase5_enabled():
+            await _phase5_wager(interaction, "GACHA", 1_000)
+            return
         uid = str(interaction.user.id)
         cost = 500
         # Debit atomik (sekalian validasi saldo).
@@ -936,8 +996,11 @@ def setup(tree, client):
         await send_embed(interaction, f"🎰 Kamu memutar Gacha seharga {cost} Koin...\n✨ Kamu mendapatkan: **{result}**!", view=GachaView(interaction.user))
 
     @tree.command(name="tebak", description="Game tebak angka 1-10")
-    async def slash_tebak(interaction: discord.Interaction, tebakan: int):
+    async def slash_tebak(interaction: discord.Interaction, tebakan: int, bet: int = 1_000):
         await interaction.response.defer()
+        if _phase5_enabled():
+            await _phase5_wager(interaction, "NUMBER", bet, {"guess": tebakan})
+            return
         jawaban = random.randint(1, 10)
         uid = str(interaction.user.id)
         if tebakan == jawaban:
@@ -1019,7 +1082,10 @@ def setup(tree, client):
     @tree.command(name="box", description="Buka Loot Box (Biaya: 1000 Koin)")
     async def slash_box(interaction: discord.Interaction):
         if not interaction.response.is_done():
-            await interaction.response.defer()
+            await interaction.response.defer(ephemeral=_phase5_enabled())
+        if _phase5_enabled():
+            await _phase5_wager(interaction, "BOX", 1_000)
+            return
         uid = str(interaction.user.id)
         cost = 1000
         # Debit atomik (sekalian validasi saldo).

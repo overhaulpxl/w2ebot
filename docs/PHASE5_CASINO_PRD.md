@@ -3,15 +3,15 @@
 ## 1. Document Status
 
 - Phase: Phase 5 - Casino
-- Status: Planning
-- Implementation status: Not started
+- Status: Implemented and ready for connected Discord staging
+- Implementation status: Implemented
 - Production status: Not approved
 - Production migrated: No
 - Production enabled: No
 - Document language: English
 - Current task commit: `PENDING`
 
-This document is an implementation plan, not an authorization to create a migration, change runtime behavior, seed a bankroll, or enable production. All items marked **REQUIRES OWNER DECISION** must be resolved before Phase 5 implementation can be approved.
+This document records the owner-approved D01-D20 product decisions and the resulting implementation. Migration 500 and the runtime flag now exist, but startup does not apply the migration and the flag defaults to false. No production database was migrated or seeded. The overall decision status remains `approved_with_conditions`; the complete natural-payout calibration passed D02 and Phase 5 is ready for connected Discord staging.
 
 ## 2. Source-of-Truth References
 
@@ -36,15 +36,15 @@ Move the seven approved Casino games from the legacy coin path to the Phase 1 EC
 
 Phase 5 includes:
 
-- Blackjack, target RTP 97.5%.
+- Blackjack, target RTP 97.5%, verified by the complete D02 simulation.
 - Slots, target RTP 95%.
 - Coinflip, target RTP 97%.
 - Rock-paper-scissors, target RTP 96.7%.
 - Number guessing, target RTP 95%.
-- Gacha, with product values still requiring owner approval.
-- Loot boxes, with product values still requiring owner approval.
+- Cosmetic-only Gacha at a fixed 1,000 ECY cost, with equal probability across the eight approved labels and no financial payout or inventory grant.
+- Loot boxes at a fixed 1,000 ECY cost using the approved 95% RTP payout table and 15x maximum gross liability.
 - ECY-only Casino stakes and payouts.
-- Global stake range from 1,000 ECY through 500,000 ECY.
+- User-selected wagers from 1,000 ECY through the effective maximum, in exact 1,000 ECY increments. The 500,000 ECY global maximum is a request ceiling, not guaranteed acceptance.
 - Casino Bankroll funding, exposure control, settlement, recovery, audit, emergency pause, and RTP simulation.
 
 Casino winnings have no additional winner tax. Odds must never depend on user identity, wallet balance, stake size, prior results, treasury balance, staff status, roles, or Activity Score.
@@ -108,7 +108,7 @@ Blackjack requires a persisted interactive flow:
 5. Settle or refund through one final atomic financial transition.
 6. Disable stale controls and replay the immutable receipt on duplicate actions.
 
-Exact Blackjack actions remain an owner decision.
+The D02-approved Blackjack rules support Hit and Stand, hard 11 Double only, and one Split limited to Aces or 8s, producing at most two hands. A winning natural pays 5:4 profit, or 2.25x gross, through checked integer arithmetic. The rules do not support Double on hard 10, Double after Split, resplitting Aces, surrender, or insurance. Split Aces receive one card each. The complete natural-payout calibration passed D02.
 
 ## 8. Slash Command Plan
 
@@ -116,13 +116,13 @@ Preserve the existing command names:
 
 | Command | Existing parameters | Proposed Phase 5 contract |
 | --- | --- | --- |
-| `/blackjack` | `bet: int` | Preserve `bet`; interactive rules await owner approval. |
-| `/slot` | `bet: int` | Preserve `bet`; payout table awaits owner approval. |
-| `/cf` | `tebakan: str`, `bet: int` | Preserve command and choices; payout mechanism awaits owner approval. |
-| `/rps` | `pilihan: str`, `bet: int` | Preserve command and choices; payout/draw mechanism awaits owner approval. |
-| `/tebak` | `tebakan: int` | Final stake parameter and range require owner approval. |
-| `/gacha` | none | Final fixed-cost or stake parameter requires owner approval. |
-| `/box` | none | Final fixed-cost or stake parameter requires owner approval. |
+| `/blackjack` | `bet: int` | Preserve `bet`; accept 1,000-ECY steps subject to effective exposure, using the provisional versioned ruleset. |
+| `/slot` | `bet: int` | Preserve `bet`; use the approved equal-weight one-payline 95% RTP table. |
+| `/cf` | `tebakan: str`, `bet: int` | Preserve command and choices; use fair outcomes and `floor(bet * 19400 / 10000)` gross payout. |
+| `/rps` | `pilihan: str`, `bet: int` | Preserve command and choices; refund draws and use `floor(bet * 19010 / 10000)` gross payout on wins. |
+| `/tebak` | `tebakan: int` | Add a typed Phase 5 wager parameter; use one guess from 1-20 and 19x gross payout. |
+| `/gacha` | none | Fixed 1,000 ECY cosmetic product; no user-selected stake or payout liability. |
+| `/box` | none | Fixed 1,000 ECY product using the approved 95% RTP payout table. |
 
 No `/casino` group or replacement command name is approved by this document.
 
@@ -134,9 +134,9 @@ Preserve:
 - `w!slot <bet>`
 - `w!cf <head|tail> <bet>`
 - `w!rps <batu|gunting|kertas> <bet>`
-- `w!tebak <guess>` with its final stake syntax requiring owner approval
-- `w!gacha` with its final cost/stake syntax requiring owner approval
-- `w!box` with its final cost/stake syntax requiring owner approval
+- `w!tebak <guess> <bet>` when Phase 5 is enabled; the disabled legacy free path remains unchanged
+- `w!gacha` at the fixed 1,000 ECY price when Phase 5 is enabled
+- `w!box` at the fixed 1,000 ECY price when Phase 5 is enabled
 
 Prefix parsing must use typed parameters and invoke the same service as slash and button paths. Prefix mode has no ephemeral responses and must perform all permission, flag, pause, migration, and stale-state validation inside the callback or service.
 
@@ -156,14 +156,17 @@ Forbidden Trusted Vouch prefix aliases remain absent.
 
 - Member game commands require a valid guild actor, an eligible ECY wallet, enabled dependencies, an applied Phase 5 migration, an unpaused Casino, and a funded bankroll.
 - No Discord Administrator permission is required to play.
-- `/economy pause casino`, `/economy resume casino`, and status inspection retain their existing bot-owner or enabled-economy-whitelist policy.
-- Discord Administrator permission alone does not grant minting, bankroll adjustment, seed, or unrestricted balance mutation.
-- Authorization for seed, bankroll adjustment, and excess distribution is a required owner decision and must be enforced in the service, not only through command decorators.
+- `CASINO_CONTROL` authorizes pause, resume, and status.
+- `CASINO_FINANCIAL` authorizes initial seed, bankroll adjustment, and excess distribution.
+- `CASINO_RECOVERY` authorizes reviewed refunds, review resolution, and compensating settlement.
+- The three classes must be separately represented and audited. Existing whitelist infrastructure may be reused, but membership in one class does not imply another.
+- Discord Administrator permission alone is insufficient. Bot-owner identity does not silently bypass financial approval. Emergency owner recovery requires an explicit audited override path.
 
 ## 12. Currency And Wallet Rules
 
 - Casino stakes and payouts use integer ECY only.
-- The accepted stake is between 1,000 and 500,000 ECY inclusive.
+- User-selected stakes are whole multiples of 1,000 ECY. Fixed products use their approved fixed price.
+- The 500,000 ECY global maximum is a request ceiling. Actual acceptance uses the lower game-specific effective maximum.
 - Boolean, signed, negative, zero, decimal, scientific notation, NaN, Infinity, malformed grouping, and overflow inputs are rejected before mutation.
 - No floating-point value may enter wallet, bankroll, exposure, ledger, or receipt calculations.
 - Every committed transaction remains zero-sum per currency.
@@ -180,13 +183,25 @@ The approved safe-bankroll recommendation is:
 max(25,000,000 ECY, 100,000 ECY * active members in the previous 30 days)
 ```
 
-The exact active-member definition requires owner approval. Until then, the formula cannot produce an approved production seed.
+An active member is a current non-bot guild member with at least one committed approved non-Casino activity event in the rolling previous 30 UTC days. Casino, administrative, transfer, exchange, Marketplace, balance-only, departed-user, and bot activity does not count.
 
-Operational availability must account for the current `ECY_CASINO` balance and unresolved reserved liabilities. A new request is rejected before stake consumption when it cannot be supported. The meaning of the 2% cap is unresolved: gross payout, net profit, or total maximum reserved liability must be selected by the owner.
+The 2% cap applies to total maximum reserved gross liability. Operational availability accounts for the current `ECY_CASINO` balance and all unresolved reservations. The effective maximum stake is:
+
+```text
+min(
+    500,000 ECY,
+    maximum 1,000-ECY-step stake whose complete worst-case gross liability
+    fits the current 2% exposure cap and available unreserved bankroll
+)
+```
+
+Every command and confirmation screen displays the effective maximum when below 500,000 ECY. Blackjack initial acceptance reserves the highest liability still possible through either Double or the permitted Split path. A new request is rejected before stake consumption when it cannot be supported.
 
 The existing `EconomySeedMarker` and `system_seed` transaction model provide one-time, balanced issuance-to-bankroll seeding. All seed defaults remain zero until separately approved.
 
-Excess is evaluated only after subtracting the approved safe requirement and unresolved liabilities. Distribution uses the approved 60/20/20 proportions and existing `ECY_GENERAL`, `ECY_RESERVE`, and `ECY_BURN` accounts. Authorization, schedule, and retained safety threshold require owner approval. Casino loss money is not distributed after each round.
+The exact seed is `max(25,000,000 ECY, 100,000 ECY * active members)`, with no multiplier. Production seed execution still requires a separate cutover approval and uses a one-time issuance-to-`ECY_CASINO` transaction and seed marker.
+
+Excess distribution is manual only while Casino is paused. Retain the safe requirement plus unresolved and review liabilities, then distribute positive excess as 60% to `ECY_GENERAL`, 20% to `ECY_RESERVE`, and the integer remainder to the existing `ECY_BURN`. One confirmed, idempotent, audited `CASINO_FINANCIAL` transaction performs the distribution. Casino loss money is not distributed after each round.
 
 ## 14. Bet Validation
 
@@ -195,11 +210,12 @@ Validation occurs both before and after `BEGIN IMMEDIATE`:
 - Required flags and schema capability.
 - Guild and actor identity.
 - Casino and global economy pause state.
-- Canonical integer stake and global bounds.
+- Canonical integer stake, exact 1,000 ECY step, request ceiling, checked payout arithmetic, and effective maximum.
 - Game-specific choices and approved ruleset version.
 - User ECY balance and wallet version.
 - Bankroll seed, balance, version, and unresolved exposure.
-- Session limit and cooldown when approved.
+- One unresolved session per user, one active Blackjack session per user, and no more than 100 unresolved sessions per guild.
+- Approved cooldown: five seconds after committed terminal Blackjack, Gacha, or Loot Box; three seconds after committed Slots, Coinflip, RPS, or Number Guessing.
 - Stable request identity and unresolved reservation lookup.
 
 A failed read-only preflight creates no operation, outcome, transaction, cooldown, or balance change.
@@ -254,7 +270,10 @@ Recovery scans unresolved sessions, settlements, exposures, and notification eve
 - `COMMITTED`: replay the immutable receipt without financial mutation.
 - `REFUND_PENDING`: execute only the persisted approved refund plan.
 - `REVIEW_REQUIRED`: retain reservations and require audited recovery.
-- Expired sessions follow the owner-approved timeout policy.
+- A valid persisted one-step result resumes or settles from its original IDs. A missing Discord message never reverses financial truth.
+- Blackjack resumes after restart and auto-stands after ten minutes of abandonment.
+- A debited operation with provable state settles using its original IDs. Ambiguous, conflicting, or impossible state enters `REVIEW_REQUIRED` without replacement identity.
+- Departed users receive the persisted settlement. Reviewed refunds and compensating settlements require `CASINO_RECOVERY` authorization and audit.
 
 Recovery never rerolls, silently mints, redirects a payout, or invents a replacement transaction.
 
@@ -291,7 +310,7 @@ Financial truth resides in `EconomyTransaction` and `EconomyLedger`. Staff contr
 
 ## 21. Feature Flags
 
-Proposed flag: `ECONOMY_PHASE5_ENABLED=false`. The exact name requires owner approval.
+Runtime flag: `ECONOMY_PHASE5_ENABLED=false`. It exists and remains false by default.
 
 - Economy V1 disabled: preserve legacy routing and perform no Phase 5 schema access.
 - Phase 2 disabled: Phase 5 cannot use ECY and must fail closed if its flag is inconsistently enabled.
@@ -306,11 +325,11 @@ Phase 3 and Phase 4 are not required dependencies for Casino and remain independ
 
 `/economy pause casino` blocks new sessions immediately after service-level revalidation. Existing committed results remain valid. Recoverable pending sessions settle from persisted state when settlement remains valid. Refunds occur only under the approved refund policy; ambiguous states enter review.
 
-Pause and resume create permanent audit records and survive restart through `EconomyFeatureState`. Authorization remains bot owner or enabled economy-whitelist member unless the owner approves a different policy.
+Pause and resume create permanent audit records and survive restart through `EconomyFeatureState`. Service authorization requires `CASINO_CONTROL`; Discord Administrator or bot-owner identity alone does not bypass the approved class model.
 
-## 23. Database Schema Proposal
+## 23. Database Schema
 
-This proposal creates no schema in the planning task.
+Migration 500 defines the following schema only when explicitly applied to a non-production staging database. Disabled startup creates none of these tables.
 
 ### `CasinoSession`
 
@@ -340,21 +359,28 @@ Stores deduplicated result-delivery events so Discord response failure does not 
 
 Stores sanitized ambiguity codes, affected operation identity, retry metadata, review status, and authorized resolution references.
 
+### `CasinoLegacyStatistic`
+
+Stores an idempotent read-only compatibility snapshot of legacy `users.json.games`, including the source hash. It never creates ECY transactions or alters the source JSON. Phase 5 statistics derive from committed Casino settlements and are displayed separately from legacy history.
+
 Required indexes cover idempotency, unresolved reservation lookup, user/game sessions, expiry, settlement state, transaction references, notification delivery, and review status. Triggers enforce lifecycle transitions, outcome immutability, receipt first-write, reservation retention, terminal protection, and no-delete audit history.
 
 `EconomySeedMarker` remains authoritative for the one-time bankroll seed; no duplicate Casino seed table is proposed.
 
 ## 24. Migration Strategy
 
-The exact migration version is a required owner decision; `500` is proposed from the existing phase numbering convention. Its checksum is computed from the final approved canonical schema and must never be invented in planning.
+The implemented migration identity is version `500`, name `phase5-casino`, checksum `05441b86aa7cbab27eb2cf01d94ee1f998077b68498cad52d03a79c33b1e2650`. The checksum is derived from canonical normalized schema, index, and trigger definitions in `economy/phase5_schema.py`.
 
-The future migration must support dry-run, backup, apply, verify, reconcile, recovery, and rollback reporting against explicit non-production databases. It must reject the production path and resolved-equivalent paths, use a dedicated connection with foreign keys enabled, validate row counts and checksums, run `integrity_check` and `foreign_key_check`, and be idempotent. Startup must not apply it automatically.
+The staging migration supports dry-run, backup, apply, verify, reconcile, recovery, and restore reporting against explicit non-production databases. It rejects the production path and resolved-equivalent paths, uses a dedicated connection with foreign keys enabled, validates checksums, runs `integrity_check` and `foreign_key_check`, and is idempotent. Startup does not apply it automatically.
 
 ## 25. Legacy Data Migration
 
 - Legacy balances are not converted by Phase 5; ECY wallets already belong to Phase 1/2.
 - Legacy `users.json.games` counters are non-financial history and must not generate ledger entries.
-- Whether counters are copied into a compatibility table or remain read-only requires owner approval.
+- Copy legacy game statistics only as an idempotent read-only compatibility snapshot with source hash; preserve `users.json.games` byte-for-byte.
+- New Casino statistics are derived exclusively from committed Phase 5 settlements and remain separate from legacy history.
+- Preserve the legacy `gambler_king` achievement as history; do not grant a new Phase 5 High Roller achievement until a separate ECY threshold is approved.
+- Lucky Charm remains legacy-only and has no effect on Phase 5 odds.
 - Existing replay views are ephemeral runtime objects and cannot be migrated as financial sessions.
 - No legacy random outcome is treated as a pending ECY result.
 - Legacy source JSON remains unchanged.
@@ -367,30 +393,50 @@ When Phase 5 is disabled, current Casino commands retain legacy behavior. When P
 
 ## 27. Game-Specific Product Rules
 
-Approved rules are limited to currency, global stake bounds, listed target RTPs, no winner tax, prohibited odds dependencies, and bankroll exposure. Exact Blackjack, Slots, Coinflip, RPS, Number Guessing, Gacha, and Loot Box rules listed in Section 41 require owner approval.
+### Blackjack
 
-No implementation may infer payout tables from current legacy behavior merely to meet a target RTP.
+The D02-approved rules use six decks, a securely shuffled persisted fresh shoe per session, dealer hit on soft 17, 5:4 natural profit payout (2.25x gross), and dealer-natural resolution before actions. Natural against natural is a push. Double is allowed only on hard 11. One Split is allowed only for Aces or 8s and creates at most two hands, with no Double after Split, no resplit Aces, one card for each split Ace, no surrender, and no insurance. Pushes refund 1x. Timeout after ten minutes auto-stands. One active Blackjack session is allowed per user. The complete D02 simulation verified the 97.5% target within the approved tolerance.
+
+### Slots
+
+Use six equally weighted symbols, three reels, and one payline. Any exact pair pays 2x gross. Triples pay: 7 at 8x, diamond at 5x, star at 4x, bell at 3x, cherry at 3x, and lemon at 2.2x. All other outcomes lose. The analytical RTP is 95%, hit rate is 44.444%, and maximum liability is 8x.
+
+### Coinflip, RPS, And Number Guessing
+
+- Coinflip uses fair 50/50 outcomes and gross payout `floor(stake * 19400 / 10000)` for 97% RTP.
+- RPS uses uniform independent choices, refunds draws at 1x, and pays wins `floor(stake * 19010 / 10000)` gross for 96.7% RTP.
+- Number Guessing uses one guess from 1-20 and 19x gross payout for 95% RTP. The Phase 5 command adds a wager; the disabled legacy free path remains unchanged.
+
+### Gacha
+
+Gacha costs exactly 1,000 ECY and selects with equal probability from: Ampas (Zonk), Nasi Bungkus, Panci Bolong, Kunci Jawaban UN, Waifu Wangi, Pedang Excalibur, Gundam Bekas, and Sertifikat Rumah. It grants no ECY payout, item, or inventory record; duplicates are allowed and there is no pity or guarantee. Financial RTP is not applicable. The cost is a completed Casino loss credited to `ECY_CASINO`, with no payout-liability reservation and no 2% cap application. Persist the random result and receipt exactly once.
+
+### Loot Box
+
+Loot Box costs exactly 1,000 ECY. Outcomes are 50% at 0 ECY, 30% at 1,000 ECY gross, 15% at 2,000 ECY gross, 4% at 5,000 ECY gross, and 1% at 15,000 ECY gross. Expected gross payout is 950 ECY for 95% RTP. The maximum 15x gross liability must fit the current exposure cap before acceptance.
+
+No implementation may infer or alter payout tables from legacy behavior. Any Blackjack adjustment after failed simulation requires renewed owner approval and may not secretly manipulate probabilities.
 
 ## 28. RTP Requirements
 
 The long-run gross payout divided by accepted stakes must converge to the approved target for each game with an approved RTP. Refunds are excluded from both accepted-stake and gross-payout totals for RTP reporting, while losses and wins are included. Any different accounting definition requires owner approval.
 
-Gacha and Loot Box RTP or expected value remain undefined. No acceptance claim may be made for them.
+Gacha has no financial payout, so financial RTP is not applicable. Loot Box has approved theoretical RTP of 95%. Blackjack remains a target until the provisional D02 simulation gate passes.
 
 ## 29. RTP Simulation Methodology
 
-The future simulator must:
+The simulator:
 
 - Use the same pure game engine as runtime settlement.
 - Accept explicit deterministic seeds.
 - Record code/ruleset checksum and configuration.
-- Exercise minimum, maximum, fixed, and owner-approved wager distributions.
-- Use an owner-approved Blackjack strategy model.
-- Report accepted stakes, gross payouts, refunds, observed RTP, variance, confidence interval or equivalent statistical bound, drawdown, maximum exposure, and outcome frequencies.
+- Exercise minimum stake, effective maximum, one 1,000-ECY step below effective maximum, a global 500,000-ECY request, insufficient exposure, active reservations, and integer-floor boundaries.
+- Use the frozen approved Blackjack strategy model.
+- Report theoretical RTP, simulated RTP, RTP after integer rounding, rejected-bet count, maximum reserved exposure, maximum observed drawdown, accepted stakes, gross payouts, refunds, variance, confidence interval, and outcome frequencies.
 - Fail on target/tolerance breach, invariant violation, integer overflow, impossible outcome, nondeterminism, or bankroll insolvency.
 - Emit a deterministic JSON report suitable for review.
 
-Casino-specific round counts, seeds, confidence level, tolerance, and maximum deviation require owner approval. The broader 1,000-user, 30-90-day economy simulation remains Phase 9 and does not replace Phase 5 per-game verification.
+Use 20 deterministic seeds. Run 1,000,000 rounds per seed for Slots, Coinflip, RPS, Number Guessing, and Loot Box; run 500,000 Blackjack sessions per seed. Use 99% confidence, zero invariant failures, and at most one seed outside the approved 99% interval. Tolerances are +/-0.10 percentage points for Coinflip and RPS, +/-0.20 for Blackjack, Slots, and Loot Box, and +/-0.30 for Number Guessing. Emit deterministic JSON. The broader 1,000-user, 30-90-day economy simulation remains Phase 9 and does not replace Phase 5 per-game verification.
 
 ## 30. Abuse Prevention
 
@@ -398,7 +444,7 @@ Casino-specific round counts, seeds, confidence level, tolerance, and maximum de
 - Service-level feature, pause, schema, and authorization checks.
 - Stable idempotency and unresolved-session reservations.
 - Actor-bound and message-bound interactions.
-- Cooldowns and session limits only after owner approval.
+- Approved cooldowns and session limits are secondary UX/rate controls and never replace database idempotency, uniqueness, or locking.
 - Maximum bankroll exposure and concurrent reservation accounting.
 - No client-provided random outcome or payout.
 - Monitoring for repeated invalid requests and unusual multi-account behavior without inventing account-age gates.
@@ -410,9 +456,9 @@ Casino-specific round counts, seeds, confidence level, tolerance, and maximum de
 - Use server-generated opaque IDs and validate custom IDs against persisted actor/session state.
 - Do not expose hidden outcomes, RNG internals, private environment values, or credentials.
 - Do not log full wallet history or unrelated private Discord data.
-- Administrative balance operations require explicit audited authorization.
+- Administrative balance operations require the appropriate separately represented and audited Casino authorization class.
 - Secure live randomness must not use user, balance, role, prior-result, or treasury inputs.
-- Rate-limit abandoned-session creation after owner-approved limits are defined.
+- Enforce the approved per-user and per-guild unresolved-session limits before stake debit.
 
 ## 32. Interaction Safety
 
@@ -423,6 +469,7 @@ Casino-specific round counts, seeds, confidence level, tolerance, and maximum de
 - A response failure after commit reports the stored result without retrying financial mutation.
 - Persistent custom IDs carry only opaque session/action identifiers, never hidden outcomes or balances.
 - Stale interactions return the committed receipt or a safe stale/review response.
+- Sanitized Blackjack, Slots, Coinflip, RPS, and Number Guessing results may be public. Slash Gacha and Loot Box results are ephemeral; prefix results are necessarily public. Validation errors, staff actions, recovery details, and hidden outcomes remain private.
 
 ## 33. Compatibility With Phase 1-4
 
@@ -441,7 +488,7 @@ Casino receipts and logs must never contain Deal participants, payment destinati
 
 ## 35. Testing Matrix
 
-Future implementation requires:
+Implementation verification requires:
 
 - Unit tests for canonical stake parsing, checked arithmetic, game engines, payout calculations, and lifecycle validation.
 - Property tests for zero-sum ledger entries, payout bounds, deterministic replay, and impossible-state rejection.
@@ -452,7 +499,10 @@ Future implementation requires:
 - Feature-flag, pause/resume, missing-migration, and unseeded-bankroll tests.
 - Migration dry-run, apply, second-run, backup/restore, production refusal, integrity, and foreign-key tests.
 - Overflow, malformed input, insufficient wallet, insufficient bankroll, and maximum-exposure tests.
-- RTP simulations for all five games with approved targets.
+- RTP simulations for Blackjack, Slots, Coinflip, RPS, Number Guessing, and Loot Box using all D18 seeds, boundary wagers, exposure conditions, integer-floor cases, metrics, tolerances, and invariant gates.
+- Gacha tests proving equal label selection, exactly-once persisted result/receipt, completed loss accounting, and absence of payout reservation.
+- Effective-maximum tests at minimum, one step below maximum, effective maximum, global 500,000 request, insufficient exposure, and active reservations for every financial game.
+- Authorization tests proving the three Casino classes are independent, Administrator is insufficient, owner has no implicit financial bypass, and emergency override is explicitly audited.
 - Legacy-routing tests while Phase 5 is disabled.
 - Command ownership and forbidden-alias tests.
 - Phase 1-4 regression tests.
@@ -492,8 +542,8 @@ Production migration, seed, and flag enablement are distinct approvals.
 
 ## 39. Implementation Order
 
-1. Resolve all owner decisions and freeze a versioned ruleset.
-2. Add pure game engines and deterministic simulation support.
+1. Use the recorded D01-D20 decisions to freeze versioned rulesets and service contracts; retain D02 as a simulation acceptance gate.
+2. Add pure game engines and deterministic simulation support, then run the D02 Blackjack acceptance gate before claiming verified 97.5% RTP.
 3. Add schema, migration, capability guard, and staging tooling.
 4. Add bankroll exposure, transaction, session, settlement, and recovery services.
 5. Route existing commands and views through the shared service behind the disabled flag.
@@ -507,7 +557,7 @@ Production migration, seed, and flag enablement are distinct approvals.
 
 Phase 5 is complete only when:
 
-- Every owner decision is approved and recorded.
+- D01-D20 remain recorded as approved with conditions; D02 has passed its simulation gate or any adjusted rules received renewed owner approval.
 - All seven games use ECY through one authoritative service when enabled.
 - Approved RTPs and game rules are represented by versioned pure engines.
 - Bankroll exposure, settlement, refund, and excess distribution are balanced and audited.
@@ -520,26 +570,47 @@ Phase 5 is complete only when:
 - Living PRD and generated handoff are current.
 - Production migration, seed, and enablement have separate explicit approval.
 
-## 41. REQUIRES OWNER DECISION
+## 41. Owner Decision Record D01-D20
 
-1. Whether the 2% Casino Bankroll cap applies to gross payout, net player profit, or total maximum reserved liability.
-2. How the cap applies to Blackjack Double and Split.
-3. Blackjack deck count, shuffle model, natural payout, dealer soft-17 rule, Split, Double, surrender, insurance, and timeout behavior.
-4. Slots symbol weights, paylines, and complete payout table.
-5. Coinflip payout or probability mechanism required to achieve 97% RTP.
-6. RPS payout and draw policy required to achieve 96.7% RTP.
-7. Number-guessing range, stake parameter, and payout table.
-8. Gacha fixed or variable stake, reward catalog, probabilities, ownership effects, expected value, and RTP.
-9. Loot Box fixed or variable stake, reward catalog, probabilities, ownership effects, expected value, and RTP.
-10. Per-game cooldowns, unresolved-session limits, and abandoned-session timeout.
-11. Public versus ephemeral result policy.
-12. Legacy `users.json` statistic migration and compatibility reporting.
-13. Legacy High Roller achievement and Lucky Charm behavior.
-14. Definition and data source for active members during the previous 30 days.
-15. Exact production Casino Bankroll seed.
-16. Authorization for bankroll seed, adjustment, and excess distribution.
-17. Excess-distribution schedule and minimum retained bankroll.
-18. Refund versus manual-review policy for ambiguous or expired sessions.
-19. Casino-specific simulation round counts, deterministic seeds, wager distributions, Blackjack strategy, confidence level, tolerance, and maximum deviation.
-20. Exact migration version; `500` is proposed but not approved.
-21. Exact feature-flag name; `ECONOMY_PHASE5_ENABLED` is proposed but not approved.
+Overall status: `approved_with_conditions`. There are no unresolved owner decisions. D02 was a mandatory simulation acceptance gate and is now passed.
+
+| ID | Status | Recorded decision |
+| --- | --- | --- |
+| D01 | `approved_with_revision` | The 2% cap applies to total maximum reserved gross liability. Effective maximum stake uses 1,000-ECY steps, available unreserved bankroll, and worst-case permitted Blackjack Double or Split exposure. |
+| D02 | `approved_recommended` | The final six-deck rules restrict Double to hard 11, Split to Aces/8s, and pay a winning natural at 5:4 profit (2.25x gross). The complete simulation passed the 97.5% target tolerance and seed gate. |
+| D03 | `approved_with_revision` | Approve the exact equal-weight one-payline Slots table at 95% RTP and 1,000-ECY wager steps. |
+| D04 | `approved_with_revision` | Approve fair Coinflip with `floor(stake * 19400 / 10000)` gross payout and 1,000-ECY wager steps. |
+| D05 | `approved_with_revision` | Approve uniform RPS with draw refund, `floor(stake * 19010 / 10000)` win payout, and 1,000-ECY wager steps. |
+| D06 | `approved_with_revision` | Approve one-attempt 1-20 Number Guessing at 19x gross and 1,000-ECY wager steps. |
+| D07 | `approved_with_revision` | Approve fixed 1,000-ECY cosmetic-only Gacha with equal eight-label outcomes, no payout or inventory grant, and no liability reservation. |
+| D08 | `approved_recommended` | Approve fixed 1,000-ECY Loot Box at 95% RTP and 15x maximum gross liability. |
+| D09 | `approved_with_revision` | Approve one unresolved session per user, one active Blackjack session per user, 100 unresolved sessions per guild, ten-minute Blackjack abandonment, 90-second replay controls, and committed-operation cooldowns. |
+| D10 | `approved_recommended` | Approve mixed public/ephemeral visibility with private errors, staff actions, and recovery details. |
+| D11 | `approved_recommended` | Preserve legacy statistics byte-for-byte and snapshot them only as idempotent read-only compatibility history; new statistics use committed settlements. |
+| D12 | `approved_recommended` | Keep High Roller as legacy history and Lucky Charm legacy-only with no Phase 5 odds effect. |
+| D13 | `approved_recommended` | Use the approved rolling-30-day committed non-Casino activity definition for active members. |
+| D14 | `approved_recommended` | Approve the exact safe-seed formula; the production seed transaction remains a separate cutover approval. |
+| D15 | `approved_with_revision` | Use independent `CASINO_CONTROL`, `CASINO_FINANCIAL`, and `CASINO_RECOVERY` classes with no Administrator or implicit owner financial bypass. |
+| D16 | `approved_recommended` | Distribute excess manually only while paused, retaining safe bankroll and unresolved/review liabilities, in 60/20/remainder proportions. |
+| D17 | `approved_recommended` | Recover from persisted state and original IDs; ambiguous state requires reviewed, authorized compensation. |
+| D18 | `approved_with_revision` | Approve the deterministic simulation matrix plus boundary, exposure, rejection, rounding, and drawdown reporting. |
+| D19 | `approved_recommended` | Migration identity `500` / `phase5-casino` is implemented for explicit non-production staging use only. |
+| D20 | `approved_recommended` | `ECONOMY_PHASE5_ENABLED=false` exists; missing prerequisites fail closed and production remains disabled. |
+
+## 42. Implementation And D18 Result
+
+Casino V1 now includes integer-only game engines, cryptographically unique wager request identities, one unresolved session per guild/user, persisted hidden outcomes, exact bankroll exposure reservations, balanced ECY ledger settlement, Blackjack action persistence, least-privilege staff controls, restart recovery, notification outbox delivery, explicit migration 500 tooling, and read-only dashboard status. Legacy routes remain active while the flag is false. No Casino write API was added.
+
+The first complete approved D18 run used 20 deterministic seeds, 1,000,000 rounds per seed for each fixed game, and 500,000 Blackjack sessions per seed. Its Blackjack result was `0.9796613279031707`, with 19 seeds outside acceptance.
+
+The owner-approved revision then restricted Double to hard 10-11 and Split to Aces/8s. The complete D18 matrix was rerun at the same full volume without dynamic tuning. Fixed-game results remained unchanged and passed. Revised Blackjack produced simulated and integer-rounded RTP `0.977603947051104` against target `0.975` and tolerance `0.002`. Its 99% confidence interval was `[0.9767933401952931, 0.9784143256333722]`; 5 seeds were outside the approved interval. The deviation above target was `0.002603947051104`, exceeding tolerance by `0.000603947051104`. Maximum reserved exposure was `500,000 ECY`, maximum observed drawdown was `186,600 ECY`, rejected wager cases were `3`, and invariant failures were `0`.
+
+The artifact for that hard-10-11 candidate had SHA-256 `d70cfaeedff671bed5c6e416ebce8e3a6dfb5e386267a9cf4c468da5426ab9f3`.
+
+The final owner-approved revision removed hard-10 Double and retained every other rule. The full harness was rerun rather than reusing fixed-game output, preserving the shared per-seed RNG sequence. Final Blackjack simulated and integer-rounded RTP was `0.9727344988964964`; its 99% confidence interval was `[0.9719145251803206, 0.9735540213511035]`. The result was `0.0022655011035036` below target and exceeded tolerance by `0.0002655011035036`. Two seeds were outside acceptance, maximum reserved exposure was `500,000 ECY`, maximum observed drawdown was `165,000 ECY`, rejected wager cases were `3`, and invariant failures were `0`. Fixed games passed with unchanged measured values. The final artifact SHA-256 is `1ae042eae52b4f45078b7308da2b0637c6f8b94be3cf6d67a801d4de4ef6b643`.
+
+At that point Phase 5 remained implemented but not staging-ready. The failed hard-11/6:5 result was preserved and no automatic adjustment was made before the separately approved natural-payout calibration.
+
+The final natural-payout calibration retained hard-11-only Double and changed a winning natural from 6:5 to 5:4 profit, producing 2.25x gross through checked integer arithmetic. The full harness ran at unchanged volume and produced Blackjack RTP `0.9748809836156533` with 99% confidence interval `[0.9740564018985632, 0.9757051127387927]`. Absolute deviation from target was `0.0001190163843467`; one seed was outside acceptance, maximum exposure remained `500,000 ECY`, maximum drawdown was `176,000 ECY`, rejected wager cases were `3`, and invariant failures were `0`. The complete D18 result passed. Artifact SHA-256: `b24dc703728749a6ee32d637f8b62fd676833627dd9498e06c7dba13f0dea285`.
+
+D02 is now passed and Phase 5 is **ready for connected Discord staging**. Dashboard production build and live staging remain pending. Production remains unapproved, unmigrated, unseeded, and disabled.

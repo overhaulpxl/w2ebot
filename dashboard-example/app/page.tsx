@@ -13,6 +13,7 @@ import {
   type MarketData,
   type LevelDistribution,
   type MarketplaceV1Status,
+  type CasinoV1Status,
 } from "@/lib/botApi";
 import { DashboardShell } from "@/components/DashboardShell";
 import { ToastProvider } from "@/components/Toast";
@@ -28,10 +29,11 @@ export default async function DashboardPage() {
   let market: MarketData | null = null;
   let levels: LevelDistribution | null = null;
   let marketplace: MarketplaceV1Status | null = null;
+  let casino: CasinoV1Status | null = null;
   let loadError: string | null = null;
 
   try {
-    [summary, leaderboard, botStats, channels, announceConfig, market, levels, marketplace] = await Promise.all([
+    [summary, leaderboard, botStats, channels, announceConfig, market, levels, marketplace, casino] = await Promise.all([
       botGet<SummaryResponse>("/api/stats/summary"),
       botGet<LeaderboardResponse>("/api/leaderboard?sort=coins&limit=10"),
       botGet<BotStats>("/api/bot/stats"),
@@ -40,6 +42,7 @@ export default async function DashboardPage() {
       botGet<MarketData>("/api/market"),
       botGet<LevelDistribution>("/api/economy/level-distribution"),
       botGet<MarketplaceV1Status>("/api/economy/v1-marketplace"),
+      botGet<CasinoV1Status>("/api/economy/v1-casino"),
     ]);
   } catch (e: any) {
     loadError = e.message;
@@ -63,6 +66,7 @@ export default async function DashboardPage() {
         market={market}
         levels={levels}
         marketplace={marketplace}
+        casino={casino}
         loadError={loadError}
       />
     </ToastProvider>

@@ -524,3 +524,14 @@ tidak dapat menetapkan Administrator, bot owner, atau `authorizationSource` send
 
 Phase 4 tetap `false` secara default. Migration 400 tidak pernah dijalankan oleh
 startup bot dan CLI menolak target database production.
+
+## Economy V1 Phase 5 Casino
+
+`GET /api/economy/v1-casino` bersifat read-only dan menampilkan status flag,
+capability migration 500, bankroll, reservasi liability, exposure cap, sesi
+unresolved, serta recovery review. Phase 5 tidak menambahkan API mutasi Casino.
+Seed, adjustment, distribusi, pause, authorization, dan recovery hanya tersedia
+melalui command staff Discord dan shared service layer.
+
+`ECONOMY_PHASE5_ENABLED=false` adalah default. Migration `500 / phase5-casino`
+bersifat eksplisit dan staging-only; startup tidak membuat schema Casino.

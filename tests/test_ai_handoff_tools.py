@@ -38,6 +38,8 @@ class LivingPrdToolingTests(unittest.TestCase):
         shutil.copy2(ROOT / "core.py", root / "core.py")
         shutil.copytree(ROOT / "economy", root / "economy", ignore=shutil.ignore_patterns("__pycache__"))
         shutil.copytree(ROOT / "cogs", root / "cogs", ignore=shutil.ignore_patterns("__pycache__"))
+        (root / "scripts").mkdir()
+        shutil.copy2(ROOT / "scripts" / "migrate_economy_phase5.py", root / "scripts" / "migrate_economy_phase5.py")
         return root
 
     @staticmethod
@@ -59,7 +61,7 @@ class LivingPrdToolingTests(unittest.TestCase):
             b"Update docs/project_state.json and run:\npython scripts/update_ai_handoff.py\n"
         ))
         self.assertEqual(hashlib.sha256(first).hexdigest(), hashlib.sha256(second).hexdigest())
-        self.assertIn(b"## Phase 5 Casino Planning\n", first)
+        self.assertIn(b"## Phase 5 Casino\n", first)
 
     def test_generator_import_has_no_file_side_effect(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -147,6 +149,10 @@ class LivingPrdToolingTests(unittest.TestCase):
         self._write_state(root, state)
         self.assertTrue(any("kemungkinan secret" in issue for issue in verify_ai_handoff.verify(root)))
         state = json.loads(json.dumps(self.state))
+        state["project"]["value"]["paymentAccount"] = "sensitive-placeholder"
+        self._write_state(root, state)
+        self.assertTrue(any("private environment/data" in issue for issue in verify_ai_handoff.verify(root)))
+        state = json.loads(json.dumps(self.state))
         state["productionStatus"]["value"]["enabled"] = True
         self._write_state(root, state)
         self.assertIn("production ditandai aktif tanpa approval eksplisit", verify_ai_handoff.verify(root))
@@ -155,14 +161,14 @@ class LivingPrdToolingTests(unittest.TestCase):
         self._write_state(root, state)
         self.assertIn("Phase 5 tidak berada pada guard status", verify_ai_handoff.verify(root))
 
-    def test_phase5_planning_guards(self):
+    def test_phase5_implementation_and_production_guards(self):
         mutations = (
-            ("implementationStatus", "started"),
+            ("implementationStatus", "not_started"),
             ("productionStatus", "approved"),
             ("productionMigrated", True),
             ("productionEnabled", True),
-            ("runtimeFeatureFlagExists", True),
-            ("migrationExists", True),
+            ("runtimeFeatureFlagExists", False),
+            ("migrationExists", False),
             ("planningDocument", "docs/missing.md"),
         )
         for field, value in mutations:
@@ -175,30 +181,120 @@ class LivingPrdToolingTests(unittest.TestCase):
 
         root = self._fixture_root()
         state = json.loads(json.dumps(self.state))
-        state["phase5Casino"]["value"]["ownerDecisions"] = []
-        self._write_state(root, state)
-        self.assertIn("Phase 5 owner decisions belum direkam", verify_ai_handoff.verify(root))
-
-        root = self._fixture_root()
-        state = json.loads(json.dumps(self.state))
-        state["blockers"]["value"] = ["Production cutover requires approval."]
-        self._write_state(root, state)
-        self.assertIn("Phase 5 owner decisions tidak tercatat sebagai blocker", verify_ai_handoff.verify(root))
-
-        root = self._fixture_root()
-        state = json.loads(json.dumps(self.state))
         state["pendingWork"]["value"] = ["Connected Discord staging validation"]
         self._write_state(root, state)
-        self.assertIn("Phase 5 implementation tidak tercatat sebagai pending work", verify_ai_handoff.verify(root))
+        self.assertIn("Phase 5 follow-up tidak tercatat sebagai pending work", verify_ai_handoff.verify(root))
 
         root = self._fixture_root()
-        with (root / "runtime_config.py").open("a", encoding="utf-8") as handle:
-            handle.write("\nECONOMY_PHASE5_ENABLED = False\n")
-        self.assertTrue(any("Phase 5 runtime flag sudah ada" in issue for issue in verify_ai_handoff.verify(root)))
+        runtime = root / "runtime_config.py"
+        runtime.write_text(runtime.read_text(encoding="utf-8").replace(
+            'ECONOMY_PHASE5_ENABLED = _env_bool("ECONOMY_PHASE5_ENABLED", False)',
+            'REMOVED_PHASE5_FLAG = False',
+        ), encoding="utf-8")
+        constants = root / "economy" / "constants.py"
+        constants.write_text(constants.read_text(encoding="utf-8").replace(
+            "ECONOMY_PHASE5_ENABLED", "REMOVED_PHASE5_FLAG"
+        ), encoding="utf-8")
+        self.assertIn("Phase 5 runtime flag existence tidak cocok state", verify_ai_handoff.verify(root))
 
         root = self._fixture_root()
-        (root / "economy" / "phase5_schema.py").write_text("PHASE5 = True\n", encoding="utf-8")
-        self.assertIn("Phase 5 migration atau runtime module sudah ada", verify_ai_handoff.verify(root))
+        (root / "scripts" / "migrate_economy_phase5.py").unlink()
+        self.assertIn("Phase 5 migration/runtime module existence tidak cocok state", verify_ai_handoff.verify(root))
+
+        root = self._fixture_root()
+        state = json.loads(json.dumps(self.state))
+        state["phase5Casino"]["value"]["simulationResult"]["passed"] = False
+        state["phase5Casino"]["value"]["simulationResult"]["stagingReady"] = False
+        state["phase5Casino"]["value"]["simulationResult"]["blockingDecision"] = "D02"
+        self._write_state(root, state)
+        self.assertIn("Phase 5 D18/D02 implementation result tidak valid", verify_ai_handoff.verify(root))
+
+        root = self._fixture_root()
+        state = json.loads(json.dumps(self.state))
+        state["phase5Casino"]["value"]["simulationResult"]["blackjack"]["simulatedRtp"] = 0.99
+        self._write_state(root, state)
+        self.assertIn("Phase 5 D18/D02 implementation result tidak valid", verify_ai_handoff.verify(root))
+
+    def test_phase5_decision_ids_statuses_and_d02_gate(self):
+        root = self._fixture_root()
+        state = json.loads(json.dumps(self.state))
+        state["phase5Casino"]["value"]["ownerDecisionRecords"].pop()
+        self._write_state(root, state)
+        self.assertIn("Phase 5 decision records harus tepat D01-D20 dan unik", verify_ai_handoff.verify(root))
+
+        root = self._fixture_root()
+        state = json.loads(json.dumps(self.state))
+        decisions = state["phase5Casino"]["value"]["ownerDecisionRecords"]
+        decisions[-1]["id"] = "D01"
+        self._write_state(root, state)
+        self.assertIn("Phase 5 decision records harus tepat D01-D20 dan unik", verify_ai_handoff.verify(root))
+
+        root = self._fixture_root()
+        state = json.loads(json.dumps(self.state))
+        state["phase5Casino"]["value"]["ownerDecisionRecords"][0]["status"] = "approved"
+        self._write_state(root, state)
+        self.assertIn("Phase 5 decision approval status tidak valid", verify_ai_handoff.verify(root))
+
+        root = self._fixture_root()
+        state = json.loads(json.dumps(self.state))
+        d02 = next(row for row in state["phase5Casino"]["value"]["ownerDecisionRecords"] if row["id"] == "D02")
+        d02["status"] = "provisionally_approved"
+        self._write_state(root, state)
+        self.assertIn("Phase 5 D18/D02 implementation result tidak valid", verify_ai_handoff.verify(root))
+
+        root = self._fixture_root()
+        state = json.loads(json.dumps(self.state))
+        d02 = next(row for row in state["phase5Casino"]["value"]["ownerDecisionRecords"] if row["id"] == "D02")
+        d02["condition"] = ""
+        state["phase5Casino"]["value"]["simulationAcceptanceGates"] = []
+        self._write_state(root, state)
+        issues = verify_ai_handoff.verify(root)
+        self.assertIn("Phase 5 D02 simulation/reapproval gate tidak valid", issues)
+        self.assertIn("Phase 5 D02 structured simulation gate tidak valid", issues)
+
+    def test_phase5_resolved_decisions_and_approved_values(self):
+        root = self._fixture_root()
+        state = json.loads(json.dumps(self.state))
+        state["phase5Casino"]["value"]["ownerDecisionStatus"] = "approved"
+        self._write_state(root, state)
+        self.assertIn("Phase 5 owner decision status tidak valid", verify_ai_handoff.verify(root))
+
+        root = self._fixture_root()
+        state = json.loads(json.dumps(self.state))
+        state["phase5Casino"]["value"]["unresolvedOwnerDecisions"] = ["stale"]
+        self._write_state(root, state)
+        self.assertIn("Phase 5 masih memiliki unresolved owner decisions", verify_ai_handoff.verify(root))
+
+        root = self._fixture_root()
+        state = json.loads(json.dumps(self.state))
+        state["blockers"]["value"].append("Phase 5 owner decisions must be approved before implementation.")
+        self._write_state(root, state)
+        self.assertIn("Phase 5 stale owner-decision blocker masih ada", verify_ai_handoff.verify(root))
+
+        for field, value, message in (
+            ("wagerIncrementEcy", 500, "Phase 5 wager increment harus 1000 ECY"),
+            ("fixedPricesEcy", {"gacha": 500, "lootBox": 1000}, "Phase 5 fixed Casino prices harus 1000 ECY"),
+            ("authorizationClasses", {}, "Phase 5 Casino authorization classes tidak valid"),
+            ("approvedMigration", {"version": 501, "name": "bad"}, "Phase 5 approved migration identity tidak valid"),
+            ("approvedFutureFeatureFlagName", "BAD_FLAG", "Phase 5 approved feature flag identity tidak valid"),
+        ):
+            with self.subTest(field=field):
+                root = self._fixture_root()
+                state = json.loads(json.dumps(self.state))
+                state["phase5Casino"]["value"][field] = value
+                self._write_state(root, state)
+                self.assertIn(message, verify_ai_handoff.verify(root))
+
+        for field, message in (
+            ("migrationExists", "Phase 5 migration existence guard tidak valid"),
+            ("runtimeFeatureFlagExists", "Phase 5 runtime feature flag existence guard tidak valid"),
+        ):
+            with self.subTest(field=field):
+                root = self._fixture_root()
+                state = json.loads(json.dumps(self.state))
+                state["phase5Casino"]["value"][field] = False
+                self._write_state(root, state)
+                self.assertIn(message, verify_ai_handoff.verify(root))
 
     def test_verifier_source_is_static_and_update_propagates_failure(self):
         source = (SCRIPTS / "verify_ai_handoff.py").read_text(encoding="utf-8")

@@ -24,9 +24,9 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 
 - **lastKnownBranch:** codex/seller-payout-hotfixes
 - **observedBranch:** codex/seller-payout-hotfixes
-- **observedHead:** 7ca5e70
+- **observedHead:** 8e924d4
 - **remotePushAfterPhase4:** false
-- **workingTreeAtSeed:** clean before Phase 5 planning
+- **workingTreeAtSeed:** clean before Phase 5 owner decision recording
 
 ## Project Progress
 
@@ -36,7 +36,7 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 | phase2 | Economy Progression | complete |
 | phase3 | RPG | complete_and_committed |
 | phase4 | Eternal Marketplace | complete_and_committed |
-| phase5 | Casino | planning |
+| phase5 | Casino | implemented_staging_ready |
 
 ## Capabilities By Phase
 
@@ -73,7 +73,14 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - moderation
   - recovery
 - **phase5:**
-  - Casino planning only; implementation requires owner decisions and separate approval
+  - ECY Casino games
+  - bankroll exposure reservations
+  - atomic settlement
+  - Blackjack persisted actions
+  - authorization classes
+  - restart recovery
+  - migration 500
+  - D18 simulation passed; ready for connected Discord staging
 
 ## Protected Systems
 
@@ -96,6 +103,7 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 - **ECONOMY PHASE2 ENABLED:** false
 - **ECONOMY PHASE3 ENABLED:** false
 - **ECONOMY PHASE4 ENABLED:** false
+- **ECONOMY PHASE5 ENABLED:** false
 - **ECONOMY V1 ENABLED:** false
 
 ## Command Ownership
@@ -140,6 +148,7 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 | 9b07585 | feat(economy): complete phase 3 RPG and staging hardening |
 | 02fcac317fb6d6856fc8a1f6ee27d6cba3661f0d | feat(economy): complete phase 4 eternal marketplace |
 | 7ca5e70 | feat(docs): add living PRD and AI coder handoff automation |
+| 8e924d4 | feat(docs): add phase 5 casino PRD and guarded planning state |
 
 ## Migrations And Checksums
 
@@ -175,6 +184,13 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - **name:** phase4-marketplace
   - **verificationStatus:** verified
   - **version:** 400
+-
+  - **checksum:** 05441b86aa7cbab27eb2cf01d94ee1f998077b68498cad52d03a79c33b1e2650
+  - **evidencePaths:**
+    - economy/phase5_schema.py
+  - **name:** phase5-casino
+  - **verificationStatus:** verified
+  - **version:** 500
 
 ## Catalog Versions And Checksums
 
@@ -507,8 +523,10 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 - **saleLifecycle:** PENDING, COMMITTED, REVIEW_REQUIRED, VOID; only committed sales have immutable buyer/seller receipts.
 - **userStates:** Missing is ACTIVE; RESTRICTED limits new marketplace mutation; FROZEN requires staff-audited return.
 
-## Phase 5 Casino Planning
+## Phase 5 Casino
 
+- **approvedFutureFeatureFlagDefault:** false
+- **approvedFutureFeatureFlagName:** ECONOMY_PHASE5_ENABLED
 - **approvedGames:**
   - Blackjack
   - Coinflip
@@ -517,21 +535,49 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - Number guessing
   - Gacha
   - Loot boxes
+- **approvedMigration:**
+  - **name:** phase5-casino
+  - **version:** 500
 - **approvedTargets:**
-  - **Blackjack:** 97.5% RTP
+  - **Blackjack:** 97.5% target RTP verified by complete D02 simulation
   - **Coinflip:** 97% RTP
+  - **Gacha:** financial RTP not applicable
+  - **Loot box:** 95% RTP
   - **Number guessing:** 95% RTP
   - **Rock-paper-scissors:** 96.7% RTP
   - **Slots:** 95% RTP
+- **authorizationClasses:**
+  - **CASINO CONTROL:**
+    - pause
+    - resume
+    - status
+  - **CASINO FINANCIAL:**
+    - initial_seed
+    - bankroll_adjustment
+    - excess_distribution
+  - **CASINO RECOVERY:**
+    - reviewed_refund
+    - review_resolution
+    - compensating_settlement
 - **bankroll:**
+  - **activeMemberDefinition:** Current non-bot guild member with at least one committed approved non-Casino activity event in the rolling previous 30 UTC days.
   - **burnMechanism:** Use the existing ECY_BURN system account; do not create another burn account.
-  - **excessDistribution:** 60% treasury, 20% locked reserve, 20% burn
+  - **distributionMode:** manual only while Casino is paused
+  - **excessDistribution:** 60% ECY_GENERAL, 20% ECY_RESERVE, remainder ECY_BURN
+  - **exposureCapBasis:** total maximum reserved gross liability
+  - **exposureCapBps:** 200
   - **lossDestination:** ECY_CASINO
+  - **safeRequirement:** max(25000000 ECY, 100000 ECY * approved active-member count)
   - **silentMinting:** false
 - **betRangeEcy:**
-  - **maximum:** 500000
+  - **maximumRequestCeiling:** 500000
   - **minimum:** 1000
 - **currency:** ECY
+- **effectiveMaximumStake:**
+  - **blackjackExposure:** Initial acceptance reserves the highest liability still possible through either Double or the permitted Split path.
+  - **capBasis:** total maximum reserved gross liability
+  - **definition:** min(500000 ECY, maximum 1000-ECY-step stake whose complete worst-case gross liability fits the current 2% exposure cap and available unreserved bankroll)
+  - **displayWhenReduced:** true
 - **eternalOptionsPhase:** Phase 8
 - **existingCasinoObservations:**
   -
@@ -596,30 +642,86 @@ Permanent machine-readable project handoff. Code and committed constraints outra
     - **game:** ECY burn
     - **observation:** ECY_BURN already exists as the authoritative ECY BURN system account and is included in supply reporting.
     - **verificationStatus:** repository_observed
-- **implementationStatus:** not_started
-- **migrationExists:** false
-- **ownerDecisions:**
-  - Define whether the 2% Casino Bankroll cap applies to gross payout, net player profit, or total maximum reserved liability.
-  - Define how the 2% cap applies to Blackjack Double and Split.
-  - Approve Blackjack deck, shuffle, natural payout, soft-17, Split, Double, surrender, insurance, and timeout rules.
-  - Approve Slots weights, paylines, and payout table.
-  - Approve the Coinflip mechanism required for 97% RTP.
-  - Approve the Rock-paper-scissors payout and draw policy required for 96.7% RTP.
-  - Approve Number-guessing range, stake, and payout.
-  - Approve Gacha and Loot-box stakes, rewards, probabilities, ownership effects, expected value, and RTP.
-  - Approve cooldowns, active-session limits, abandoned-session timeout, and public or ephemeral result behavior.
-  - Approve legacy statistic migration, High Roller achievement behavior, and Lucky Charm compatibility.
-  - Define active-member bankroll sizing, exact production seed, adjustment authorization, excess-distribution authorization and schedule, and retained safety threshold.
-  - Approve ambiguous or expired-session refund policy.
-  - Approve simulation rounds, seeds, wager distributions, Blackjack strategy, confidence level, tolerance, and failure threshold.
-  - Approve migration version 500 and feature flag ECONOMY_PHASE5_ENABLED before implementation.
-- **planningDocument:** docs/PHASE5_CASINO_PRD.md
-- **productionEnabled:** false
-- **productionMigrated:** false
-- **productionStatus:** not_approved
-- **proposedFeatureFlag:** ECONOMY_PHASE5_ENABLED
-- **proposedMigrationVersion:** 500
-- **proposedTables:**
+- **fixedPricesEcy:**
+  - **gacha:** 1000
+  - **lootBox:** 1000
+- **gameRules:**
+  - **Blackjack:**
+    - **dealerNaturalCheck:** before player actions
+    - **dealerSoft17:** hit
+    - **decks:** 6
+    - **double:** hard 11 only
+    - **doubleAfterSplit:** false
+    - **insurance:** false
+    - **naturalPayout:** 5:4 profit / 2.25x gross
+    - **naturalPush:** true
+    - **resplitAces:** false
+    - **split:** one split maximum, Aces and 8s only
+    - **splitAcesCards:** 1
+    - **status:** D02 simulation passed
+    - **surrender:** false
+    - **timeout:** auto-stand after 10 minutes
+  - **Coinflip:**
+    - **grossPayout:** floor(stake * 19400 / 10000)
+    - **outcomes:** fair 50/50
+    - **rtp:** 97%
+  - **Gacha:**
+    - **duplicates:** true
+    - **financialPayout:** false
+    - **fixedPriceEcy:** 1000
+    - **inventoryGrant:** false
+    - **liabilityReservation:** false
+    - **lossDestination:** ECY_CASINO
+    - **outcomes:**
+      - Ampas (Zonk)
+      - Nasi Bungkus
+      - Panci Bolong
+      - Kunci Jawaban UN
+      - Waifu Wangi
+      - Pedang Excalibur
+      - Gundam Bekas
+      - Sertifikat Rumah
+    - **pity:** false
+    - **probability:** equal
+  - **Loot box:**
+    - **fixedPriceEcy:** 1000
+    - **maximumGrossLiability:** 15x
+    - **outcomes:**
+      | grossEcy | probability |
+      | --- | --- |
+      | 0 | 50% |
+      | 1000 | 30% |
+      | 2000 | 15% |
+      | 5000 | 4% |
+      | 15000 | 1% |
+    - **rtp:** 95%
+  - **Number guessing:**
+    - **attempts:** 1
+    - **grossPayout:** 19x
+    - **phase5Command:** adds a wager while preserving the disabled legacy free path
+    - **range:** 1-20
+    - **rtp:** 95%
+  - **Rock-paper-scissors:**
+    - **choices:** uniform independent
+    - **draw:** 1x refund
+    - **rtp:** 96.7%
+    - **winGrossPayout:** floor(stake * 19010 / 10000)
+  - **Slots:**
+    - **exactPairGrossMultiplier:** 2x
+    - **paylines:** 1
+    - **reels:** 3
+    - **rtp:** 95%
+    - **symbols:** 6
+    - **tripleGrossMultipliers:**
+      - **7:** 8x
+      - **bell:** 3x
+      - **cherry:** 3x
+      - **diamond:** 5x
+      - **lemon:** 2.2x
+      - **star:** 4x
+    - **weights:** equal
+- **implementationStatus:** implemented
+- **implementedTables:**
   - CasinoSession
   - CasinoSessionAction
   - CasinoSettlement
@@ -627,69 +729,231 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - CasinoBankrollDistribution
   - CasinoNotificationOutbox
   - CasinoRecoveryReview
+  - CasinoLegacyStatistic
+  - CasinoAuthorization
+  - CasinoAuthorizationAudit
+- **legacyCasinoPolicy:**
+  - **highRoller:** Preserve gambler_king as legacy history; no Phase 5 award until a separate ECY threshold is approved.
+  - **luckyCharm:** Legacy-only and ignored by Phase 5; it never changes odds.
+  - **statistics:** Preserve users.json.games byte-for-byte and create only an idempotent read-only source-hashed compatibility snapshot; derive new statistics from committed Phase 5 settlements and display them separately.
+- **migrationChecksum:** 05441b86aa7cbab27eb2cf01d94ee1f998077b68498cad52d03a79c33b1e2650
+- **migrationExists:** true
+- **ownerDecisionRecords:**
+  | condition | decision | id | simulationGateStatus | status |
+  | --- | --- | --- | --- | --- |
+  | - | The 2% cap applies to total maximum reserved gross liability; effective maximum stake is exposure- and bankroll-limited and includes Blackjack Double or Split worst-case liability. | D01 | - | approved_with_revision |
+  | The complete deterministic rerun measured RTP 0.9748809836156533 and passed the approved tolerance, confidence, seed, and invariant gates. | The approved rules keep six decks and H17, restrict Double to hard 11 and Split to Aces/8s, and pay a winning natural at 5:4 profit / 2.25x gross. | D02 | passed | approved_recommended |
+  | - | Approve the exact equal-weight one-payline Slots table at 95% RTP with 1000-ECY wager increments. | D03 | - | approved_with_revision |
+  | - | Approve fair Coinflip with floor(stake*19400/10000) gross payout and 1000-ECY wager increments. | D04 | - | approved_with_revision |
+  | - | Approve uniform RPS, draw refund, floor(stake*19010/10000) win payout, and 1000-ECY wager increments. | D05 | - | approved_with_revision |
+  | - | Approve one-attempt 1-20 Number Guessing at 19x gross and 1000-ECY wager increments. | D06 | - | approved_with_revision |
+  | - | Approve cosmetic-only Gacha at fixed 1000 ECY with equal eight-label outcomes, no payout or inventory grant, and no liability reservation. | D07 | - | approved_with_revision |
+  | - | Approve the fixed 1000-ECY Loot Box table at 95% RTP and 15x maximum gross liability. | D08 | - | approved_recommended |
+  | - | Approve one unresolved session per user, one active Blackjack session per user, 100 unresolved sessions per guild, ten-minute Blackjack abandonment, 90-second replay controls, and approved per-game cooldowns. | D09 | - | approved_with_revision |
+  | - | Approve mixed public/ephemeral result visibility with private errors, staff actions, and recovery details. | D10 | - | approved_recommended |
+  | - | Preserve legacy users.json statistics byte-for-byte and snapshot them idempotently as read-only compatibility history; derive new statistics from committed settlements. | D11 | - | approved_recommended |
+  | - | Preserve High Roller as legacy history and treat Lucky Charm as legacy-only with no Phase 5 odds effect. | D12 | - | approved_recommended |
+  | - | Use the approved rolling-30-day committed non-Casino activity definition for active-member bankroll sizing. | D13 | - | approved_recommended |
+  | - | Approve max(25,000,000 ECY, 100,000 ECY times active members) as the exact seed formula; production amount remains a cutover approval. | D14 | - | approved_recommended |
+  | - | Use separately represented and audited CASINO_CONTROL, CASINO_FINANCIAL, and CASINO_RECOVERY authorization classes without Administrator or implicit owner financial bypass. | D15 | - | approved_with_revision |
+  | - | Approve manual excess distribution only while paused, retaining safe bankroll plus unresolved/review liabilities and allocating 60/20/remainder to general/reserve/burn. | D16 | - | approved_recommended |
+  | - | Approve persisted-state recovery, timeout auto-stand, immutable identity replay, and audited recovery-class compensation for reviewed ambiguity. | D17 | - | approved_recommended |
+  | - | Approve the deterministic simulation matrix and additional boundary/exposure cases with separate theoretical, simulated, rounded RTP, rejection, exposure, and drawdown reporting. | D18 | - | approved_with_revision |
+  | - | Migration identity 500 named phase5-casino is implemented for explicit non-production staging use only. | D19 | - | approved_recommended |
+  | - | ECONOMY_PHASE5_ENABLED exists with default false; enabled missing prerequisites fail closed without legacy fallback. | D20 | - | approved_recommended |
+- **ownerDecisionStatus:** approved_with_conditions
+- **planningDocument:** docs/PHASE5_CASINO_PRD.md
+- **productionEnabled:** false
+- **productionMigrated:** false
+- **productionStatus:** not_approved
+- **recoveryPolicy:**
+  - **ambiguousState:** REVIEW_REQUIRED without replacement identity
+  - **blackjackRestart:** resume; abandonment timeout auto-stands
+  - **departedUser:** receives persisted settlement
+  - **missingDiscordMessage:** does not reverse financial truth
+  - **provableDebitedOperation:** settle using persisted original identities
+  - **reviewResolution:** requires CASINO_RECOVERY and an audited compensating action
+  - **unacceptedConfirmation:** expires without debit
+  - **validPersistedOperation:** resume or settle using original IDs
+- **resultVisibilityPolicy:**
+  - **ephemeralSlash:**
+    - Gacha
+    - Loot box
+  - **prefix:** public because prefix has no ephemeral response
+  - **private:**
+    - validation errors
+    - staff actions
+    - recovery details
+    - unresolved hidden outcomes
+  - **publicSanitized:**
+    - Blackjack
+    - Slots
+    - Coinflip
+    - Rock-paper-scissors
+    - Number guessing
 - **roadmapPhase:** Phase 5
-- **runtimeFeatureFlagExists:** false
+- **runtimeFeatureFlagExists:** true
 - **scope:** Casino
-- **status:** planning
+- **sessionPolicy:**
+  - **blackjackAbandonmentSeconds:** 600
+  - **cooldownRule:** Cooldowns are secondary UX controls and never replace database idempotency, uniqueness, or locking.
+  - **cooldownsAfterCommittedTerminalSeconds:**
+    - **Blackjack:** 5
+    - **Coinflip:** 3
+    - **Gacha:** 5
+    - **Loot box:** 5
+    - **Number guessing:** 3
+    - **Rock-paper-scissors:** 3
+    - **Slots:** 3
+  - **maxActiveBlackjackPerUser:** 1
+  - **maxUnresolvedPerGuild:** 100
+  - **maxUnresolvedPerUser:** 1
+  - **replayControlSeconds:** 90
+- **simulationAcceptanceGates:**
+  | decisionId | gate | status |
+  | --- | --- | --- |
+  | D02 | The complete deterministic Blackjack simulation satisfied the approved 97.5% target tolerance, confidence, seed, and invariant thresholds without probability manipulation. | passed |
+- **simulationPolicy:**
+  - **acceptance:** Zero invariant failures and at most one seed outside the approved 99% interval.
+  - **confidence:** 99%
+  - **deterministicSeeds:** 20
+  - **requiredMetrics:**
+    - theoretical RTP
+    - simulated RTP
+    - RTP after integer rounding
+    - rejected-bet count
+    - maximum reserved exposure
+    - maximum observed drawdown
+  - **requiredWagers:**
+    - minimum stake
+    - effective maximum stake
+    - one 1000-ECY step below effective maximum
+    - global 500000-ECY request
+    - insufficient exposure
+    - bankroll with active reservations
+    - integer-floor boundaries
+  - **roundsPerSeed:**
+    - **Blackjack:** 500000
+    - **Coinflip:** 1000000
+    - **Loot box:** 1000000
+    - **Number guessing:** 1000000
+    - **Rock-paper-scissors:** 1000000
+    - **Slots:** 1000000
+  - **tolerancePercentagePoints:**
+    - **Blackjack:** 0.2
+    - **Coinflip:** 0.1
+    - **Loot box:** 0.2
+    - **Number guessing:** 0.3
+    - **Rock-paper-scissors:** 0.1
+    - **Slots:** 0.2
+- **simulationResult:**
+  - **artifactSha256:** b24dc703728749a6ee32d637f8b62fd676833627dd9498e06c7dba13f0dea285
+  - **blackjack:**
+    - **absoluteDeviation:** 0.0001190163843467
+    - **confidenceInterval99:**
+      - 0.9740564018985632
+      - 0.9757051127387927
+    - **maximumObservedDrawdownEcy:** 176000
+    - **maximumReservedExposureEcy:** 500000
+    - **rejectedBetCount:** 3
+    - **rtpAfterIntegerRounding:** 0.9748809836156533
+    - **seedsOutsideAcceptance:** 1
+    - **simulatedRtp:** 0.9748809836156533
+    - **theoreticalRtp:** 0.975
+    - **tolerance:** 0.002
+  - **blockingDecision:** -
+  - **candidate:** Double hard 11 only; Split Aces/8s only; natural 5:4 profit / 2.25x gross
+  - **completed:** true
+  - **configuration:**
+    - **blackjackSessionsPerSeed:** 500000
+    - **roundsPerSeedFixedGames:** 1000000
+    - **seeds:** 20
+  - **evidencePath:** docs/PHASE5_CASINO_PRD.md
+  - **fixedGameResultsReused:** false
+  - **invariantFailures:** 0
+  - **otherGamesPassed:** true
+  - **passed:** true
+  - **priorArtifactSha256:** 1ae042eae52b4f45078b7308da2b0637c6f8b94be3cf6d67a801d4de4ef6b643
+  - **stagingReady:** true
+- **status:** implemented_staging_ready
+- **unresolvedOwnerDecisions:**
+  - -
+- **wagerIncrementEcy:** 1000
 - **winnerTax:** none
 
 ## Module Ownership
 
 - **cogs:**
   - **cogs/deal.py:** Deal, Middleman, payment, dispute, archive
-  - **cogs/economy.py:** Economy adapters
+  - **cogs/economy.py:** Economy and Casino staff adapters
   - **cogs/marketplace.py:** Marketplace commands
-  - **cogs/rpg.py:** legacy RPG and routing
+  - **cogs/rpg.py:** legacy RPG plus flag-gated Casino game routing
   - **cogs/rpg phase3.py:** Phase 3 interactions
 - **economy:**
+  - **economy/casino.py:** Casino transactions, bankroll, authorization, and recovery resolution
+  - **economy/casino games.py:** pure integer Casino game engines
+  - **economy/casino simulation.py:** deterministic D18 simulation
   - **economy/catalog.py:** RPG catalog
   - **economy/ledger.py:** atomic transactions and ledger
   - **economy/marketplace.py:** Marketplace services
   - **economy/phase3 schema.py:** Phase 3 schema hardening
   - **economy/phase4 schema.py:** Marketplace schema
+  - **economy/phase5 migrations.py:** staging-only migration and reconciliation
+  - **economy/phase5 recovery.py:** restart recovery and outbox
+  - **economy/phase5 schema.py:** canonical migration 500 schema and checksum
 - **livingPrd:**
   - **docs/AI CODER HANDOFF.md:** generated onboarding document
-  - **docs/PHASE5 CASINO PRD.md:** approved Phase 5 Casino planning document
+  - **docs/PHASE5 CASINO PRD.md:** approved Phase 5 Casino specification and implementation status
   - **docs/project state.json:** authoritative structured state
   - **scripts/generate ai handoff.py:** pure renderer and generator
   - **scripts/update ai handoff.py:** generator/verifier wrapper
   - **scripts/verify ai handoff.py:** static verifier
 - **runtime:**
-  - **core.py:** shared persistence, FakeInteraction, events, web API
+  - **core.py:** shared persistence, FakeInteraction, events, read-only web API
   - **main.py:** entry point and cog setup
   - **runtime config.py:** database path, staging guards, feature flags
 - **tests:**
-  - **tests/test ai handoff tools.py:** Living PRD deterministic/static tooling and Phase 5 planning guards
-  - **tests/test economy *.py:** Phase 1-3 economy/RPG
+  - **tests/test ai handoff tools.py:** Living PRD deterministic/static tooling and Phase 5 guards
+  - **tests/test economy *.py:** Phase 1-5 economy/RPG/Casino
+  - **tests/test economy casino*.py:** Phase 5 engine, migration, transaction, recovery, command, and simulation
   - **tests/test marketplace*.py:** Phase 4 Marketplace
 
 ## Verification History
 
-- **commandOwnership:** passed
-- **forbiddenAliases:** absent
+- **commandOwnership:** passed through static verifier
+- **d18Simulation:** complete full-volume run passed; Blackjack RTP 0.9748809836156533, one seed outside acceptance, zero invariant failures
+- **forbiddenAliases:** absent through static verifier
 - **gitDiffCheck:** passed
+- **historicalBaseline:**
+  - **marketplaceTests:** 64 passed
+  - **phase1To3Tests:** 87 passed
+  - **total:** 151 passed
+- **livingPrdToolingTests:** 13 passed
 - **mainImportTemporaryDatabase:** passed
 - **marketplaceTests:** 64 passed
-- **note:** Historical seed result; not rerun by Living PRD tooling task.
-- **phase1To3Tests:** 87 passed
+- **migration500SecondRun:** idempotent replay
+- **phase1To5EconomyTests:** 120 effective passes: 119 passed in isolated no-Git copy and the single Git-ignore test passed separately in the repository
+- **phase5NaturalPayoutAffectedTests:** 8 passed
 - **pyCompile:** passed
 - **sqliteForeignKeyErrors:** 0
 - **sqliteIntegrityCheck:** ok
-- **total:** 151 passed
 
 ## Staging
 
 - **liveDiscord:** pending
+- **phase5Readiness:** ready_for_connected_discord_staging
 - **requirements:**
   - dedicated staging bot
   - non-production SQLite copy
   - dedicated staging guild
-  - all flags enabled only for staging
+  - all required flags enabled only for staging
+  - manual command and restart smoke test
 - **scripts:**
-  - scripts/migrate_economy_phase4.py
-  - scripts/setup_phase4_staging.py
-  - scripts/run_phase4_staging.py
-  - scripts/run_phase4_staging.ps1
+  - scripts/migrate_economy_phase5.py
+  - scripts/setup_phase5_staging.py
+  - scripts/run_phase5_staging.py
+  - scripts/run_phase5_staging.ps1
+  - scripts/simulate_phase5_casino.py
 
 ## Dashboard
 
@@ -711,23 +975,20 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 
 ## Known Limitations
 
-- Live Discord staging remains pending.
+- Connected Discord staging remains pending.
 - Dashboard production build remains pending.
-- Historical test totals are retained but not rerun by this documentation-only task.
 - Deal runtime claims are retained as last-known until a separately scoped audit verifies them.
 
 ## Blockers
 
 - Production cutover requires separate explicit approval.
-- Production flags must remain disabled.
-- Phase 5 owner decisions in docs/PHASE5_CASINO_PRD.md must be approved before implementation, including bankroll-cap semantics, game rules, payout models, simulation criteria, seed authority, and recovery policy.
+- Production migration 500 has not occurred and all production flags must remain disabled.
 
 ## Pending Work
 
-- Connected Discord staging validation
+- Phase 5 connected Discord staging validation
 - Dashboard production build
 - Production rollout approval
-- Phase 5 Casino implementation after all owner decisions and a separate implementation approval
 
 ## AI Coder Onboarding
 
@@ -783,7 +1044,12 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 | 9b07585 | 2026-07-13 | Phase 3 RPG Completed |
 | 02fcac317fb6d6856fc8a1f6ee27d6cba3661f0d | 2026-07-13 | Phase 4 Eternal Marketplace Completed |
 | 7ca5e70 | 2026-07-14 | Living PRD Automation Implemented |
-| PENDING | 2026-07-14 | Phase 5 Casino PRD And Planning |
+| 8e924d4 | 2026-07-14 | Phase 5 Casino PRD And Planning |
+| PENDING | 2026-07-14 | Phase 5 Casino Owner Decision Recording |
+| PENDING | 2026-07-14 | Phase 5 Casino Implemented; D02 Staging Blocker Recorded |
+| PENDING | 2026-07-14 | Phase 5 Blackjack D02 Revision Candidate Failed |
+| PENDING | 2026-07-14 | Phase 5 Blackjack Final D02 Candidate Failed |
+| PENDING | 2026-07-14 | Phase 5 Blackjack Natural-Payout D02 Passed |
 
 ## Current Handoff Summary
 
@@ -794,5 +1060,7 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - Phase 3 RPG
   - Phase 4 Eternal Marketplace
   - Living PRD automation
-  - Phase 5 Casino planning document
-- **current:** Phase 5 Casino is planning only and blocked on owner decisions. Implementation is not started; no Phase 5 flag or migration exists; production remains unapproved, unmigrated, and disabled.
+  - Phase 5 Casino planning and D01-D20 decisions
+  - Phase 5 Casino runtime, migration, recovery, commands, and complete D18 simulation
+  - Phase 5 Blackjack natural-payout D02 gate passed
+- **current:** Phase 5 Casino is implemented with all defaults false and production unmigrated. The final hard-11/Aces-8s/5:4-natural rules measured RTP 0.9748809836156533 and passed D02. Phase 5 is ready for connected Discord staging; dashboard production build and production approval remain pending.

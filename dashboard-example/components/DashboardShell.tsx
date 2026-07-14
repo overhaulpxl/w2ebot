@@ -59,6 +59,7 @@ export function DashboardShell({
   market,
   levels,
   marketplace,
+  casino,
   loadError,
 }: {
   summary: SummaryResponse | null;
@@ -69,6 +70,7 @@ export function DashboardShell({
   market: MarketData | null;
   levels: LevelDistribution | null;
   marketplace: MarketplaceV1Status | null;
+  casino: import("@/lib/botApi").CasinoV1Status | null;
   loadError: string | null;
 }) {
   const [section, setSection] = useState<SectionId>("overview");
@@ -179,7 +181,7 @@ export function DashboardShell({
           <div key={section} className="section-anim">
             {section === "overview" && <Overview summary={summary} />}
             {section === "stats" && <BotStatsView stats={botStats} loadError={loadError} />}
-            {section === "analytics" && <Analytics market={market} levels={levels} marketplace={marketplace} />}
+            {section === "analytics" && <Analytics market={market} levels={levels} marketplace={marketplace} casino={casino} />}
             {section === "players" && <Players leaderboard={leaderboard} loadError={loadError} onSelectUser={setSelectedUserId} />}
             {section === "economy" && <Economy summary={summary} />}
             {section === "server" && (

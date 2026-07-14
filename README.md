@@ -139,6 +139,24 @@ Launcher `scripts/run_phase4_staging.py` hanya membaca `.env.staging`, menolak
 database production, mewajibkan keempat flag staging, dan memverifikasi schema
 sebelum memulai bot.
 
+## Economy V1 Phase 5 Casino (Disabled)
+
+Casino V1 menggunakan ECY, ledger Economy V1, bankroll `ECY_CASINO`, dan
+reservasi gross liability. Default `ECONOMY_PHASE5_ENABLED=false`; migration
+500 tidak pernah berjalan saat startup dan production belum disetujui.
+
+```powershell
+python scripts/migrate_economy_phase5.py --mode dry-run --database staging/casino.db
+python scripts/migrate_economy_phase5.py --mode apply --database staging/casino.db --backup staging/pre-phase5.db
+python scripts/migrate_economy_phase5.py --mode verify --database staging/casino.db
+python scripts/migrate_economy_phase5.py --mode reconcile --database staging/casino.db
+python scripts/simulate_phase5_casino.py
+```
+
+Command Casino lama tetap memakai wallet legacy selama flag Phase 5 false. Saat
+flag true, schema, seed, pause state, wallet, dan exposure harus lolos guard;
+kegagalan tidak fallback ke saldo legacy.
+
 ---
 
 ## Quick Start
