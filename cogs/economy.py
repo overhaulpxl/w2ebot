@@ -2,6 +2,8 @@ import asyncio
 import discord
 import logging
 import uuid
+import json
+import aiosqlite
 from discord import app_commands
 
 from core import ALLOWED_SERVER_ID, DB_PATH, get_announce_channel, register_ready_startup_task
@@ -57,6 +59,11 @@ from economy.mining import (
 )
 from economy.phase7_recovery import recover_phase7
 from economy.constants import MINING_RIG_CATALOG
+from economy.database import configure_connection
+from economy.phase9b_schema import phase9b_capability
+from economy.notification_delivery import (
+    claim_deliveries, finalize_delivery, reserve_crypto_news_outbox,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -108,6 +115,11 @@ async def _deliver_phase5_notifications(client, *, limit=100):
 
 
 async def _deliver_phase6_news(client, *, limit=100):
+    async with aiosqlite.connect(DB_PATH) as phase9b_db:
+        await configure_connection(phase9b_db)
+        if await phase9b_capability(phase9b_db):
+            return await _deliver_phase9b_notifications(client, limit=limit)
+
     async def find_existing(channel, marker):
         async for previous in channel.history(limit=20):
             if marker in str(getattr(previous, "content", "")):
@@ -154,6 +166,83 @@ async def _deliver_phase6_news(client, *, limit=100):
             logger.exception("Phase 6 news delivery failed outbox=%s", row.get("outboxId"))
             failed += 1
     return {"scanned": len(rows), "delivered": delivered, "failed": failed}
+
+
+async def _deliver_phase9b_notifications(client, *, limit=100):
+    lease_owner = f"phase9b-discord:{uuid.uuid4()}"
+    async with aiosqlite.connect(DB_PATH) as db:
+        await configure_connection(db)
+        await db.execute("BEGIN IMMEDIATE")
+        if not await phase9b_capability(db):
+            await db.rollback()
+            return {"scanned": 0, "delivered": 0, "failed": 0, "reviewRequired": 0}
+        await reserve_crypto_news_outbox(db, limit=limit)
+        rows = await claim_deliveries(db, lease_owner=lease_owner, limit=limit)
+        await db.commit()
+
+    delivered = failed = review = 0
+    for row in rows:
+        outcome = None; message_id = None; failure_code = None; marker_inspected = False
+        try:
+            guild = client.get_guild(int(row["guildId"]))
+            channel = guild.get_channel(int(row["channelId"])) if guild else None
+            if channel is None or not hasattr(channel, "history") or not hasattr(channel, "send"):
+                outcome, failure_code, marker_inspected = "FAILED", "destination_unavailable", True
+            else:
+                try:
+                    adopted = None
+                    async for previous in channel.history(limit=50):
+                        if row["marker"] in str(getattr(previous, "content", "")):
+                            adopted = previous
+                            break
+                    marker_inspected = True
+                except (discord.Forbidden, discord.HTTPException, asyncio.TimeoutError):
+                    outcome, failure_code = "REVIEW_REQUIRED", "marker_inspection_uncertain"
+                    adopted = None
+                if outcome is None and adopted is not None:
+                    outcome, message_id = "SENT", str(adopted.id)
+                elif outcome is None:
+                    payload = json.loads(row["payloadJson"])
+                    if row["sourceType"] == "CRYPTO_NEWS_OUTBOX":
+                        change = int(payload["changeBps"]) / 100
+                        body = (f"**{payload['newsType']} CRYPTO** - {payload['symbol']} berubah "
+                                f"**{change:+.2f}%** menjadi **{int(payload['currentPriceEcy']):,} ECY**.")
+                    else:
+                        body = str(payload.get("content", "Notifikasi dashboard"))
+                    role = row.get("roleMentionId") if row["deliveryKind"] == "EVENT" else None
+                    content = f"<@&{role}> {body}" if role else body
+                    reserved_role = guild.get_role(int(role)) if role else None
+                    allowed = (discord.AllowedMentions(roles=[reserved_role], users=False, everyone=False)
+                               if reserved_role else discord.AllowedMentions.none())
+                    try:
+                        message = await asyncio.wait_for(
+                            channel.send(f"{content}\n-# `{row['marker']}`", allowed_mentions=allowed), timeout=8,
+                        )
+                        outcome, message_id = "SENT", str(message.id)
+                    except discord.Forbidden:
+                        outcome, failure_code = "FAILED", "discord_forbidden"
+                    except (discord.HTTPException, asyncio.TimeoutError):
+                        outcome, failure_code = "REVIEW_REQUIRED", "send_acceptance_uncertain"
+        except Exception:
+            logger.exception("Phase 9B delivery worker failed delivery=%s", row.get("deliveryId"))
+            outcome, failure_code = "REVIEW_REQUIRED", "unexpected_delivery_state"
+        async with aiosqlite.connect(DB_PATH) as db:
+            await configure_connection(db); await db.execute("BEGIN IMMEDIATE")
+            try:
+                await finalize_delivery(
+                    db, delivery_id=row["deliveryId"], lease_owner=lease_owner, outcome=outcome,
+                    message_id=message_id, failure_code=failure_code, marker_inspected=marker_inspected,
+                )
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                logger.exception("Phase 9B finalization failed delivery=%s", row.get("deliveryId"))
+                review += 1
+                continue
+        if outcome == "SENT": delivered += 1
+        elif outcome == "FAILED": failed += 1
+        else: review += 1
+    return {"scanned": len(rows), "delivered": delivered, "failed": failed, "reviewRequired": review}
 
 
 async def _deliver_phase4_watch_notifications(client, *, limit=100):
@@ -917,3 +1006,24 @@ def setup(tree, client):
             logger.warning("Phase 7 recovery failed type=%s", type(exc).__name__)
 
     register_ready_startup_task(_recover_phase7)
+
+    async def _phase9b_delivery_loop():
+        while not client.is_closed():
+            try:
+                result = await _deliver_phase9b_notifications(client)
+                if result["scanned"]:
+                    logger.info("Phase 9B notification delivery result=%s", result)
+            except Exception as exc:
+                logger.warning("Phase 9B delivery worker failed type=%s", type(exc).__name__)
+            await asyncio.sleep(30)
+
+    async def _start_phase9b_delivery_worker():
+        async with aiosqlite.connect(DB_PATH) as db:
+            await configure_connection(db)
+            if not await phase9b_capability(db):
+                return
+        existing = getattr(client, "_phase9b_delivery_worker", None)
+        if existing is None or existing.done():
+            client._phase9b_delivery_worker = asyncio.create_task(_phase9b_delivery_loop())
+
+    register_ready_startup_task(_start_phase9b_delivery_worker)

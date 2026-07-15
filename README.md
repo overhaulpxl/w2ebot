@@ -462,3 +462,10 @@ All significant actions are logged to console with tags:
 ---
 
 *Copyright © Way 2 Eternal Community.*
+
+## Phase 9B Dashboard Economy
+
+Phase 9B menambahkan read model Economy yang terautentikasi, routing notifikasi durable, kontrol
+pause/resume terbatas, dan reviewed recovery allowlist. Migrasi `910 / phase9b-dashboard-notification-routing`
+bersifat manual dan tidak dijalankan saat startup. Dashboard memerlukan capability Phase 9A dan 9B;
+production serta connected Discord/OAuth staging tetap nonaktif dan pending.

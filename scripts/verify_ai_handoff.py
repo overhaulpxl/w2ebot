@@ -31,7 +31,7 @@ REQUIRED_TOP_LEVEL = {
     "economyDesign", "phase1", "phase2", "phase3Rpg", "rpgBalance",
     "phase4Marketplace", "marketplaceHardening", "moduleOwnership",
     "marketplaceLifecycleDefinitions", "phase5Casino", "phase6Crypto", "phase7Mining",
-    "phase8GiveawayOptions", "phase9aBackendSafety",
+    "phase8GiveawayOptions", "phase9aBackendSafety", "phase9bDashboardNotificationRouting",
     "verificationHistory", "stagingStatus", "dashboardStatus", "productionStatus",
     "knownLimitations", "blockers", "pendingWork", "aiCoderOnboarding",
     "livingPrdWorkflow", "taskCompletionTemplate", "definitionOfDone",
@@ -144,6 +144,11 @@ def _extract_phase_checksums(root: Path) -> dict[int, str]:
     phase9a_sql = _literal(phase9a["PHASE9A_TABLE_SQL"])
     phase9a_indexes = _literal(phase9a["PHASE9A_INDEX_SQL"])
     phase9a_triggers = _literal(phase9a["PHASE9A_TRIGGER_SQL"])
+    phase9b = _assignment_map(_parse_source(root / "economy" / "phase9b_schema.py"))
+    phase9b_name = _literal(phase9b["PHASE9B_MIGRATION_NAME"])
+    phase9b_sql = _literal(phase9b["PHASE9B_TABLE_SQL"])
+    phase9b_indexes = _literal(phase9b["PHASE9B_INDEX_SQL"])
+    phase9b_triggers = _literal(phase9b["PHASE9B_TRIGGER_SQL"])
     canonical = lambda value: " ".join(str(value).split())
     return {
         301: hashlib.sha256((phase3_sql + "\n" + "\n".join(phase3_triggers)).encode("utf-8")).hexdigest(),
@@ -167,6 +172,10 @@ def _extract_phase_checksums(root: Path) -> dict[int, str]:
         900: hashlib.sha256(
             (phase9a_name + "\n" + canonical(phase9a_sql) + "\n" +
              "\n".join(canonical(value) for value in phase9a_indexes + phase9a_triggers)).encode("utf-8")
+        ).hexdigest(),
+        910: hashlib.sha256(
+            (phase9b_name + "\n" + canonical(phase9b_sql) + "\n" +
+             "\n".join(canonical(value) for value in phase9b_indexes + phase9b_triggers)).encode("utf-8")
         ).hexdigest(),
     }
 
@@ -674,6 +683,51 @@ def _phase9a_issues(root: Path, state: dict, phase9a_status: str | None) -> list
     return issues
 
 
+def _phase9b_issues(root: Path, state: dict, phase9b_status: str | None) -> list[str]:
+    issues: list[str] = []
+    phase9b = _claim_value(state.get("phase9bDashboardNotificationRouting", {}))
+    if phase9b_status != "implemented_local_verification" or phase9b.get("status") != phase9b_status:
+        issues.append("Phase 9B status harus implemented_local_verification")
+    if phase9b.get("implementationStatus") != "implemented":
+        issues.append("Phase 9B implementation status tidak valid")
+    if (phase9b.get("productionStatus") != "not_approved" or
+            phase9b.get("productionMigrated") is not False or
+            phase9b.get("productionEnabled") is not False):
+        issues.append("Phase 9B production guard tidak valid")
+    if phase9b.get("featureFlagAdded") is not False:
+        issues.append("Phase 9B tidak boleh memiliki feature flag")
+    migration = phase9b.get("migration", {})
+    if (migration.get("version") != 910 or migration.get("name") != "phase9b-dashboard-notification-routing" or
+            migration.get("startupAutomatic") is not False or
+            not CHECKSUM.fullmatch(str(migration.get("checksum", "")))):
+        issues.append("Phase 9B migration identity tidak valid")
+    delivery = phase9b.get("delivery", {})
+    required_delivery = {
+        "oneIdentityPerSource": True, "routeSnapshotImmutable": True, "markerAdoption": True,
+        "uncertainSendState": "REVIEW_REQUIRED", "automaticReviewRetry": False,
+        "testHistorySeparate": True, "centralWorkerOnly": True,
+    }
+    if delivery != required_delivery:
+        issues.append("Phase 9B durable delivery contract tidak valid")
+    if phase9b.get("connectedDiscordOauthStaging") != "pending":
+        issues.append("Phase 9B connected staging harus pending")
+    pending = _claim_value(state.get("pendingWork", []))
+    if not isinstance(pending, list) or not any("phase 9b" in str(item).lower() for item in pending):
+        issues.append("Phase 9B connected staging tidak tercatat sebagai pending work")
+    for path in (
+        "docs/PHASE9B_DASHBOARD_NOTIFICATION_ROUTING_PRD.md",
+        "scripts/migrate_phase9b_dashboard.py",
+        "dashboard-example/app/economy/page.tsx",
+        "economy/notification_delivery.py",
+    ):
+        if not (root / path).is_file():
+            issues.append(f"Artefak Phase 9B tidak ditemukan: {path}")
+    runtime_source = (root / "runtime_config.py").read_text(encoding="utf-8")
+    if "ECONOMY_PHASE9B_ENABLED" in runtime_source:
+        issues.append("Phase 9B feature flag tidak boleh ada")
+    return issues
+
+
 def verify(root: Path = PROJECT_ROOT) -> list[str]:
     root = root.resolve()
     state_path = root / "docs" / "project_state.json"
@@ -766,6 +820,8 @@ def verify(root: Path = PROJECT_ROOT) -> list[str]:
     issues.extend(_phase8_issues(root, state, phase8.get("status")))
     phase9a = next((row for row in phases if isinstance(row, dict) and row.get("id") == "phase9a"), {})
     issues.extend(_phase9a_issues(root, state, phase9a.get("status")))
+    phase9b = next((row for row in phases if isinstance(row, dict) and row.get("id") == "phase9b"), {})
+    issues.extend(_phase9b_issues(root, state, phase9b.get("status")))
     issues.extend(_secret_issues(raw_state, "project_state.json"))
     issues.extend(_private_content_issues(raw_state, "project_state.json"))
     if not handoff_path.exists():

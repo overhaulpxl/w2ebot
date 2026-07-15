@@ -65,6 +65,11 @@ For any announcement the bot posts (market events, level-ups, birthdays, boss ra
 
 Endpoints live in `core.py` and are registered through `build_web_application` (port `8081`). `GET /healthz` is the only public data endpoint. Legacy `/api/*` reads and writes return unconditional `410` tombstones. Authenticated Next.js routes use HMAC-signed internal Phase 9A requests; aiohttp independently validates session, Discord membership, permission, signature, nonce, route, and payload. See `API.md` and `docs/PHASE9A_BACKEND_SAFETY_PRD.md`.
 
+Phase 9B adds explicit `/internal/phase9b/*` reporting and controlled-operation routes. Notification
+producers reserve durable `DashboardNotificationDelivery` rows; only the centralized worker may send
+guild-wide routed messages. Never add direct Discord sends to command callbacks or domain services,
+rewrite an already-reserved route destination, or retry `REVIEW_REQUIRED` deliveries automatically.
+
 ## File ownership
 
 | File | Responsibility |

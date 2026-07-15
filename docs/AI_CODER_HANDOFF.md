@@ -24,9 +24,9 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 
 - **lastKnownBranch:** codex/economy-v1-phase9a
 - **observedBranch:** codex/economy-v1-phase9a
-- **observedHead:** 2931a47b0b7db2626f124d744391a788bcd79051
+- **observedHead:** a5490ac1f2a914f1c0a81f2c80e4172f5fb37ef1
 - **remotePushAfterPhase4:** false
-- **workingTreeAtSeed:** clean before Phase 9A implementation
+- **workingTreeAtSeed:** clean before Phase 9B implementation
 
 ## Project Progress
 
@@ -41,6 +41,7 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 | phase7 | Mining | implemented_staging_ready |
 | phase8 | Giveaway and Eternal Options | implemented_staging_ready |
 | phase9a | Backend Safety Foundation | implemented_local_verification |
+| phase9b | Economy Dashboard And Notification Routing | implemented_local_verification |
 
 ## Capabilities By Phase
 
@@ -124,6 +125,13 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - append-only operator audit
   - legacy route tombstones
   - migration 900
+- **phase9b:**
+  - authoritative Economy reporting
+  - versioned notification routes
+  - durable delivery reservation and marker adoption
+  - controlled pause and reviewed recovery
+  - protected operational dashboard
+  - migration 910
 
 ## Protected Systems
 
@@ -199,6 +207,7 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 | a7da7f1f243a045c88f1d304c2b6be4e865c23cf | feat(economy): implement phase 6 crypto |
 | 381d99a249dd9d009fc582947635c1aabffbd9c3 | feat(economy): implement phase 7 mining |
 | 2931a47b0b7db2626f124d744391a788bcd79051 | feat(economy): implement phase 8 giveaway and eternal options |
+| a5490ac1f2a914f1c0a81f2c80e4172f5fb37ef1 | feat(dashboard): implement phase 9a backend safety foundation |
 
 ## Migrations And Checksums
 
@@ -269,6 +278,13 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - **name:** phase9a-backend-safety
   - **verificationStatus:** verified
   - **version:** 900
+-
+  - **checksum:** 90c50b1d6a1a0515086bf14cdec82573ee83baf66e06524ee1bda963a2de4934
+  - **evidencePaths:**
+    - economy/phase9b_schema.py
+  - **name:** phase9b-dashboard-notification-routing
+  - **verificationStatus:** verified
+  - **version:** 910
 
 ## Catalog Versions And Checksums
 
@@ -1429,6 +1445,85 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - **temporaryMainImportMigrationAbsent:** passed
   - **temporaryMainImportMigrationPresent:** passed
 
+## Phase 9B Economy Dashboard And Notification Routing
+
+- **connectedDiscordOauthStaging:** pending
+- **controlledOperations:**
+  - **appendOnlyAudit:** true
+  - **csrf:** true
+  - **expectedVersion:** true
+  - **idempotentReceipt:** true
+  - **pausePermission:** ECONOMY_PAUSE_CONTROL
+  - **recoveryPermission:** REVIEWED_RECOVERY_CONTROL
+  - **routePermission:** NOTIFICATION_ROUTING_CONTROL
+- **dashboardProductionBuild:** passed on Next.js 16.2.10
+- **delivery:**
+  - **automaticReviewRetry:** false
+  - **centralWorkerOnly:** true
+  - **markerAdoption:** true
+  - **oneIdentityPerSource:** true
+  - **routeSnapshotImmutable:** true
+  - **testHistorySeparate:** true
+  - **uncertainSendState:** REVIEW_REQUIRED
+- **dependencies:**
+  - **phase9aCapability:** true
+  - **sessionRequired:** true
+  - **signedInternalRequestRequired:** true
+- **featureFlagAdded:** false
+- **implementationStatus:** implemented
+- **migration:**
+  - **checksum:** 90c50b1d6a1a0515086bf14cdec82573ee83baf66e06524ee1bda963a2de4934
+  - **name:** phase9b-dashboard-notification-routing
+  - **startupAutomatic:** false
+  - **version:** 910
+- **notificationCategories:**
+  - GENERAL
+  - MARKET_CRYPTO
+  - MARKETPLACE
+  - GIVEAWAY
+  - CASINO
+  - ETERNAL_OPTIONS
+  - MINING
+  - BOSS
+  - LEVEL_UP
+  - BIRTHDAY
+  - BOOSTER
+  - RECOVERY
+  - SECURITY
+  - OPERATOR_AUDIT
+- **productionEnabled:** false
+- **productionMigrated:** false
+- **productionStatus:** not_approved
+- **reporting:**
+  - **freshnessStates:**
+    - FRESH
+    - STALE
+    - UNAVAILABLE
+  - **healthStates:**
+    - UNBALANCED
+    - NEEDS_ATTENTION
+    - HEALTHY
+  - **integerTransport:** decimal strings
+  - **windowsDays:**
+    - 7
+    - 30
+- **scope:** Authenticated Economy dashboard, notification routing, durable delivery, pause control, and reviewed recovery
+- **status:** implemented_local_verification
+- **verificationResults:**
+  - **dashboardProductionBuild:** passed
+  - **dashboardTypecheck:** passed
+  - **dashboardVitest:** 14 passed
+  - **foreignKeyErrors:** 0
+  - **integrityCheck:** ok
+  - **migration910BackupRestore:** passed
+  - **migration910ChecksumMismatch:** rejected
+  - **migration910FirstApply:** passed
+  - **migration910Reconciliation:** passed
+  - **migration910RollbackInjection:** all six stages passed
+  - **migration910SecondRun:** idempotent replay
+  - **phase9aRegressionTests:** 20 passed
+  - **phase9bFocusedTests:** 19 passed
+
 ## Module Ownership
 
 - **cogs:**
@@ -1474,17 +1569,17 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 - **casinoTests:** 33 passed
 - **commandOwnership:** passed through static verifier
 - **cryptoTests:** 26 passed
-- **dashboardDependencyAudit:** 0 vulnerabilities
+- **dashboardDependencyAudit:** 0 vulnerabilities (historical Phase 9A)
 - **dashboardProductionBuild:** passed on Next.js 16.2.10
 - **dashboardTypecheck:** passed
-- **dashboardVitest:** 8 passed
+- **dashboardVitest:** 14 passed
 - **forbiddenAliases:** absent through static verifier
 - **gitDiffCheck:** passed
 - **historicalBaseline:**
   - **marketplaceTests:** 64 passed
   - **phase1To3Tests:** 87 passed
   - **total:** 151 passed
-- **livingPrdToolingTests:** 16 passed
+- **livingPrdToolingTests:** 17 passed
 - **mainImportTemporaryDatabaseMigrationAbsent:** passed
 - **mainImportTemporaryDatabaseMigrationPresent:** passed
 - **marketplaceTests:** 64 passed
@@ -1493,11 +1588,18 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 - **migration900Reconciliation:** passed
 - **migration900RollbackInjection:** all six stages passed
 - **migration900SecondRun:** idempotent replay
+- **migration910BackupRestore:** passed
+- **migration910ChecksumMismatch:** rejected
+- **migration910FirstApply:** passed
+- **migration910Reconciliation:** passed
+- **migration910RollbackInjection:** all six stages passed
+- **migration910SecondRun:** idempotent replay
 - **miningTests:** 25 passed
 - **phase1To8EconomyTests:** 191 passed
 - **phase8FocusedTests:** 20 passed
 - **phase8Simulation:** 10000 Giveaway draws and 20 x 100000 Options positions; both gates passed
 - **phase9aFocusedTests:** 20 passed
+- **phase9bFocusedTests:** 19 passed
 - **pyCompile:** passed
 - **sqliteForeignKeyErrors:** 0
 - **sqliteIntegrityCheck:** ok
@@ -1524,15 +1626,17 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 
 ## Dashboard
 
-- **apiProtection:** all non-auth Next routes validate the server session
+- **apiProtection:** all non-auth Next routes validate the server session and use explicit signed internal routes
 - **authentication:** Phase 9A Discord OAuth2 PKCE and bounded server session
 - **botReads:** signed internal allowlist only
 - **connectedOauthStaging:** pending
-- **dependencyAudit:** 0 vulnerabilities
+- **dependencyAudit:** 0 vulnerabilities (historical Phase 9A)
+- **economyReporting:** Phase 9B integer-safe independently loading panels
 - **legacyWrites:** removed and backend tombstoned
 - **localProductionBuild:** passed on Next.js 16.2.10
-- **localTest:** 8 passed
+- **localTest:** 14 passed
 - **localTypecheck:** passed
+- **notificationRouting:** versioned routes with immutable delivery reservations
 - **pageProtection:** all pages except login redirect without a valid session
 
 ## Production
@@ -1552,13 +1656,14 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 
 - Connected Discord staging remains pending for Phase 5 through Phase 8.
 - Phase 9A connected Discord OAuth staging remains pending.
-- Phase 9B and Phase 9C are not implemented.
+- Phase 9B connected notification-routing staging remains pending.
+- Phase 9C is not implemented.
 - Deal runtime claims are retained as last-known until a separately scoped audit verifies them.
 
 ## Blockers
 
 - Production cutover requires separate explicit approval.
-- Production migrations 500, 600, 700, 800, and 900 have not occurred and all Economy production flags must remain disabled.
+- Production migrations 500, 600, 700, 800, 900, and 910 have not occurred and all Economy production flags must remain disabled.
 - Connected Discord and OAuth staging has not been executed.
 
 ## Pending Work
@@ -1568,6 +1673,7 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 - Phase 7 connected Discord staging validation
 - Phase 8 connected Discord staging validation
 - Phase 9A connected Discord OAuth staging validation
+- Phase 9B connected Discord notification-routing staging validation
 - Production rollout approval
 
 ## AI Coder Onboarding
@@ -1628,7 +1734,8 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 | a7da7f1f243a045c88f1d304c2b6be4e865c23cf | 2026-07-14 | Phase 6 Crypto Implemented |
 | 381d99a249dd9d009fc582947635c1aabffbd9c3 | 2026-07-14 | Phase 7 Mining Implemented |
 | 2931a47b0b7db2626f124d744391a788bcd79051 | 2026-07-14 | Phase 8 Giveaway And Eternal Options Implemented |
-| PENDING | 2026-07-15 | Phase 9A Backend Safety Foundation Implemented |
+| a5490ac1f2a914f1c0a81f2c80e4172f5fb37ef1 | 2026-07-15 | Phase 9A Backend Safety Foundation Implemented |
+| PENDING | 2026-07-15 | Phase 9B Economy Dashboard And Notification Routing Implemented |
 
 ## Current Handoff Summary
 
@@ -1644,4 +1751,5 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - Phase 7 Mining
   - Phase 8 Giveaway and Eternal Options
   - Phase 9A backend safety foundation runtime, migration, authenticated dashboard boundary, and local tests
-- **current:** Phase 9A is implemented locally without an Economy feature flag. Migration 900 is manual, legacy public dashboard reads and writes are tombstoned, and sensitive reads require an authenticated Next session plus signed internal backend authorization. Connected Discord OAuth staging and production approval remain pending.
+  - Phase 9B Economy dashboard, durable notification routing, controlled operations, migration, dashboard build, and local tests
+- **current:** Phase 9B is implemented locally without a feature flag. Migration 910 is manual and depends on Phase 9A. Reporting and notification delivery are protected by authenticated signed routes; connected Discord/OAuth notification staging and production approval remain pending.

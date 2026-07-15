@@ -46,6 +46,17 @@ from economy.dashboard_security import (
     verify_envelope_signature,
 )
 from economy.phase9a_schema import PHASE9A_SCHEMA_CHECKSUM, phase9a_capability
+from economy.phase9b_schema import PHASE9B_SCHEMA_CHECKSUM, NOTIFICATION_CATEGORIES, phase9b_capability
+from economy.dashboard_reporting import (
+    domain_metrics, flows_report, liabilities_report, overview_report, recovery_report, supply_report,
+)
+from economy.notification_routing import get_notification_route, list_notification_routes
+from economy.notification_delivery import reserve_delivery
+from economy.dashboard_economy_operations import controlled_feature_pause, controlled_route_update
+from economy.reporting_taxonomy import NOTIFICATION_EVENT_TYPES
+from economy.phase9b_recovery import (
+    RECOVERY_TARGETS, finalize_reviewed_recovery, reserve_reviewed_recovery,
+)
 
 try:
     from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance, ImageChops
@@ -1877,6 +1888,34 @@ def get_announce_channel(guild, category):
 
     return _find_fallback_channel(guild)
 
+
+async def reserve_phase9b_legacy_notification(guild, *, category, event_type, source_type,
+                                               source_key, payload):
+    """Return True when capability 910 owns routing, even without a configured route."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('PRAGMA foreign_keys=ON')
+        if not await phase9b_capability(db):
+            return False
+        await db.execute('BEGIN IMMEDIATE')
+        try:
+            await reserve_delivery(
+                db, guild_id=guild.id, delivery_kind='EVENT', source_type=source_type,
+                source_key=str(source_key), category=category, event_type=event_type, payload=payload,
+            )
+            await db.commit()
+        except DashboardSecurityError as exc:
+            await db.rollback()
+            if exc.code not in {'not_configured', 'forbidden'}:
+                raise
+            logging.info("Phase 9B notification skipped code=%s category=%s", exc.code, category)
+        return True
+
+
+async def phase9b_schema_ready():
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('PRAGMA foreign_keys=ON')
+        return await phase9b_capability(db)
+
 async def check_birthdays():
     await client.wait_until_ready()
     while not client.is_closed():
@@ -1887,7 +1926,7 @@ async def check_birthdays():
         for guild in client.guilds:
             announce_channel = get_announce_channel(guild, 'birthday')
 
-            if announce_channel:
+            if announce_channel or await phase9b_schema_ready():
                 for uid, date_str in bdays.items():
                     if date_str == today_str:
                         # Check if we already announced this year
@@ -1902,7 +1941,14 @@ async def check_birthdays():
                         name = user.display_name if user else f"User {uid}"
                         await adjust_coins(uid, 1000, name)
                         
-                        await announce_channel.send(f"🎉 **SELAMAT ULANG TAHUN!** 🎉\nHari ini adalah hari ulang tahun {user.mention if user else name}!\nSebagai hadiah, kamu mendapatkan **1000 Koin**! 🎁")
+                        content = f"🎉 **SELAMAT ULANG TAHUN!** 🎉\nHari ini adalah hari ulang tahun {user.mention if user else name}!\nSebagai hadiah, kamu mendapatkan **1000 Koin**! 🎁"
+                        routed = await reserve_phase9b_legacy_notification(
+                            guild, category='BIRTHDAY', event_type='BIRTHDAY', source_type='LEGACY_BIRTHDAY',
+                            source_key=f"{guild.id}:{uid}:{year}",
+                            payload={'content': content, 'userId': str(uid), 'year': year},
+                        )
+                        if not routed and announce_channel:
+                            await announce_channel.send(content)
                         
                         last_bday[key] = True
                         await save_json('last_bday.json', last_bday)
@@ -1996,9 +2042,16 @@ async def update_market_prices():
         # Broadcast event message
         if event_message and not (ECONOMY_V1_ENABLED and ECONOMY_PHASE6_ENABLED):
             for guild in client.guilds:
-                ch = get_announce_channel(guild, 'market')
-                if ch:
-                    client.loop.create_task(ch.send(event_message))
+                routed = await reserve_phase9b_legacy_notification(
+                    guild, category='MARKET_CRYPTO', event_type='CRYPTO_MARKET_ALERT',
+                    source_type='LEGACY_MARKET_EVENT',
+                    source_key=f"{market['last_updated']}:{target_coin}:{hashlib.sha256(event_message.encode()).hexdigest()}",
+                    payload={'content': event_message, 'symbol': target_coin},
+                )
+                if not routed:
+                    ch = get_announce_channel(guild, 'market')
+                    if ch:
+                        client.loop.create_task(ch.send(event_message))
                             
         # Resolve Binomo Bets
         binomo = {} if ECONOMY_PHASE8_ENABLED else await load_json(BINOMO_FILE)
@@ -2030,6 +2083,9 @@ async def update_market_prices():
             if results:
                 result_str = "🎰 **HASIL JUDI BINOMO 10 MENIT INI:** 🎰\n" + "\n".join(results)
                 for guild in client.guilds:
+                    if await phase9b_schema_ready():
+                        logging.info("Legacy Binomo notification is deprecated after migration 910.")
+                        continue
                     ch = get_announce_channel(guild, 'binomo')
                     if ch:
                         client.loop.create_task(ch.send(result_str))
@@ -2060,10 +2116,17 @@ async def voice_salary_loop():
                             await add_xp(uid, m.display_name, ECON_VC_XP_PER_10MIN)
                             stat_after = await get_discord_stat(uid)
 
-                            if stat_after['level'] > level_before and announce_channel:
-                                client.loop.create_task(
-                                    announce_channel.send(f"Selamat {m.mention}, kamu naik ke **Level {stat_after['level']}** dari Voice Channel!")
+                            if stat_after['level'] > level_before:
+                                content = f"Selamat {m.mention}, kamu naik ke **Level {stat_after['level']}** dari Voice Channel!"
+                                routed = await reserve_phase9b_legacy_notification(
+                                    guild, category='LEVEL_UP', event_type='LEVEL_UP',
+                                    source_type='LEGACY_LEVEL_UP',
+                                    source_key=f"{guild.id}:{m.id}:{stat_after['level']}",
+                                    payload={'content': content, 'userId': str(m.id),
+                                             'level': str(stat_after['level'])},
                                 )
+                                if not routed and announce_channel:
+                                    client.loop.create_task(announce_channel.send(content))
 
 async def boss_raid_loop():
     await client.wait_until_ready()
@@ -2082,11 +2145,19 @@ async def boss_raid_loop():
                 logging.info(f"[BOSS] Boss raid spawn: {boss_data['name']} HP {boss_data['hp']}")
                 # Cari channel pengumuman
                 for guild in client.guilds:
-                    ch = get_announce_channel(guild, 'boss')
-                    if ch:
-                        client.loop.create_task(
-                            ch.send(f"⚠️ **BOSS RAID EVENT DIMULAI!** ⚠️\n**{boss_data['name']}** telah muncul dengan {boss_data['hp']} HP!\nKetik `!attack` untuk menyerang! Yang berhasil membunuhnya mendapat hadiah 5000 Koin!")
-                        )
+                    content = (f"⚠️ **BOSS RAID EVENT DIMULAI!** ⚠️\n**{boss_data['name']}** telah muncul "
+                               f"dengan {boss_data['hp']} HP!\nKetik `!attack` untuk menyerang! Yang berhasil "
+                               "membunuhnya mendapat hadiah 5000 Koin!")
+                    hour = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0).isoformat()
+                    routed = await reserve_phase9b_legacy_notification(
+                        guild, category='BOSS', event_type='BOSS_STARTED', source_type='LEGACY_BOSS',
+                        source_key=f"{guild.id}:{hour}:{boss_data['name']}",
+                        payload={'content': content, 'bossName': boss_data['name']},
+                    )
+                    if not routed:
+                        ch = get_announce_channel(guild, 'boss')
+                        if ch:
+                            client.loop.create_task(ch.send(content))
                                 
 async def crypto_mining_loop():
     await client.wait_until_ready()
@@ -3828,6 +3899,257 @@ async def internal_dashboard_read(request):
         return await handler(_InternalReadRequest(query, params))
 
 
+async def _phase9b_read(request, reader, *, allowed=()):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, set(allowed))
+    async with _signed_internal(request, payload, permission='DASHBOARD_VIEW', rate_limit=60) as (db, envelope, _):
+        if not await phase9b_capability(db):
+            raise DashboardSecurityError('capability_unavailable', 503)
+        return web.json_response(await reader(db, envelope.guild_id, payload))
+
+
+async def internal_phase9b_overview(request):
+    async def read(db, guild_id, _):
+        guild = client.get_guild(int(guild_id))
+        member_ids = ({str(member.id) for member in guild.members if not member.bot}
+                      if guild is not None else None)
+        return await overview_report(db, guild_id, current_non_bot_user_ids=member_ids)
+    return await _phase9b_read(request, read)
+
+
+async def internal_phase9b_supply(request):
+    return await _phase9b_read(request, lambda db, guild, _: supply_report(db, guild))
+
+
+async def internal_phase9b_flows(request):
+    async def read(db, guild, payload):
+        return await flows_report(db, guild, window_days=int(payload.get('windowDays', 7)))
+    return await _phase9b_read(request, read, allowed={'windowDays'})
+
+
+async def internal_phase9b_liabilities(request):
+    return await _phase9b_read(request, lambda db, guild, _: liabilities_report(db, guild))
+
+
+def _domain_read(domain):
+    async def handler(request):
+        return await _phase9b_read(request, lambda db, guild, _: domain_metrics(db, guild, domain))
+    return handler
+
+
+internal_phase9b_marketplace = _domain_read('marketplace')
+internal_phase9b_casino_options = _domain_read('casino-options')
+internal_phase9b_giveaway = _domain_read('giveaway')
+internal_phase9b_crypto_mining = _domain_read('crypto-mining')
+
+
+async def internal_phase9b_recovery(request):
+    async def read(db, guild, payload):
+        return await recovery_report(db, guild, limit=int(payload.get('limit', 50)))
+    return await _phase9b_read(request, read, allowed={'cursor', 'limit'})
+
+
+async def internal_phase9b_routes_list(request):
+    async def read(db, guild, _):
+        return {'schemaVersion': '1', 'guildId': guild, 'routes': await list_notification_routes(db, guild)}
+    return await _phase9b_read(request, read)
+
+
+async def internal_phase9b_route_details(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'category'}, {'category'})
+    category = str(payload['category']).upper()
+    async with _signed_internal(request, payload, permission='DASHBOARD_VIEW', rate_limit=60) as (db, envelope, _):
+        route = await get_notification_route(db, envelope.guild_id, category)
+        async with db.execute(
+            "SELECT status,COUNT(*) FROM DashboardNotificationDelivery WHERE guildId=? AND category=? "
+            "GROUP BY status", (envelope.guild_id, category),
+        ) as cursor:
+            counts = {row[0]: str(row[1]) for row in await cursor.fetchall()}
+        return web.json_response({'schemaVersion': '1', 'guildId': envelope.guild_id,
+                                  'route': route, 'deliveries': counts})
+
+
+async def _consume_phase9b_csrf(db, session, payload, browser_route):
+    await consume_csrf(
+        db, raw_token=str(payload['csrfToken']), session_id=session['sessionId'], method='POST',
+        canonical_route=browser_route, request_id=str(payload['requestId']),
+        session_hash_key=DASHBOARD_SESSION_HASH_KEY,
+    )
+
+
+async def internal_phase9b_route_update(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'requestId','csrfToken','category','enabled','channelId','roleMentionId',
+                           'eventTypes','expectedVersion'},
+                 {'requestId','csrfToken','category','enabled','eventTypes','expectedVersion'})
+    category = str(payload['category']).upper()
+    async with _signed_internal(request, payload, permission='NOTIFICATION_ROUTING_CONTROL', rate_limit=10) as (db, envelope, session):
+        browser_route = f"/api/economy/notifications/routes/{category}"
+        await _consume_phase9b_csrf(db, session, payload, browser_route)
+        guild = client.get_guild(int(envelope.guild_id))
+        channel_id = payload.get('channelId'); role_id = payload.get('roleMentionId')
+        if channel_id is not None and not str(channel_id).isdigit():
+            raise DashboardSecurityError('invalid_request', 400)
+        if role_id is not None and not str(role_id).isdigit():
+            raise DashboardSecurityError('invalid_request', 400)
+        channel = guild.get_channel(int(channel_id)) if guild and channel_id else None
+        if payload['enabled']:
+            if not isinstance(channel, discord.TextChannel):
+                raise DashboardSecurityError('invalid_request', 400)
+            permissions = channel.permissions_for(guild.me)
+            if not permissions.view_channel or not permissions.send_messages:
+                raise DashboardSecurityError('forbidden', 403)
+        if role_id and (guild is None or guild.get_role(int(role_id)) is None):
+            raise DashboardSecurityError('invalid_request', 400)
+        receipt = await controlled_route_update(
+            db, guild_id=envelope.guild_id, actor_id=envelope.actor_id,
+            request_id=str(payload['requestId']), category=category, enabled=bool(payload['enabled']),
+            channel_id=str(channel_id) if channel_id else None, role_mention_id=str(role_id) if role_id else None,
+            event_types=payload['eventTypes'], expected_version=int(payload['expectedVersion']),
+            source_route=browser_route,
+        )
+        return web.json_response(receipt)
+
+
+async def internal_phase9b_route_test(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'requestId','csrfToken','category','message'},
+                 {'requestId','csrfToken','category','message'})
+    category = str(payload['category']).upper()
+    message = str(payload['message']).strip()
+    if category not in NOTIFICATION_CATEGORIES or not 1 <= len(message) <= 500:
+        raise DashboardSecurityError('invalid_request', 400)
+    async with _signed_internal(request, payload, permission='NOTIFICATION_ROUTING_CONTROL', rate_limit=3) as (db, envelope, session):
+        browser_route = f"/api/economy/notifications/routes/{category}/test"
+        await _consume_phase9b_csrf(db, session, payload, browser_route)
+        result = await reserve_delivery(
+            db, guild_id=envelope.guild_id, delivery_kind='TEST', source_type='DASHBOARD_TEST',
+            source_key=str(payload['requestId']), category=category,
+            event_type=NOTIFICATION_EVENT_TYPES[category][0],
+            payload={'content': message, 'allowedMentions': 'NONE'}, request_id=str(payload['requestId']),
+            actor_id=envelope.actor_id,
+        )
+        return web.json_response(result)
+
+
+async def _phase9b_feature_control(request, paused):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'requestId','csrfToken','feature','reason','expectedVersion'},
+                 {'requestId','csrfToken','feature','reason','expectedVersion'})
+    browser_route = '/api/economy/controls/pause' if paused else '/api/economy/controls/resume'
+    async with _signed_internal(request, payload, permission='ECONOMY_PAUSE_CONTROL', rate_limit=10) as (db, envelope, session):
+        await _consume_phase9b_csrf(db, session, payload, browser_route)
+        receipt = await controlled_feature_pause(
+            db, guild_id=envelope.guild_id, actor_id=envelope.actor_id,
+            request_id=str(payload['requestId']), feature=str(payload['feature']), paused=paused,
+            reason=str(payload['reason']), expected_version=int(payload['expectedVersion']),
+            source_route=browser_route,
+        )
+        return web.json_response(receipt)
+
+
+async def internal_phase9b_pause(request):
+    return await _phase9b_feature_control(request, True)
+
+
+async def internal_phase9b_resume(request):
+    return await _phase9b_feature_control(request, False)
+
+
+async def internal_phase9b_health(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, set())
+    async with _signed_internal(request, payload, permission='DASHBOARD_VIEW') as (db, _, _):
+        return web.json_response({'schemaCapable': await phase9b_capability(db),
+                                  'migrationChecksum': PHASE9B_SCHEMA_CHECKSUM})
+
+
+async def internal_phase9b_audit(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'cursor', 'limit', 'startAt', 'endAt'})
+    async with _signed_internal(request, payload, permission='OPERATOR_AUDIT_READ', rate_limit=60) as (db, envelope, _):
+        limit = max(1, min(int(payload.get('limit', 100)), 100))
+        params = [envelope.guild_id]
+        where = "guildId=?"
+        if payload.get('startAt'):
+            where += " AND createdAt>=?"; params.append(str(payload['startAt']))
+        if payload.get('endAt'):
+            where += " AND createdAt<?"; params.append(str(payload['endAt']))
+        if payload.get('cursor'):
+            where += " AND auditId<?"; params.append(str(payload['cursor']))
+        params.append(limit)
+        async with db.execute(
+            "SELECT auditId,executorUserId,permissionClass,operationType,targetType,targetId,requestId,"
+            f"resultStatus,createdAt FROM DashboardOperatorAudit WHERE {where} "
+            "ORDER BY createdAt DESC,auditId DESC LIMIT ?", tuple(params),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        keys = ('auditId','executorUserId','permissionClass','operationType','targetType','targetId',
+                'requestId','resultStatus','createdAt')
+        return web.json_response({'schemaVersion': '1', 'guildId': envelope.guild_id,
+                                  'rows': [dict(zip(keys, row)) for row in rows]})
+
+
+async def internal_phase9b_recovery_resolve(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'requestId','csrfToken','targetType','targetId','resolution','expectedVersion','reason'},
+                 {'requestId','csrfToken','targetType','targetId','resolution','expectedVersion','reason'})
+    browser_route = '/api/economy/recovery/resolve'
+    target_type = str(payload['targetType']).upper(); target_id = str(payload['targetId'])
+    resolution = str(payload['resolution']).upper()
+    async with _signed_internal(request, payload, permission='REVIEWED_RECOVERY_CONTROL', rate_limit=5) as (db, envelope, session):
+        await _consume_phase9b_csrf(db, session, payload, browser_route)
+        reservation = await reserve_reviewed_recovery(
+            db, guild_id=envelope.guild_id, actor_id=envelope.actor_id,
+            request_id=str(payload['requestId']), target_type=target_type, target_id=target_id,
+            resolution=resolution, expected_version=int(payload['expectedVersion']), reason=str(payload['reason']),
+        )
+        if reservation.get('receipt') is not None:
+            return web.json_response(reservation['receipt'])
+        await db.commit()
+        success = False; code = 'recovery_incomplete'
+        try:
+            if target_type == 'RPG_OPERATION':
+                from economy.phase3_recovery import recover_phase3_operations
+                await recover_phase3_operations(DB_PATH)
+            elif target_type in {'MARKETPLACE_SALE', 'MARKETPLACE_RETURN'}:
+                from economy.phase4_recovery import recover_phase4_runtime
+                await recover_phase4_runtime(DB_PATH)
+            elif target_type == 'CASINO_SESSION':
+                if resolution == 'REFUND':
+                    from economy.casino import resolve_review_session
+                    await resolve_review_session(
+                        DB_PATH, guild_id=envelope.guild_id, actor_id=envelope.actor_id,
+                        session_id=target_id, resolution='refund', request_id=str(payload['requestId']),
+                        reason=str(payload['reason']), authorization_override=True,
+                    )
+                else:
+                    from economy.phase5_recovery import recover_phase5_runtime
+                    await recover_phase5_runtime(DB_PATH, guild_id=envelope.guild_id)
+            elif target_type == 'MINING_OPERATION':
+                from economy.phase7_recovery import recover_phase7
+                await recover_phase7(DB_PATH)
+            elif target_type == 'ETERNAL_OPTION_POSITION':
+                from economy.phase8_recovery import recover_phase8
+                await recover_phase8(DB_PATH)
+            table, key_column, _ = RECOVERY_TARGETS[target_type]
+            await db.execute('BEGIN IMMEDIATE')
+            async with db.execute(f"SELECT status FROM {table} WHERE {key_column}=? AND guildId=?",
+                                  (target_id, envelope.guild_id)) as cursor:
+                source = await cursor.fetchone()
+            success = bool(source and source[0] != 'REVIEW_REQUIRED')
+            code = 'source_resolved' if success else 'source_still_review_required'
+        except Exception as exc:
+            logging.warning("Phase 9B reviewed recovery failed target=%s type=%s", target_type, type(exc).__name__)
+            await db.execute('BEGIN IMMEDIATE')
+            code = 'recovery_failed'
+        result = await finalize_reviewed_recovery(
+            db, operation_id=reservation['operationId'], success=success, result_code=code,
+        )
+        return web.json_response(result, status=200 if success else 409)
+
+
 def build_web_application():
     app = web.Application(middlewares=[cors_middleware], client_max_size=65536)
     app.router.add_options('/{tail:.*}', handle_options)
@@ -3866,6 +4188,24 @@ def build_web_application():
     app.router.add_post('/internal/phase9a/security-events/list', internal_security_events)
     app.router.add_post('/internal/phase9a/health', internal_phase9a_health)
     app.router.add_post('/internal/phase9a/read/{resource:.+}', internal_dashboard_read)
+    app.router.add_post('/internal/phase9b/dashboard/overview', internal_phase9b_overview)
+    app.router.add_post('/internal/phase9b/dashboard/supply', internal_phase9b_supply)
+    app.router.add_post('/internal/phase9b/dashboard/flows', internal_phase9b_flows)
+    app.router.add_post('/internal/phase9b/dashboard/liabilities', internal_phase9b_liabilities)
+    app.router.add_post('/internal/phase9b/dashboard/marketplace', internal_phase9b_marketplace)
+    app.router.add_post('/internal/phase9b/dashboard/casino-options', internal_phase9b_casino_options)
+    app.router.add_post('/internal/phase9b/dashboard/giveaway', internal_phase9b_giveaway)
+    app.router.add_post('/internal/phase9b/dashboard/crypto-mining', internal_phase9b_crypto_mining)
+    app.router.add_post('/internal/phase9b/dashboard/recovery', internal_phase9b_recovery)
+    app.router.add_post('/internal/phase9b/notifications/routes/list', internal_phase9b_routes_list)
+    app.router.add_post('/internal/phase9b/notifications/routes/details', internal_phase9b_route_details)
+    app.router.add_post('/internal/phase9b/notifications/routes/update', internal_phase9b_route_update)
+    app.router.add_post('/internal/phase9b/notifications/routes/test', internal_phase9b_route_test)
+    app.router.add_post('/internal/phase9b/features/pause', internal_phase9b_pause)
+    app.router.add_post('/internal/phase9b/features/resume', internal_phase9b_resume)
+    app.router.add_post('/internal/phase9b/audit/list', internal_phase9b_audit)
+    app.router.add_post('/internal/phase9b/recovery/resolve', internal_phase9b_recovery_resolve)
+    app.router.add_post('/internal/phase9b/health', internal_phase9b_health)
     return app
 
 
@@ -3894,13 +4234,22 @@ async def on_voice_state_update(member, before, after):
             guild = member.guild
             notify_channel = get_announce_channel(guild, 'booster')
 
-            if notify_channel:
+            if notify_channel or await phase9b_schema_ready():
                 intros = [
                     f"👑 **{member.display_name}** (Donatur) telah bergabung ke VC **{after.channel.name}**.",
                     f"✨ **{member.display_name}** (Server Booster) telah bergabung ke VC **{after.channel.name}**.",
                     f"💎 **{member.display_name}** telah bergabung ke VC **{after.channel.name}**.",
                 ]
-                await notify_channel.send(random.choice(intros))
+                content = random.choice(intros)
+                routed = await reserve_phase9b_legacy_notification(
+                    guild, category='BOOSTER', event_type='BOOSTER_STARTED',
+                    source_type='LEGACY_BOOSTER',
+                    source_key=f"{guild.id}:{member.id}:{member.premium_since.isoformat()}",
+                    payload={'content': content, 'userId': str(member.id),
+                             'boostStartedAt': member.premium_since.isoformat()},
+                )
+                if not routed and notify_channel:
+                    await notify_channel.send(content)
 
     elif before.channel is not None and after.channel is None:
         if member.id in voice_join_times:

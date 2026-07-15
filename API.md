@@ -99,3 +99,16 @@ Sanitized error codes are limited to:
 
 Responses use `Cache-Control: no-store` and do not include secrets, paths, SQL,
 configuration values, or exception traces.
+
+## Phase 9B Economy Dashboard
+
+Seluruh endpoint Phase 9B adalah signed internal `POST` dan memerlukan session Phase 9A aktif.
+Read endpoint tersedia pada `/internal/phase9b/dashboard/{overview|supply|flows|liabilities|marketplace|casino-options|giveaway|crypto-mining|recovery}`.
+Routing menggunakan `/internal/phase9b/notifications/routes/{list|details|update|test}`. Kontrol yang
+diizinkan adalah `/internal/phase9b/features/{pause|resume}` dan `/internal/phase9b/recovery/resolve`.
+
+Next.js mengekspos pasangan browser yang eksplisit di `/api/economy/*`; tidak ada catch-all proxy.
+Mutation memerlukan CSRF satu kali, stable request ID, expected version, dan permission yang sesuai.
+Amount dan count pada read model dikirim sebagai string desimal. Test notification terpisah dari
+history real event. Timeout atau response loss pada Discord menjadi `review_required` dan tidak
+dikirim ulang otomatis.
