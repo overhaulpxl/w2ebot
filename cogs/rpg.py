@@ -7,7 +7,7 @@ from economy.amounts import AmountParseError, parse_economy_amount
 from economy.constants import (
     ECONOMY_PHASE2_ENABLED, ECONOMY_PHASE3_ENABLED, ECONOMY_PHASE5_ENABLED,
     ECONOMY_PHASE6_ENABLED,
-    ECONOMY_PHASE7_ENABLED,
+    ECONOMY_PHASE7_ENABLED, ECONOMY_PHASE8_ENABLED,
     ECONOMY_V1_ENABLED,
 )
 from economy.exchange import exchange_etm_to_ecy, get_exchange_info
@@ -34,6 +34,11 @@ def _phase6_enabled():
 
 def _phase7_enabled():
     return _phase2_enabled() and ECONOMY_PHASE7_ENABLED
+
+
+def _phase8_enabled():
+    return (_phase2_enabled() and ECONOMY_PHASE5_ENABLED and ECONOMY_PHASE6_ENABLED
+            and ECONOMY_PHASE8_ENABLED)
 
 
 def _economy_request_id(interaction):
@@ -1080,6 +1085,9 @@ def setup(tree, client):
     @tree.command(name="crash", description="Main judi grafik Crash")
     async def slash_crash(interaction: discord.Interaction, bet: int):
         await interaction.response.defer()
+        if _phase8_enabled():
+            await send_embed(interaction, "Crash telah digantikan oleh `/eternal-options open` pada Phase 8.")
+            return
         uid = str(interaction.user.id)
         if bet < 10:
             await send_embed(interaction, "❌ Taruhan minimal 10 Koin.")

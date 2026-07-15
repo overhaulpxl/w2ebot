@@ -31,6 +31,7 @@ REQUIRED_TOP_LEVEL = {
     "economyDesign", "phase1", "phase2", "phase3Rpg", "rpgBalance",
     "phase4Marketplace", "marketplaceHardening", "moduleOwnership",
     "marketplaceLifecycleDefinitions", "phase5Casino", "phase6Crypto", "phase7Mining",
+    "phase8GiveawayOptions",
     "verificationHistory", "stagingStatus", "dashboardStatus", "productionStatus",
     "knownLimitations", "blockers", "pendingWork", "aiCoderOnboarding",
     "livingPrdWorkflow", "taskCompletionTemplate", "definitionOfDone",
@@ -44,7 +45,7 @@ FORBIDDEN_PREFIXES = {
 FLAG_NAMES = (
     "ECONOMY_V1_ENABLED", "ECONOMY_PHASE2_ENABLED",
     "ECONOMY_PHASE3_ENABLED", "ECONOMY_PHASE4_ENABLED", "ECONOMY_PHASE5_ENABLED",
-    "ECONOMY_PHASE6_ENABLED", "ECONOMY_PHASE7_ENABLED",
+    "ECONOMY_PHASE6_ENABLED", "ECONOMY_PHASE7_ENABLED", "ECONOMY_PHASE8_ENABLED",
 )
 
 
@@ -133,6 +134,11 @@ def _extract_phase_checksums(root: Path) -> dict[int, str]:
     phase7_sql = _literal(phase7["PHASE7_TABLE_SQL"])
     phase7_indexes = _literal(phase7["PHASE7_INDEX_SQL"])
     phase7_triggers = _literal(phase7["PHASE7_TRIGGER_SQL"])
+    phase8 = _assignment_map(_parse_source(root / "economy" / "phase8_schema.py"))
+    phase8_name = _literal(phase8["PHASE8_MIGRATION_NAME"])
+    phase8_sql = _literal(phase8["PHASE8_TABLE_SQL"])
+    phase8_indexes = _literal(phase8["PHASE8_INDEX_SQL"])
+    phase8_triggers = _literal(phase8["PHASE8_TRIGGER_SQL"])
     canonical = lambda value: " ".join(str(value).split())
     return {
         301: hashlib.sha256((phase3_sql + "\n" + "\n".join(phase3_triggers)).encode("utf-8")).hexdigest(),
@@ -148,6 +154,10 @@ def _extract_phase_checksums(root: Path) -> dict[int, str]:
         700: hashlib.sha256(
             (phase7_name + "\n" + canonical(phase7_sql) + "\n" +
              "\n".join(canonical(value) for value in phase7_indexes + phase7_triggers)).encode("utf-8")
+        ).hexdigest(),
+        800: hashlib.sha256(
+            (phase8_name + "\n" + canonical(phase8_sql) + "\n" +
+             "\n".join(canonical(value) for value in phase8_indexes + phase8_triggers)).encode("utf-8")
         ).hexdigest(),
     }
 
@@ -575,6 +585,39 @@ def _phase7_issues(root: Path, state: dict, phase7_status: str | None) -> list[s
     return issues
 
 
+def _phase8_issues(root: Path, state: dict, phase8_status: str | None) -> list[str]:
+    issues: list[str] = []
+    phase8 = _claim_value(state.get("phase8GiveawayOptions", {}))
+    if phase8_status != "implemented_staging_ready" or phase8.get("status") != phase8_status:
+        issues.append("Phase 8 status harus implemented_staging_ready")
+    if phase8.get("implementationStatus") != "implemented":
+        issues.append("Phase 8 implementation status tidak valid")
+    if (phase8.get("productionStatus") != "not_approved" or
+            phase8.get("productionMigrated") is not False or
+            phase8.get("productionSeeded") is not False or
+            phase8.get("productionEnabled") is not False):
+        issues.append("Phase 8 production guard tidak valid")
+    if phase8.get("featureFlag") != {"name": "ECONOMY_PHASE8_ENABLED", "default": False}:
+        issues.append("Phase 8 feature flag state tidak valid")
+    migration = phase8.get("migration", {})
+    if (migration.get("version") != 800 or migration.get("name") != "phase8-giveaway-options" or
+            migration.get("startupAutomatic") is not False or
+            not CHECKSUM.fullmatch(str(migration.get("checksum", "")))):
+        issues.append("Phase 8 migration identity tidak valid")
+    simulation = phase8.get("simulation", {})
+    if (simulation.get("passed") is not True or simulation.get("optionsPositions") != 2_000_000 or
+            simulation.get("giveawayDraws") != 10_000 or
+            not CHECKSUM.fullmatch(str(simulation.get("artifactSha256", "")))):
+        issues.append("Phase 8 simulation result tidak valid")
+    pending = _claim_value(state.get("pendingWork", []))
+    if not isinstance(pending, list) or not any("phase 8" in str(item).lower() for item in pending):
+        issues.append("Phase 8 connected staging tidak tercatat sebagai pending work")
+    for path in ("docs/PHASE8_GIVEAWAY_OPTIONS_PRD.md", "scripts/migrate_economy_phase8.py"):
+        if not (root / path).is_file():
+            issues.append(f"Artefak Phase 8 tidak ditemukan: {path}")
+    return issues
+
+
 def verify(root: Path = PROJECT_ROOT) -> list[str]:
     root = root.resolve()
     state_path = root / "docs" / "project_state.json"
@@ -663,6 +706,8 @@ def verify(root: Path = PROJECT_ROOT) -> list[str]:
     issues.extend(_phase6_issues(root, state, phase6.get("status")))
     phase7 = next((row for row in phases if isinstance(row, dict) and row.get("id") == "phase7"), {})
     issues.extend(_phase7_issues(root, state, phase7.get("status")))
+    phase8 = next((row for row in phases if isinstance(row, dict) and row.get("id") == "phase8"), {})
+    issues.extend(_phase8_issues(root, state, phase8.get("status")))
     issues.extend(_secret_issues(raw_state, "project_state.json"))
     issues.extend(_private_content_issues(raw_state, "project_state.json"))
     if not handoff_path.exists():

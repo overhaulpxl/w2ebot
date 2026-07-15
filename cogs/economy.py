@@ -15,6 +15,7 @@ from economy.constants import (
     ECONOMY_PHASE5_ENABLED,
     ECONOMY_PHASE6_ENABLED,
     ECONOMY_PHASE7_ENABLED,
+    ECONOMY_PHASE8_ENABLED,
     ECONOMY_V1_ENABLED,
     EMERGENCY_FEATURES,
     configured_large_threshold,
@@ -482,6 +483,7 @@ def setup(tree, client):
             f"Economy Phase 5 enabled: **{'Ya' if ECONOMY_PHASE5_ENABLED else 'Tidak'}**",
             f"Economy Phase 6 enabled: **{'Ya' if ECONOMY_PHASE6_ENABLED else 'Tidak'}**",
             f"Economy Phase 7 enabled: **{'Ya' if ECONOMY_PHASE7_ENABLED else 'Tidak'}**",
+            f"Economy Phase 8 enabled: **{'Ya' if ECONOMY_PHASE8_ENABLED else 'Tidak'}**",
             state_text,
         ]
         for currency in CURRENCIES:

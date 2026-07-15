@@ -36,6 +36,7 @@ class LivingPrdToolingTests(unittest.TestCase):
         shutil.copy2(ROOT / "docs" / "PHASE5_CASINO_PRD.md", root / "docs" / "PHASE5_CASINO_PRD.md")
         shutil.copy2(ROOT / "docs" / "PHASE6_CRYPTO_PRD.md", root / "docs" / "PHASE6_CRYPTO_PRD.md")
         shutil.copy2(ROOT / "docs" / "PHASE7_MINING_PRD.md", root / "docs" / "PHASE7_MINING_PRD.md")
+        shutil.copy2(ROOT / "docs" / "PHASE8_GIVEAWAY_OPTIONS_PRD.md", root / "docs" / "PHASE8_GIVEAWAY_OPTIONS_PRD.md")
         shutil.copy2(ROOT / "runtime_config.py", root / "runtime_config.py")
         shutil.copy2(ROOT / "core.py", root / "core.py")
         shutil.copytree(ROOT / "economy", root / "economy", ignore=shutil.ignore_patterns("__pycache__"))
@@ -44,6 +45,7 @@ class LivingPrdToolingTests(unittest.TestCase):
         shutil.copy2(ROOT / "scripts" / "migrate_economy_phase5.py", root / "scripts" / "migrate_economy_phase5.py")
         shutil.copy2(ROOT / "scripts" / "migrate_economy_phase6.py", root / "scripts" / "migrate_economy_phase6.py")
         shutil.copy2(ROOT / "scripts" / "migrate_economy_phase7.py", root / "scripts" / "migrate_economy_phase7.py")
+        shutil.copy2(ROOT / "scripts" / "migrate_economy_phase8.py", root / "scripts" / "migrate_economy_phase8.py")
         return root
 
     @staticmethod
@@ -68,6 +70,7 @@ class LivingPrdToolingTests(unittest.TestCase):
         self.assertIn(b"## Phase 5 Casino\n", first)
         self.assertIn(b"## Phase 6 Crypto\n", first)
         self.assertIn(b"## Phase 7 Mining\n", first)
+        self.assertIn(b"## Phase 8 Giveaway And Eternal Options\n", first)
 
     def test_phase7_profile_claim_simulation_and_production_guards(self):
         mutations = (

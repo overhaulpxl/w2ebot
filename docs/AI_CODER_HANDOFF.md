@@ -24,9 +24,9 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 
 - **lastKnownBranch:** codex/seller-payout-hotfixes
 - **observedBranch:** codex/seller-payout-hotfixes
-- **observedHead:** a7da7f1f243a045c88f1d304c2b6be4e865c23cf
+- **observedHead:** 381d99a249dd9d009fc582947635c1aabffbd9c3
 - **remotePushAfterPhase4:** false
-- **workingTreeAtSeed:** clean before Phase 7 implementation
+- **workingTreeAtSeed:** clean before Phase 8 implementation
 
 ## Project Progress
 
@@ -39,6 +39,7 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 | phase5 | Casino | implemented_staging_ready |
 | phase6 | Crypto | implemented_staging_ready |
 | phase7 | Mining | implemented_staging_ready |
+| phase8 | Giveaway and Eternal Options | implemented_staging_ready |
 
 ## Capabilities By Phase
 
@@ -102,6 +103,17 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - restart recovery
   - migration 700
   - deterministic Mining simulation passed
+- **phase8:**
+  - Giveaway ECY ticket escrow
+  - capped Activity Score eligibility
+  - non-overlapping voice blocks
+  - secure draws and structured redraw evidence
+  - Eternal Options
+  - shared Casino exposure
+  - restart recovery
+  - restart-safe notification outbox replay
+  - migration 800
+  - deterministic simulations passed
 
 ## Protected Systems
 
@@ -127,6 +139,7 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 - **ECONOMY PHASE5 ENABLED:** false
 - **ECONOMY PHASE6 ENABLED:** false
 - **ECONOMY PHASE7 ENABLED:** false
+- **ECONOMY PHASE8 ENABLED:** false
 - **ECONOMY V1 ENABLED:** false
 
 ## Command Ownership
@@ -230,6 +243,13 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - **name:** phase7-mining
   - **verificationStatus:** verified
   - **version:** 700
+-
+  - **checksum:** 33c88d9b49b31b0b029c641f7fecaadeacd57db2f5f2e8c6dacfb8cd958d40a9
+  - **evidencePaths:**
+    - economy/phase8_schema.py
+  - **name:** phase8-giveaway-options
+  - **verificationStatus:** verified
+  - **version:** 800
 
 ## Catalog Versions And Checksums
 
@@ -1165,6 +1185,127 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - **pyCompile:** passed
   - **temporaryMainImport:** passed
 
+## Phase 8 Giveaway And Eternal Options
+
+- **connectedDiscordStaging:** pending
+- **dependencies:**
+  - **economyV1:** true
+  - **phase2Activity:** true
+  - **phase5CasinoCapability:** true
+  - **phase6CryptoCapability:** true
+  - **phase7Required:** false
+- **featureFlag:**
+  - **default:** false
+  - **name:** ECONOMY_PHASE8_ENABLED
+- **giveaway:**
+  - **accountAgeDays:** 30
+  - **activePerChannel:** 1
+  - **activePerGuild:** 3
+  - **claimHours:** 24
+  - **completionAllocation:**
+    - **burnPercent:** 10
+    - **reservePercent:** 10
+    - **retainedPercent:** 80
+  - **guildMembershipDays:** 14
+  - **manualWinnerSelection:** false
+  - **minimumActivityScore:** 80
+  - **secureRandom:** secrets.randbelow
+  - **ticketEcy:** 10000
+  - **winnerCount:** 1
+- **implementationStatus:** implemented
+- **legacyFencing:**
+  - **binomo:** true
+  - **crash:** true
+  - **disabledFlagPreservesLegacy:** true
+  - **giveaway:** true
+  - **legacySnapshotsReadOnly:** true
+- **migration:**
+  - **checksum:** 33c88d9b49b31b0b029c641f7fecaadeacd57db2f5f2e8c6dacfb8cd958d40a9
+  - **name:** phase8-giveaway-options
+  - **startupAutomatic:** false
+  - **version:** 800
+- **moduleOwnership:**
+  - **cogs/phase8.py:** member/admin command adapters and deduplicated notification delivery
+  - **economy/eternal options.py:** Options opening, shared exposure, and settlement
+  - **economy/giveaways.py:** Giveaway eligibility, ticket escrow, draw, claim, and redraw
+  - **economy/phase8 migrations.py:** staging migration and legacy snapshots
+  - **economy/phase8 recovery.py:** restart recovery and notification outbox leasing
+  - **economy/phase8 schema.py:** migration 800 schema and checksum
+  - **economy/phase8 simulation.py:** deterministic acceptance simulations
+  - **economy/phase8 voice.py:** durable qualified voice blocks
+- **options:**
+  - **activePositionLimit:** 3
+  - **cancellable:** false
+  - **combinedStakeLimitEcy:** 500000
+  - **durationsMinutes:**
+    - 5
+    - 10
+    - 30
+  - **grossPayoutBps:** 19000
+  - **lossUsesSecondCurrencyTransaction:** false
+  - **stakeMaximumEcy:** 500000
+  - **stakeMinimumEcy:** 1000
+  - **stakeStepEcy:** 1000
+  - **tieRefund:** true
+- **productionEnabled:** false
+- **productionMigrated:** false
+- **productionSeeded:** false
+- **productionStatus:** not_approved
+- **redraw:**
+  - **oneTimeEvidence:** true
+  - **reasonCodes:**
+    - CLAIM_EXPIRED
+    - WINNER_DEPARTED
+    - WINNER_INVALID
+    - RULE_VIOLATION
+  - **ruleViolationEvidence:** verified guild-local Discord message reference and content hash
+- **scope:** Giveaway V1 and Eternal Options with shared Casino exposure
+- **sharedExposure:**
+  - **account:** ECY_CASINO
+  - **exposureBps:** 200
+  - **includesCasinoReservations:** true
+  - **includesOptionReservations:** true
+- **simulation:**
+  - **artifactSha256:** ce50819010645c8cabcc5a2398837b77f0911f8dd863a8c85f6408d3a4a38ec4
+  - **completed:** true
+  - **giveawayDraws:** 10000
+  - **giveawayPValue:** 0.6212634449446391
+  - **giveawayUsers:** 1000
+  - **optionsConfidence95:**
+    - 0.9491074010171691
+    - 0.9517406664479008
+  - **optionsPositions:** 2000000
+  - **optionsPositionsPerSeed:** 100000
+  - **optionsRtp:** 0.9504240337325349
+  - **optionsSeeds:** 20
+  - **passed:** true
+- **status:** implemented_staging_ready
+- **verificationResults:**
+  - **casinoRegressionTests:** 33 passed
+  - **commandOwnership:** passed through static verifier
+  - **cryptoRegressionTests:** 26 passed
+  - **forbiddenAliases:** absent through static verifier
+  - **foreignKeyErrors:** 0
+  - **integrityCheck:** ok
+  - **livingPrdToolingTests:** 15 passed
+  - **marketplaceRegressionTests:** 64 passed
+  - **migration800FirstApply:** passed
+  - **migration800Reconciliation:** passed
+  - **migration800RollbackInjection:** passed
+  - **migration800SecondRun:** idempotent replay
+  - **miningRegressionTests:** 25 passed
+  - **outboxReplay:** passed
+  - **phase1To8EconomyTests:** 191 passed
+  - **phase8FocusedTests:** 20 passed
+  - **pyCompile:** passed
+  - **temporaryMainImport:** passed
+- **voiceActivity:**
+  - **deterministicBlockIdentity:** true
+  - **eventType:** VOICE_ACTIVITY_30M
+  - **nonOverlapping:** true
+  - **offlineBackfill:** false
+  - **segmentMinutes:** 30
+
 ## Module Ownership
 
 - **cogs:**
@@ -1172,18 +1313,21 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - **cogs/economy.py:** Economy staff adapters
   - **cogs/marketplace.py:** Marketplace commands
   - **cogs/mining.py:** Phase 7 member commands
+  - **cogs/phase8.py:** Phase 8 Giveaway and Options commands
   - **cogs/rpg.py:** legacy RPG and flag-gated compatibility routing
   - **cogs/rpg phase3.py:** Phase 3 interactions
 - **economy:**
+  - **economy/eternal options.py:** Eternal Options services
+  - **economy/giveaways.py:** Giveaway V1 services
   - **economy/ledger.py:** atomic currency transactions and ledger
-  - **economy/mining.py:** Mining settlement, asset claims, and accrual
-  - **economy/mining simulation.py:** deterministic Mining simulation
-  - **economy/phase7 migrations.py:** staging-only migration and reconciliation
-  - **economy/phase7 recovery.py:** restart recovery
-  - **economy/phase7 schema.py:** canonical migration 700 schema and checksum
+  - **economy/phase8 migrations.py:** staging-only migration and reconciliation
+  - **economy/phase8 recovery.py:** restart recovery
+  - **economy/phase8 schema.py:** canonical migration 800 schema and checksum
+  - **economy/phase8 simulation.py:** deterministic Phase 8 simulation
+  - **economy/phase8 voice.py:** qualified voice activity
 - **livingPrd:**
   - **docs/AI CODER HANDOFF.md:** generated onboarding document
-  - **docs/PHASE7 MINING PRD.md:** Phase 7 Mining specification and implementation status
+  - **docs/PHASE8 GIVEAWAY OPTIONS PRD.md:** Phase 8 specification and implementation status
   - **docs/project state.json:** authoritative structured state
   - **scripts/generate ai handoff.py:** pure renderer and generator
   - **scripts/update ai handoff.py:** generator/verifier wrapper
@@ -1194,13 +1338,15 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - **runtime config.py:** database path, staging guards, feature flags
 - **tests:**
   - **tests/test ai handoff tools.py:** Living PRD deterministic/static tooling
-  - **tests/test economy *.py:** Phase 1-7 economy/RPG/Casino/Crypto/Mining
-  - **tests/test economy mining*.py:** Phase 7 engine, migration, concurrency, recovery, command, and simulation
+  - **tests/test economy *.py:** Phase 1-8 economy/RPG/Casino/Crypto/Mining/Giveaway/Options
+  - **tests/test economy phase8*.py:** Phase 8 migration, transactions, concurrency, recovery, commands, and simulation
   - **tests/test marketplace*.py:** Phase 4 Marketplace
 
 ## Verification History
 
+- **casinoTests:** 33 passed
 - **commandOwnership:** passed through static verifier
+- **cryptoTests:** 26 passed
 - **forbiddenAliases:** absent through static verifier
 - **gitDiffCheck:** passed
 - **historicalBaseline:**
@@ -1210,11 +1356,15 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 - **livingPrdToolingTests:** 15 passed
 - **mainImportTemporaryDatabase:** passed
 - **marketplaceTests:** 64 passed
-- **migration700Restore:** passed
-- **migration700SecondRun:** idempotent replay
-- **miningFocusedTests:** 25 passed
-- **phase1To7EconomyTests:** 171 passed
-- **phase7Simulation:** 20 seeds x 90 days, 2240 scenarios, ROI 66.66666666666667 days, zero invariant failures
+- **migration800FirstApply:** passed
+- **migration800Reconciliation:** passed
+- **migration800RollbackInjection:** passed
+- **migration800SecondRun:** idempotent replay
+- **miningTests:** 25 passed
+- **phase1To8EconomyTests:** 191 passed
+- **phase8FocusedTests:** 20 passed
+- **phase8OutboxReplay:** passed
+- **phase8Simulation:** 10000 Giveaway draws and 20 x 100000 Options positions; both gates passed
 - **pyCompile:** passed
 - **sqliteForeignKeyErrors:** 0
 - **sqliteIntegrityCheck:** ok
@@ -1225,6 +1375,7 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 - **phase5Readiness:** ready_for_connected_discord_staging
 - **phase6Readiness:** ready_for_connected_discord_staging
 - **phase7Readiness:** ready_for_connected_discord_staging
+- **phase8Readiness:** ready_for_connected_discord_staging
 - **requirements:**
   - dedicated staging bot
   - non-production SQLite copy
@@ -1232,11 +1383,11 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - required flags enabled only for staging
   - manual command and restart smoke test
 - **scripts:**
-  - scripts/migrate_economy_phase7.py
-  - scripts/setup_phase7_staging.py
-  - scripts/run_phase7_staging.py
-  - scripts/run_phase7_staging.ps1
-  - scripts/simulate_phase7_mining.py
+  - scripts/migrate_economy_phase8.py
+  - scripts/setup_phase8_staging.py
+  - scripts/run_phase8_staging.py
+  - scripts/run_phase8_staging.ps1
+  - scripts/simulate_phase8.py
 
 ## Dashboard
 
@@ -1258,14 +1409,14 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 
 ## Known Limitations
 
-- Connected Discord staging remains pending for Phase 5, Phase 6, and Phase 7.
+- Connected Discord staging remains pending for Phase 5 through Phase 8.
 - Dashboard production build remains pending.
 - Deal runtime claims are retained as last-known until a separately scoped audit verifies them.
 
 ## Blockers
 
 - Production cutover requires separate explicit approval.
-- Production migrations 500, 600, and 700 have not occurred and all production flags must remain disabled.
+- Production migrations 500, 600, 700, and 800 have not occurred and all production flags must remain disabled.
 - Connected Discord staging has not been executed.
 
 ## Pending Work
@@ -1273,6 +1424,7 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 - Phase 5 connected Discord staging validation
 - Phase 6 connected Discord staging validation
 - Phase 7 connected Discord staging validation
+- Phase 8 connected Discord staging validation
 - Dashboard production build
 - Production rollout approval
 
@@ -1332,7 +1484,8 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 | 7ca5e70 | 2026-07-14 | Living PRD Automation Implemented |
 | 25ea3bb318e292044fa4b230ccbd08bf728efb0e | 2026-07-14 | Phase 5 Casino Implemented |
 | a7da7f1f243a045c88f1d304c2b6be4e865c23cf | 2026-07-14 | Phase 6 Crypto Implemented |
-| PENDING | 2026-07-14 | Phase 7 Mining Implemented |
+| 381d99a249dd9d009fc582947635c1aabffbd9c3 | 2026-07-14 | Phase 7 Mining Implemented |
+| PENDING | 2026-07-14 | Phase 8 Giveaway And Eternal Options Implemented |
 
 ## Current Handoff Summary
 
@@ -1345,5 +1498,6 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - Living PRD automation
   - Phase 5 Casino and D02 simulation
   - Phase 6 Crypto
-  - Phase 7 Mining runtime, migration, recovery, commands, and deterministic simulation
-- **current:** Phase 7 Mining is implemented with all defaults false and production unmigrated and unseeded. Migration 700 and the 2240-scenario Mining simulation pass. Connected Discord staging remains pending and production cutover requires separate approval.
+  - Phase 7 Mining
+  - Phase 8 Giveaway and Eternal Options runtime, migration, recovery, commands, and deterministic simulations
+- **current:** Phase 8 is implemented with all defaults false and production unmigrated and unseeded. Migration 800 and both deterministic simulation gates pass. Connected Discord staging remains pending and production cutover requires separate approval.

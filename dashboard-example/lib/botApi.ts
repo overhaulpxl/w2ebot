@@ -177,6 +177,19 @@ export interface MiningV1Status {
   slotLimit?: number;
 }
 
+export interface Phase8Status {
+  enabled: boolean;
+  schema_ready: boolean;
+  paused?: boolean;
+  activePositions?: number;
+  combinedStakeEcy?: number;
+  bankrollEcy?: number;
+  reservedLiabilityEcy?: number;
+  optionsReservedLiabilityEcy?: number;
+  availableBankrollEcy?: number;
+  exposureCapEcy?: number;
+}
+
 export interface LeaderboardEntry {
   rank: number;
   id: string;

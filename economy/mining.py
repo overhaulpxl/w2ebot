@@ -187,7 +187,9 @@ async def _reserve(db_path, *, guild_id, user_id, request_id, operation_type,
                 return replay, existing[0]
             if existing:
                 await db.rollback()
-                return MiningResult(False, "operation_pending", "Operasi Mining sebelumnya masih diproses."), existing[0]
+                # The request owns this persisted operation. Resume it so a concurrent
+                # duplicate click cannot fail or create a replacement identity.
+                return None, existing[0]
             try:
                 await db.execute(
                     "INSERT INTO MiningOperation "

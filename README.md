@@ -172,6 +172,16 @@ Mining V1 memakai ECY untuk pembelian dan maintenance, menghasilkan unit aset
 Crypto V1, dan menyimpan accrual, carry pecahan, klaim, serta asset ledger secara
 atomik. Default `ECONOMY_PHASE7_ENABLED=false`; migration eksplisit
 `700 / phase7-mining` memerlukan schema profil RPG Phase 3 dan Crypto Phase 6.
+
+### Phase 8 Giveaway dan Eternal Options
+
+Default `ECONOMY_PHASE8_ENABLED=false`. Migration eksplisit
+`800 / phase8-giveaway-options` memerlukan capability Phase 5 dan Phase 6 dan tidak
+pernah dijalankan otomatis. Giveaway V1 memakai tiket ECY, capped Activity Score,
+voice block 30 menit, secure draw, dan structured redraw evidence. Eternal Options
+memakai exact global Crypto price history serta shared Casino exposure. Gunakan
+`scripts/migrate_economy_phase8.py` dan `scripts/simulate_phase8.py` hanya pada
+database staging/non-production.
 Startup tidak menjalankan migration atau seed. Selama flag false, `/buyrig`,
 `/miner`, `/moverig`, dan prefix kompatibilitas tetap memakai perilaku legacy.
 

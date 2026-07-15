@@ -120,8 +120,22 @@ async def _bankroll_state(db, guild_id):
         (str(guild_id),),
     ) as cursor:
         reserved = int((await cursor.fetchone())[0])
+    async with db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='EternalOptionReservation'"
+    ) as cursor:
+        options_table = await cursor.fetchone()
+    options_reserved = 0
+    if options_table:
+        async with db.execute(
+            "SELECT COALESCE(SUM(liabilityEcy),0) FROM EternalOptionReservation "
+            "WHERE guildId=? AND status IN ('ACTIVE','REVIEW_REQUIRED')",
+            (str(guild_id),),
+        ) as cursor:
+            options_reserved = int((await cursor.fetchone())[0])
+    reserved += options_reserved
     available = bankroll - reserved
     return {"bankrollEcy": bankroll, "reservedLiabilityEcy": reserved,
+            "optionsReservedLiabilityEcy": options_reserved,
             "availableBankrollEcy": available,
             "exposureCapEcy": max(0, available) * CASINO_EXPOSURE_BPS // 10_000}
 

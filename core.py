@@ -28,7 +28,7 @@ from economy.database import ensure_phase1_schema
 from economy.constants import (
     ECONOMY_PHASE2_ENABLED, ECONOMY_PHASE3_ENABLED, ECONOMY_PHASE4_ENABLED, ECONOMY_PHASE5_ENABLED,
     ECONOMY_PHASE6_ENABLED, ECONOMY_V1_ENABLED,
-    ECONOMY_PHASE7_ENABLED,
+    ECONOMY_PHASE7_ENABLED, ECONOMY_PHASE8_ENABLED,
 )
 from economy.profile import get_profile_snapshot
 from economy.treasury import get_supply_report
@@ -74,6 +74,7 @@ intents.members = True
 client = discord.Client(intents=intents)
 tree = discord.app_commands.CommandTree(client)
 READY_STARTUP_CALLBACKS = []
+VOICE_STATE_CALLBACKS = []
 READY_TASKS = {}
 READY_ONCE_TASKS = set()
 TREE_SYNC_DONE = False
@@ -114,6 +115,11 @@ def _schedule_ready_task(name, factory, *, once=False):
 def register_ready_startup_task(callback):
     if callback not in READY_STARTUP_CALLBACKS:
         READY_STARTUP_CALLBACKS.append(callback)
+
+
+def register_voice_state_callback(callback):
+    if callback not in VOICE_STATE_CALLBACKS:
+        VOICE_STATE_CALLBACKS.append(callback)
 
 # Waktu start proses (untuk uptime di /api/bot/stats).
 BOT_START_TIME = datetime.utcnow()
@@ -1981,7 +1987,7 @@ async def update_market_prices():
                     client.loop.create_task(ch.send(event_message))
                             
         # Resolve Binomo Bets
-        binomo = await load_json(BINOMO_FILE)
+        binomo = {} if ECONOMY_PHASE8_ENABLED else await load_json(BINOMO_FILE)
         if binomo:
             results = []
             for uid, bet_data in list(binomo.items()):
@@ -2663,6 +2669,21 @@ async def api_casino_v1_status(request):
         })
     except Exception:
         logging.error("api_casino_v1_status error", exc_info=True)
+        return web.json_response({'error': 'internal error'}, status=500)
+
+
+async def api_phase8_status(request):
+    """Status Phase 8 read-only; tidak menyediakan mutasi Giveaway/Options."""
+    if not (ECONOMY_V1_ENABLED and ECONOMY_PHASE2_ENABLED and ECONOMY_PHASE5_ENABLED
+            and ECONOMY_PHASE6_ENABLED and ECONOMY_PHASE8_ENABLED):
+        return web.json_response({'enabled': False, 'schema_ready': False})
+    from economy.eternal_options import options_status
+    try:
+        payload = await options_status(DB_PATH, ALLOWED_SERVER_ID)
+        return web.json_response({'enabled': True,
+                                  'schema_ready': bool(payload.pop('schemaCapable', False)), **payload})
+    except Exception:
+        logging.error("api_phase8_status error", exc_info=True)
         return web.json_response({'error': 'internal error'}, status=500)
 
 
@@ -3438,6 +3459,7 @@ async def start_web_server():
     app.router.add_get('/api/economy/v1-casino', api_casino_v1_status)
     app.router.add_get('/api/economy/v1-crypto', api_crypto_v1_status)
     app.router.add_get('/api/economy/v1-mining', api_mining_v1_status)
+    app.router.add_get('/api/economy/v1-phase8', api_phase8_status)
     app.router.add_get('/api/marriages', api_marriages)
     app.router.add_get('/api/stats/summary', api_stats_summary)
     app.router.add_get('/api/bot/stats', api_bot_stats)
@@ -3473,6 +3495,12 @@ async def start_web_server():
 
 @client.event
 async def on_voice_state_update(member, before, after):
+    for callback in list(VOICE_STATE_CALLBACKS):
+        try:
+            await callback(member, before, after)
+        except Exception as exc:
+            logging.error("Voice state callback failed callback=%s exception=%s",
+                          getattr(callback, "__name__", "callback"), type(exc).__name__)
     if before.channel is None and after.channel is not None:
         voice_join_times[member.id] = datetime.now()
         # 👑 Booster Voice Intro
@@ -7650,6 +7678,8 @@ def schedule_reminder(rid, user_id, channel_id, message, fire_at):
 
 # ── Giveaway persistence ──────────────────────────────────────────────────────
 async def add_giveaway(channel_id, message_id, prize, host_id, end_at):
+    if ECONOMY_PHASE8_ENABLED:
+        return None
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             cur = await db.execute(
@@ -7663,6 +7693,8 @@ async def add_giveaway(channel_id, message_id, prize, host_id, end_at):
 
 
 async def _end_giveaway(gid, channel_id, message_id, prize, delay):
+    if ECONOMY_PHASE8_ENABLED:
+        return
     try:
         if delay > 0:
             await asyncio.sleep(delay)
@@ -7691,6 +7723,8 @@ async def _end_giveaway(gid, channel_id, message_id, prize, delay):
 
 
 def schedule_giveaway(gid, channel_id, message_id, prize, end_at):
+    if ECONOMY_PHASE8_ENABLED:
+        return None
     delay = (end_at - datetime.utcnow()).total_seconds()
     client.loop.create_task(_end_giveaway(gid, channel_id, message_id, prize, max(0, delay)))
 
@@ -7702,8 +7736,11 @@ async def resume_scheduled_jobs():
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute("SELECT id, user_id, channel_id, message, fire_at FROM Reminder") as cur:
                 reminders = await cur.fetchall()
-            async with db.execute("SELECT id, channel_id, message_id, prize, end_at FROM Giveaway WHERE ended=0") as cur:
-                giveaways = await cur.fetchall()
+            if ECONOMY_PHASE8_ENABLED:
+                giveaways = []
+            else:
+                async with db.execute("SELECT id, channel_id, message_id, prize, end_at FROM Giveaway WHERE ended=0") as cur:
+                    giveaways = await cur.fetchall()
         for rid, uid, cid, msg, fire_at in reminders:
             try:
                 schedule_reminder(rid, uid, cid, msg, datetime.fromisoformat(fire_at))

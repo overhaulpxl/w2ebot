@@ -50,6 +50,7 @@ ECONOMY_PHASE4_ENABLED = _env_bool("ECONOMY_PHASE4_ENABLED", False)
 ECONOMY_PHASE5_ENABLED = _env_bool("ECONOMY_PHASE5_ENABLED", False)
 ECONOMY_PHASE6_ENABLED = _env_bool("ECONOMY_PHASE6_ENABLED", False)
 ECONOMY_PHASE7_ENABLED = _env_bool("ECONOMY_PHASE7_ENABLED", False)
+ECONOMY_PHASE8_ENABLED = _env_bool("ECONOMY_PHASE8_ENABLED", False)
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,7 @@ class StartupConfiguration:
     economy_phase5_enabled: bool = False
     economy_phase6_enabled: bool = False
     economy_phase7_enabled: bool = False
+    economy_phase8_enabled: bool = False
 
     @property
     def all_economy_flags_enabled(self):
@@ -88,6 +90,12 @@ class StartupConfiguration:
         return self.economy_v1_enabled and self.economy_phase2_enabled and self.economy_phase7_enabled
 
     @property
+    def phase8_flags_enabled(self):
+        return (self.economy_v1_enabled and self.economy_phase2_enabled
+                and self.economy_phase5_enabled and self.economy_phase6_enabled
+                and self.economy_phase8_enabled)
+
+    @property
     def uses_production_database(self):
         return self.database_path == self.production_database_path
 
@@ -106,6 +114,7 @@ def current_startup_configuration():
         economy_phase5_enabled=ECONOMY_PHASE5_ENABLED,
         economy_phase6_enabled=ECONOMY_PHASE6_ENABLED,
         economy_phase7_enabled=ECONOMY_PHASE7_ENABLED,
+        economy_phase8_enabled=ECONOMY_PHASE8_ENABLED,
     )
 
 
@@ -144,6 +153,11 @@ def validate_startup_configuration(config=None, *, verify_database=True):
         config.economy_v1_enabled and config.economy_phase2_enabled
     ):
         raise RuntimeError("ECONOMY_PHASE7_ENABLED memerlukan Economy V1 dan Phase 2.")
+    if config.economy_phase8_enabled and not (
+        config.economy_v1_enabled and config.economy_phase2_enabled
+        and config.economy_phase5_enabled and config.economy_phase6_enabled
+    ):
+        raise RuntimeError("ECONOMY_PHASE8_ENABLED memerlukan Economy V1, Phase 2, Phase 5, dan Phase 6.")
     if config.casino_flags_enabled:
         if not config.staging_mode or config.uses_production_database:
             raise RuntimeError("Economy Phase 5 hanya dapat diaktifkan pada database staging.")
@@ -159,6 +173,11 @@ def validate_startup_configuration(config=None, *, verify_database=True):
             raise RuntimeError("Economy Phase 7 hanya dapat diaktifkan pada database staging.")
         if config.staging_guild_id is None or not config.discord_token_configured:
             raise RuntimeError("Phase 7 staging memerlukan guild dan Discord token khusus staging.")
+    if config.phase8_flags_enabled:
+        if not config.staging_mode or config.uses_production_database:
+            raise RuntimeError("Economy Phase 8 hanya dapat diaktifkan pada database staging.")
+        if config.staging_guild_id is None or not config.discord_token_configured:
+            raise RuntimeError("Phase 8 staging memerlukan guild dan Discord token khusus staging.")
     return config
 
 

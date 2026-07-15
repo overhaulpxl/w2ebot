@@ -555,3 +555,10 @@ maintenance, target, klaim, authorization, pause, dan recovery hanya melalui
 command Discord dan shared service layer. Default
 `ECONOMY_PHASE7_ENABLED=false`; migration `700 / phase7-mining` eksplisit,
 staging-only, dan tidak berjalan otomatis saat startup.
+
+## Economy V1 Phase 8 Giveaway dan Eternal Options
+
+`GET /api/economy/v1-phase8` adalah endpoint read-only untuk capability Eternal
+Options, active positions, dan shared Casino exposure. Endpoint ini tidak memiliki
+pasangan write API. Default `ECONOMY_PHASE8_ENABLED=false`; migration
+`800 / phase8-giveaway-options` hanya dijalankan eksplisit pada staging.
