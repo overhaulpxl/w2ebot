@@ -31,7 +31,7 @@ REQUIRED_TOP_LEVEL = {
     "economyDesign", "phase1", "phase2", "phase3Rpg", "rpgBalance",
     "phase4Marketplace", "marketplaceHardening", "moduleOwnership",
     "marketplaceLifecycleDefinitions", "phase5Casino", "phase6Crypto", "phase7Mining",
-    "phase8GiveawayOptions",
+    "phase8GiveawayOptions", "phase9aBackendSafety",
     "verificationHistory", "stagingStatus", "dashboardStatus", "productionStatus",
     "knownLimitations", "blockers", "pendingWork", "aiCoderOnboarding",
     "livingPrdWorkflow", "taskCompletionTemplate", "definitionOfDone",
@@ -139,6 +139,11 @@ def _extract_phase_checksums(root: Path) -> dict[int, str]:
     phase8_sql = _literal(phase8["PHASE8_TABLE_SQL"])
     phase8_indexes = _literal(phase8["PHASE8_INDEX_SQL"])
     phase8_triggers = _literal(phase8["PHASE8_TRIGGER_SQL"])
+    phase9a = _assignment_map(_parse_source(root / "economy" / "phase9a_schema.py"))
+    phase9a_name = _literal(phase9a["PHASE9A_MIGRATION_NAME"])
+    phase9a_sql = _literal(phase9a["PHASE9A_TABLE_SQL"])
+    phase9a_indexes = _literal(phase9a["PHASE9A_INDEX_SQL"])
+    phase9a_triggers = _literal(phase9a["PHASE9A_TRIGGER_SQL"])
     canonical = lambda value: " ".join(str(value).split())
     return {
         301: hashlib.sha256((phase3_sql + "\n" + "\n".join(phase3_triggers)).encode("utf-8")).hexdigest(),
@@ -158,6 +163,10 @@ def _extract_phase_checksums(root: Path) -> dict[int, str]:
         800: hashlib.sha256(
             (phase8_name + "\n" + canonical(phase8_sql) + "\n" +
              "\n".join(canonical(value) for value in phase8_indexes + phase8_triggers)).encode("utf-8")
+        ).hexdigest(),
+        900: hashlib.sha256(
+            (phase9a_name + "\n" + canonical(phase9a_sql) + "\n" +
+             "\n".join(canonical(value) for value in phase9a_indexes + phase9a_triggers)).encode("utf-8")
         ).hexdigest(),
     }
 
@@ -618,6 +627,53 @@ def _phase8_issues(root: Path, state: dict, phase8_status: str | None) -> list[s
     return issues
 
 
+def _phase9a_issues(root: Path, state: dict, phase9a_status: str | None) -> list[str]:
+    issues: list[str] = []
+    phase9a = _claim_value(state.get("phase9aBackendSafety", {}))
+    if phase9a_status != "implemented_local_verification" or phase9a.get("status") != phase9a_status:
+        issues.append("Phase 9A status harus implemented_local_verification")
+    if phase9a.get("implementationStatus") != "implemented":
+        issues.append("Phase 9A implementation status tidak valid")
+    if (phase9a.get("productionStatus") != "not_approved" or
+            phase9a.get("productionMigrated") is not False or
+            phase9a.get("productionEnabled") is not False):
+        issues.append("Phase 9A production guard tidak valid")
+    if phase9a.get("featureFlagAdded") is not False:
+        issues.append("Phase 9A tidak boleh memiliki Economy feature flag")
+    migration = phase9a.get("migration", {})
+    if (migration.get("version") != 900 or migration.get("name") != "phase9a-backend-safety" or
+            migration.get("startupAutomatic") is not False or
+            not CHECKSUM.fullmatch(str(migration.get("checksum", "")))):
+        issues.append("Phase 9A migration identity tidak valid")
+    public = phase9a.get("publicSurface", {})
+    if public != {"healthPath": "/healthz", "healthBody": {"status": "ok"}, "otherPublicDataRoutes": 0}:
+        issues.append("Phase 9A public surface tidak valid")
+    if phase9a.get("connectedDiscordOauthStaging") != "pending":
+        issues.append("Phase 9A connected OAuth staging harus pending")
+    permissions = phase9a.get("permissionClasses", [])
+    expected_permissions = {
+        "DASHBOARD_VIEW", "DASHBOARD_CONFIGURATION", "ECONOMY_PAUSE_CONTROL",
+        "REVIEWED_RECOVERY_CONTROL", "NOTIFICATION_ROUTING_CONTROL",
+        "OPERATOR_AUDIT_READ", "DASHBOARD_SECURITY_ADMIN",
+    }
+    if set(permissions) != expected_permissions or len(permissions) != len(expected_permissions):
+        issues.append("Phase 9A permission classes tidak valid")
+    pending = _claim_value(state.get("pendingWork", []))
+    if not isinstance(pending, list) or not any("phase 9a" in str(item).lower() for item in pending):
+        issues.append("Phase 9A connected staging tidak tercatat sebagai pending work")
+    for path in (
+        "docs/PHASE9A_BACKEND_SAFETY_PRD.md",
+        "scripts/migrate_phase9a_backend_safety.py",
+        "dashboard-example/middleware.ts",
+    ):
+        if not (root / path).is_file():
+            issues.append(f"Artefak Phase 9A tidak ditemukan: {path}")
+    runtime_source = (root / "runtime_config.py").read_text(encoding="utf-8")
+    if "ECONOMY_PHASE9" in runtime_source:
+        issues.append("Phase 9A Economy feature flag tidak boleh ada")
+    return issues
+
+
 def verify(root: Path = PROJECT_ROOT) -> list[str]:
     root = root.resolve()
     state_path = root / "docs" / "project_state.json"
@@ -708,6 +764,8 @@ def verify(root: Path = PROJECT_ROOT) -> list[str]:
     issues.extend(_phase7_issues(root, state, phase7.get("status")))
     phase8 = next((row for row in phases if isinstance(row, dict) and row.get("id") == "phase8"), {})
     issues.extend(_phase8_issues(root, state, phase8.get("status")))
+    phase9a = next((row for row in phases if isinstance(row, dict) and row.get("id") == "phase9a"), {})
+    issues.extend(_phase9a_issues(root, state, phase9a.get("status")))
     issues.extend(_secret_issues(raw_state, "project_state.json"))
     issues.extend(_private_content_issues(raw_state, "project_state.json"))
     if not handoff_path.exists():

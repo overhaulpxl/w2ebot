@@ -958,3 +958,6 @@ a {
     max-width: none;
   }
 }
+/* Authenticated Phase 9A login surface. */
+.login-shell { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
+.login-panel { width: min(420px, 100%); text-align: center; align-items: center; }

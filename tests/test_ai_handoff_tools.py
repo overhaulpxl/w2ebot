@@ -37,6 +37,7 @@ class LivingPrdToolingTests(unittest.TestCase):
         shutil.copy2(ROOT / "docs" / "PHASE6_CRYPTO_PRD.md", root / "docs" / "PHASE6_CRYPTO_PRD.md")
         shutil.copy2(ROOT / "docs" / "PHASE7_MINING_PRD.md", root / "docs" / "PHASE7_MINING_PRD.md")
         shutil.copy2(ROOT / "docs" / "PHASE8_GIVEAWAY_OPTIONS_PRD.md", root / "docs" / "PHASE8_GIVEAWAY_OPTIONS_PRD.md")
+        shutil.copy2(ROOT / "docs" / "PHASE9A_BACKEND_SAFETY_PRD.md", root / "docs" / "PHASE9A_BACKEND_SAFETY_PRD.md")
         shutil.copy2(ROOT / "runtime_config.py", root / "runtime_config.py")
         shutil.copy2(ROOT / "core.py", root / "core.py")
         shutil.copytree(ROOT / "economy", root / "economy", ignore=shutil.ignore_patterns("__pycache__"))
@@ -46,6 +47,9 @@ class LivingPrdToolingTests(unittest.TestCase):
         shutil.copy2(ROOT / "scripts" / "migrate_economy_phase6.py", root / "scripts" / "migrate_economy_phase6.py")
         shutil.copy2(ROOT / "scripts" / "migrate_economy_phase7.py", root / "scripts" / "migrate_economy_phase7.py")
         shutil.copy2(ROOT / "scripts" / "migrate_economy_phase8.py", root / "scripts" / "migrate_economy_phase8.py")
+        shutil.copy2(ROOT / "scripts" / "migrate_phase9a_backend_safety.py", root / "scripts" / "migrate_phase9a_backend_safety.py")
+        (root / "dashboard-example").mkdir()
+        shutil.copy2(ROOT / "dashboard-example" / "middleware.ts", root / "dashboard-example" / "middleware.ts")
         return root
 
     @staticmethod
@@ -71,6 +75,7 @@ class LivingPrdToolingTests(unittest.TestCase):
         self.assertIn(b"## Phase 6 Crypto\n", first)
         self.assertIn(b"## Phase 7 Mining\n", first)
         self.assertIn(b"## Phase 8 Giveaway And Eternal Options\n", first)
+        self.assertIn(b"## Phase 9A Backend Safety Foundation\n", first)
 
     def test_phase7_profile_claim_simulation_and_production_guards(self):
         mutations = (
@@ -358,6 +363,41 @@ class LivingPrdToolingTests(unittest.TestCase):
         with mock.patch.object(update_ai_handoff, "_run", side_effect=[0, 9]) as run:
             self.assertEqual(update_ai_handoff.main(), 9)
             self.assertEqual(run.call_count, 2)
+
+    def test_phase9a_security_state_and_migration_guards(self):
+        mutations = (
+            ("status", "planning", "Phase 9A status harus implemented_local_verification"),
+            ("implementationStatus", "not_started", "Phase 9A implementation status tidak valid"),
+            ("productionMigrated", True, "Phase 9A production guard tidak valid"),
+            ("productionEnabled", True, "Phase 9A production guard tidak valid"),
+            ("featureFlagAdded", True, "Phase 9A tidak boleh memiliki Economy feature flag"),
+            ("connectedDiscordOauthStaging", "passed", "Phase 9A connected OAuth staging harus pending"),
+        )
+        for field, value, expected in mutations:
+            with self.subTest(field=field):
+                root = self._fixture_root()
+                state = json.loads(json.dumps(self.state))
+                state["phase9aBackendSafety"]["value"][field] = value
+                self._write_state(root, state)
+                self.assertIn(expected, verify_ai_handoff.verify(root))
+
+        root = self._fixture_root()
+        state = json.loads(json.dumps(self.state))
+        state["phase9aBackendSafety"]["value"]["migration"]["version"] = 901
+        self._write_state(root, state)
+        self.assertIn("Phase 9A migration identity tidak valid", verify_ai_handoff.verify(root))
+
+        root = self._fixture_root()
+        state = json.loads(json.dumps(self.state))
+        state["phase9aBackendSafety"]["value"]["publicSurface"]["otherPublicDataRoutes"] = 1
+        self._write_state(root, state)
+        self.assertIn("Phase 9A public surface tidak valid", verify_ai_handoff.verify(root))
+
+        root = self._fixture_root()
+        state = json.loads(json.dumps(self.state))
+        state["phase9aBackendSafety"]["value"]["permissionClasses"].pop()
+        self._write_state(root, state)
+        self.assertIn("Phase 9A permission classes tidak valid", verify_ai_handoff.verify(root))
 
 
 if __name__ == "__main__":

@@ -22,11 +22,11 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 
 ## Repository Snapshot
 
-- **lastKnownBranch:** codex/seller-payout-hotfixes
-- **observedBranch:** codex/seller-payout-hotfixes
-- **observedHead:** 381d99a249dd9d009fc582947635c1aabffbd9c3
+- **lastKnownBranch:** codex/economy-v1-phase9a
+- **observedBranch:** codex/economy-v1-phase9a
+- **observedHead:** 2931a47b0b7db2626f124d744391a788bcd79051
 - **remotePushAfterPhase4:** false
-- **workingTreeAtSeed:** clean before Phase 8 implementation
+- **workingTreeAtSeed:** clean before Phase 9A implementation
 
 ## Project Progress
 
@@ -40,6 +40,7 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 | phase6 | Crypto | implemented_staging_ready |
 | phase7 | Mining | implemented_staging_ready |
 | phase8 | Giveaway and Eternal Options | implemented_staging_ready |
+| phase9a | Backend Safety Foundation | implemented_local_verification |
 
 ## Capabilities By Phase
 
@@ -114,6 +115,15 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - restart-safe notification outbox replay
   - migration 800
   - deterministic simulations passed
+- **phase9a:**
+  - Discord OAuth2 PKCE
+  - bounded server sessions
+  - one-time CSRF
+  - signed internal requests
+  - explicit dashboard permissions
+  - append-only operator audit
+  - legacy route tombstones
+  - migration 900
 
 ## Protected Systems
 
@@ -187,6 +197,8 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 | 8e924d4 | feat(docs): add phase 5 casino PRD and guarded planning state |
 | 25ea3bb318e292044fa4b230ccbd08bf728efb0e | feat(economy): implement phase 5 casino |
 | a7da7f1f243a045c88f1d304c2b6be4e865c23cf | feat(economy): implement phase 6 crypto |
+| 381d99a249dd9d009fc582947635c1aabffbd9c3 | feat(economy): implement phase 7 mining |
+| 2931a47b0b7db2626f124d744391a788bcd79051 | feat(economy): implement phase 8 giveaway and eternal options |
 
 ## Migrations And Checksums
 
@@ -250,6 +262,13 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - **name:** phase8-giveaway-options
   - **verificationStatus:** verified
   - **version:** 800
+-
+  - **checksum:** ba692b4677207d848799439d708e0367ef766d56dec852db78546bdd74916aa2
+  - **evidencePaths:**
+    - economy/phase9a_schema.py
+  - **name:** phase9a-backend-safety
+  - **verificationStatus:** verified
+  - **version:** 900
 
 ## Catalog Versions And Checksums
 
@@ -1306,6 +1325,110 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - **offlineBackfill:** false
   - **segmentMinutes:** 30
 
+## Phase 9A Backend Safety Foundation
+
+- **audit:**
+  - **authorizationAuditAppendOnly:** true
+  - **legacyAuditAuthoritative:** false
+  - **operatorAuditAppendOnly:** true
+  - **securityEventsSanitized:** true
+- **authentication:**
+  - **absoluteHours:** 8
+  - **cookie:** __Host-w2e_admin_session
+  - **csrfMinutes:** 10
+  - **flow:** Discord OAuth2 authorization code with PKCE
+  - **idleMinutes:** 30
+  - **oauthAttemptMinutes:** 10
+  - **scope:** identify
+- **connectedDiscordOauthStaging:** pending
+- **controlledOperations:**
+  - **ambiguousState:** REVIEW_REQUIRED
+  - **auditAtomicWithMutation:** true
+  - **beginImmediate:** true
+  - **expectedVersions:** true
+  - **idempotentReceipts:** true
+- **dashboardProductionBuild:** passed locally
+- **exclusions:**
+  - Phase 9B
+  - Phase 9C
+  - Economy analytics
+  - pause and resume operations
+  - reviewed recovery operations
+  - notification routing mutations
+  - product-value editing
+  - second backend
+- **featureFlagAdded:** false
+- **implementationStatus:** implemented
+- **migration:**
+  - **checksum:** ba692b4677207d848799439d708e0367ef766d56dec852db78546bdd74916aa2
+  - **name:** phase9a-backend-safety
+  - **startupAutomatic:** false
+  - **version:** 900
+- **moduleOwnership:**
+  - **core.py:** public tombstones and signed internal aiohttp routes
+  - **dashboard-example:** authenticated Next.js pages, OAuth, signed reads, and security administration
+  - **economy/dashboard auth.py:** OAuth attempts, sessions, permissions, and CSRF
+  - **economy/dashboard operations.py:** controlled security operations and append-only audit
+  - **economy/dashboard security.py:** canonical signing, nonce, rate limit, and safe security events
+  - **economy/phase9a migrations.py:** manual migration, reconciliation, restore, bootstrap, and key registration
+  - **economy/phase9a schema.py:** migration 900 schema and capability
+- **permissionClasses:**
+  - DASHBOARD_VIEW
+  - DASHBOARD_CONFIGURATION
+  - ECONOMY_PAUSE_CONTROL
+  - REVIEWED_RECOVERY_CONTROL
+  - NOTIFICATION_ROUTING_CONTROL
+  - OPERATOR_AUDIT_READ
+  - DASHBOARD_SECURITY_ADMIN
+- **productionEnabled:** false
+- **productionMigrated:** false
+- **productionStatus:** not_approved
+- **publicSurface:**
+  - **healthBody:**
+    - **status:** ok
+  - **healthPath:** /healthz
+  - **otherPublicDataRoutes:** 0
+- **routeIsolation:**
+  - **browserDirectAiohttp:** false
+  - **legacyReads:** 410 legacy_dashboard_read_disabled
+  - **legacyWrites:** 410 legacy_dashboard_write_disabled
+  - **rawConfigReplacement:** false
+  - **sensitiveReadsSignedInternalOnly:** true
+- **scope:** Authenticated dashboard backend safety foundation
+- **securityHeaders:**
+  - **csp:** true
+  - **explicitCorsAllowlist:** true
+  - **frameDenied:** true
+  - **mimeSniffingDenied:** true
+  - **noStore:** true
+  - **strictReferrer:** true
+- **signedInternalRequests:**
+  - **algorithm:** HMAC-SHA256
+  - **backendRevalidatesSessionMembershipAndPermission:** true
+  - **clockSkewSeconds:** 5
+  - **expirySeconds:** 30
+  - **nonceSingleUse:** true
+- **status:** implemented_local_verification
+- **verificationResults:**
+  - **dashboardDependencyAudit:** 0 vulnerabilities
+  - **dashboardProductionBuild:** passed on Next.js 16.2.10
+  - **dashboardTypecheck:** passed
+  - **dashboardVitest:** 8 passed
+  - **foreignKeyErrors:** 0
+  - **integrityCheck:** ok
+  - **livingPrdToolingTests:** 16 passed
+  - **marketplaceRegressionTests:** 64 passed
+  - **migration900BackupRestore:** passed
+  - **migration900FirstApply:** passed
+  - **migration900Reconciliation:** passed
+  - **migration900RollbackInjection:** all six stages passed
+  - **migration900SecondRun:** idempotent replay
+  - **phase1To8EconomyTests:** 191 passed
+  - **phase9aFocusedTests:** 20 passed
+  - **pyCompile:** passed
+  - **temporaryMainImportMigrationAbsent:** passed
+  - **temporaryMainImportMigrationPresent:** passed
+
 ## Module Ownership
 
 - **cogs:**
@@ -1316,55 +1439,65 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - **cogs/phase8.py:** Phase 8 Giveaway and Options commands
   - **cogs/rpg.py:** legacy RPG and flag-gated compatibility routing
   - **cogs/rpg phase3.py:** Phase 3 interactions
+- **dashboard:**
+  - **dashboard-example/lib/dashboardAuth.ts:** server session validation
+  - **dashboard-example/lib/dashboardReads.ts:** strict read resource allowlist
+  - **dashboard-example/lib/internalRequest.ts:** signed internal client
+  - **dashboard-example/middleware.ts:** unauthenticated page and API boundary
 - **economy:**
-  - **economy/eternal options.py:** Eternal Options services
-  - **economy/giveaways.py:** Giveaway V1 services
+  - **economy/dashboard auth.py:** bounded sessions, OAuth attempts, permissions, and CSRF
+  - **economy/dashboard operations.py:** idempotent security operations and append-only audit
+  - **economy/dashboard security.py:** HMAC envelopes, replay protection, rate limits, and safe events
   - **economy/ledger.py:** atomic currency transactions and ledger
-  - **economy/phase8 migrations.py:** staging-only migration and reconciliation
-  - **economy/phase8 recovery.py:** restart recovery
-  - **economy/phase8 schema.py:** canonical migration 800 schema and checksum
-  - **economy/phase8 simulation.py:** deterministic Phase 8 simulation
-  - **economy/phase8 voice.py:** qualified voice activity
+  - **economy/phase9a migrations.py:** manual migration and security bootstrap tooling
+  - **economy/phase9a schema.py:** canonical migration 900 schema and checksum
 - **livingPrd:**
   - **docs/AI CODER HANDOFF.md:** generated onboarding document
-  - **docs/PHASE8 GIVEAWAY OPTIONS PRD.md:** Phase 8 specification and implementation status
+  - **docs/PHASE9A BACKEND SAFETY PRD.md:** Phase 9A specification and implementation status
   - **docs/project state.json:** authoritative structured state
   - **scripts/generate ai handoff.py:** pure renderer and generator
   - **scripts/update ai handoff.py:** generator/verifier wrapper
   - **scripts/verify ai handoff.py:** static verifier
 - **runtime:**
-  - **core.py:** shared persistence, FakeInteraction, events, read-only web API
+  - **core.py:** shared persistence, FakeInteraction, events, public tombstones, and signed internal web API
   - **main.py:** entry point and cog setup
-  - **runtime config.py:** database path, staging guards, feature flags
+  - **runtime config.py:** database path, staging guards, feature flags, and Phase 9A server configuration
 - **tests:**
+  - **dashboard-example/tests:** Next.js middleware, auth, route, and signature contracts
   - **tests/test ai handoff tools.py:** Living PRD deterministic/static tooling
   - **tests/test economy *.py:** Phase 1-8 economy/RPG/Casino/Crypto/Mining/Giveaway/Options
-  - **tests/test economy phase8*.py:** Phase 8 migration, transactions, concurrency, recovery, commands, and simulation
   - **tests/test marketplace*.py:** Phase 4 Marketplace
+  - **tests/test phase9a *.py:** Phase 9A authentication, security, operations, migration, routes, and dashboard contract
 
 ## Verification History
 
 - **casinoTests:** 33 passed
 - **commandOwnership:** passed through static verifier
 - **cryptoTests:** 26 passed
+- **dashboardDependencyAudit:** 0 vulnerabilities
+- **dashboardProductionBuild:** passed on Next.js 16.2.10
+- **dashboardTypecheck:** passed
+- **dashboardVitest:** 8 passed
 - **forbiddenAliases:** absent through static verifier
 - **gitDiffCheck:** passed
 - **historicalBaseline:**
   - **marketplaceTests:** 64 passed
   - **phase1To3Tests:** 87 passed
   - **total:** 151 passed
-- **livingPrdToolingTests:** 15 passed
-- **mainImportTemporaryDatabase:** passed
+- **livingPrdToolingTests:** 16 passed
+- **mainImportTemporaryDatabaseMigrationAbsent:** passed
+- **mainImportTemporaryDatabaseMigrationPresent:** passed
 - **marketplaceTests:** 64 passed
-- **migration800FirstApply:** passed
-- **migration800Reconciliation:** passed
-- **migration800RollbackInjection:** passed
-- **migration800SecondRun:** idempotent replay
+- **migration900BackupRestore:** passed
+- **migration900FirstApply:** passed
+- **migration900Reconciliation:** passed
+- **migration900RollbackInjection:** all six stages passed
+- **migration900SecondRun:** idempotent replay
 - **miningTests:** 25 passed
 - **phase1To8EconomyTests:** 191 passed
 - **phase8FocusedTests:** 20 passed
-- **phase8OutboxReplay:** passed
 - **phase8Simulation:** 10000 Giveaway draws and 20 x 100000 Options positions; both gates passed
+- **phase9aFocusedTests:** 20 passed
 - **pyCompile:** passed
 - **sqliteForeignKeyErrors:** 0
 - **sqliteIntegrityCheck:** ok
@@ -1391,8 +1524,16 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 
 ## Dashboard
 
-- **productionBuild:** pending
-- **reason:** local dashboard dependencies were unavailable during the historical check
+- **apiProtection:** all non-auth Next routes validate the server session
+- **authentication:** Phase 9A Discord OAuth2 PKCE and bounded server session
+- **botReads:** signed internal allowlist only
+- **connectedOauthStaging:** pending
+- **dependencyAudit:** 0 vulnerabilities
+- **legacyWrites:** removed and backend tombstoned
+- **localProductionBuild:** passed on Next.js 16.2.10
+- **localTest:** 8 passed
+- **localTypecheck:** passed
+- **pageProtection:** all pages except login redirect without a valid session
 
 ## Production
 
@@ -1410,14 +1551,15 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 ## Known Limitations
 
 - Connected Discord staging remains pending for Phase 5 through Phase 8.
-- Dashboard production build remains pending.
+- Phase 9A connected Discord OAuth staging remains pending.
+- Phase 9B and Phase 9C are not implemented.
 - Deal runtime claims are retained as last-known until a separately scoped audit verifies them.
 
 ## Blockers
 
 - Production cutover requires separate explicit approval.
-- Production migrations 500, 600, 700, and 800 have not occurred and all production flags must remain disabled.
-- Connected Discord staging has not been executed.
+- Production migrations 500, 600, 700, 800, and 900 have not occurred and all Economy production flags must remain disabled.
+- Connected Discord and OAuth staging has not been executed.
 
 ## Pending Work
 
@@ -1425,7 +1567,7 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 - Phase 6 connected Discord staging validation
 - Phase 7 connected Discord staging validation
 - Phase 8 connected Discord staging validation
-- Dashboard production build
+- Phase 9A connected Discord OAuth staging validation
 - Production rollout approval
 
 ## AI Coder Onboarding
@@ -1485,7 +1627,8 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 | 25ea3bb318e292044fa4b230ccbd08bf728efb0e | 2026-07-14 | Phase 5 Casino Implemented |
 | a7da7f1f243a045c88f1d304c2b6be4e865c23cf | 2026-07-14 | Phase 6 Crypto Implemented |
 | 381d99a249dd9d009fc582947635c1aabffbd9c3 | 2026-07-14 | Phase 7 Mining Implemented |
-| PENDING | 2026-07-14 | Phase 8 Giveaway And Eternal Options Implemented |
+| 2931a47b0b7db2626f124d744391a788bcd79051 | 2026-07-14 | Phase 8 Giveaway And Eternal Options Implemented |
+| PENDING | 2026-07-15 | Phase 9A Backend Safety Foundation Implemented |
 
 ## Current Handoff Summary
 
@@ -1499,5 +1642,6 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - Phase 5 Casino and D02 simulation
   - Phase 6 Crypto
   - Phase 7 Mining
-  - Phase 8 Giveaway and Eternal Options runtime, migration, recovery, commands, and deterministic simulations
-- **current:** Phase 8 is implemented with all defaults false and production unmigrated and unseeded. Migration 800 and both deterministic simulation gates pass. Connected Discord staging remains pending and production cutover requires separate approval.
+  - Phase 8 Giveaway and Eternal Options
+  - Phase 9A backend safety foundation runtime, migration, authenticated dashboard boundary, and local tests
+- **current:** Phase 9A is implemented locally without an Economy feature flag. Migration 900 is manual, legacy public dashboard reads and writes are tombstoned, and sensitive reads require an authenticated Next session plus signed internal backend authorization. Connected Discord OAuth staging and production approval remain pending.

@@ -7,6 +7,8 @@ export const metadata: Metadata = {
   description: "Kontrol & monitoring W2E Discord bot",
 };
 
+export const dynamic = "force-dynamic";
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="id">

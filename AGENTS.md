@@ -37,7 +37,7 @@ docker compose up -d --build   # Docker; mounts ./w2ebot.db as a volume
 - No tests, no linter, no build/typecheck step. Verify changes by tracing code paths and, when possible, running the bot. Do not invent a test command.
 - FFmpeg must be on PATH for voice/`listen` features.
 - Web API/dashboard serves on port `8081`, launched as a background task in `on_ready`.
-- Required `.env`: `DISCORD_TOKEN`, `GEMINI_API_KEY`, `ALLOWED_SERVER_ID` (default `887968847842402355`), `BOT_PREFIX` (default `w!`). Optional: `DASHBOARD_TOKEN`, `ALLOWED_ORIGINS`.
+- Required `.env`: `DISCORD_TOKEN`, `GEMINI_API_KEY`, `ALLOWED_SERVER_ID` (default `887968847842402355`), `BOT_PREFIX` (default `w!`). The Phase 9A dashboard additionally requires HTTPS OAuth, session-hash, internal-signing, and IP-hash key configuration. Raw key material must never be committed.
 
 ## Where code goes
 
@@ -58,7 +58,7 @@ docker compose up -d --build   # Docker; mounts ./w2ebot.db as a volume
 - **Treasury (`treasury.json`, `{'balance': N}`)** is a JSON blob — use `add_treasury(amount)` to credit it. Not as atomic as `DiscordStat.coins`, but only fees flow in (low risk). `/kas` reads it.
 - **Minigame tracking:** use `record_game(uid, game, won)` (in `core.py`) after every minigame result. Stores `users[uid]['games'][game] = {plays, wins, losses}`. Games tracked: `slot`, `blackjack`, `cf`, `rps`, `crash`, `tebak`, `gacha`, `box`, `hunt`. Exposed via `/api/user/{id}` as `games` + `top_games`.
 - **Announcements:** always resolve target channel via `get_announce_channel(guild, category)`. Don't re-implement channel search. Categories: `market`, `levelup`, `birthday`, `boss`, `booster`, `binomo`.
-- **Web API write routes** (`POST /api/config`, `/api/announce-config`, `/api/broadcast`, `/api/user/{id}/coins|xp|give-item|reset-cooldown|persona|birthday|bg|divorce|bounty|reset-weekly|reset-quest`, `/api/boss/spawn`, `/api/announce`) guard with `require_token(request)` (fail-closed when `DASHBOARD_TOKEN` unset). Read routes (`/api/leaderboard`, `/api/user/{id}`, `/api/market`, `/api/treasury`, `/api/boss`, `/api/economy/stats`, `/api/economy/level-distribution`, `/api/marriages`, `/api/stats/summary`, `/api/bot/stats`) are open; `/api/audit` is token-gated. All handlers live in `core.py` and are registered in `start_web_server()`. Coin/XP write routes go through the atomic helpers (`adjust_coins`/`add_xp`); never add a raw coin write. Every write route calls `write_audit(...)` → `AuditLog` table. Full contract in `API.md`.
+- **Dashboard API safety:** `GET /healthz` is the only public data route. Legacy `/api/*` reads and writes are unconditional `410` tombstones. Sensitive reads are available only through strict signed `/internal/phase9a/*` routes after current session, Discord membership, and permission validation. Browser code must call authenticated Next.js proxies and must never call aiohttp directly. Security mutations use `DashboardControlledOperation` plus append-only Phase 9A audits; never restore `DASHBOARD_TOKEN` access or add arbitrary internal path forwarding. Full contract in `API.md`.
 - New tables: add `CREATE TABLE IF NOT EXISTS` to `_init_db()`. New imports: add to `requirements.txt`.
 - Embed colors: info `0x5865F2`, success `0x57F287`, warning `0xFEE75C`, error `0xED4245`, premium `0xFFD700`.
 

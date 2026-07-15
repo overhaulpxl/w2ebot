@@ -17,10 +17,12 @@ import {
 } from "@/lib/botApi";
 import { DashboardShell } from "@/components/DashboardShell";
 import { ToastProvider } from "@/components/Toast";
+import { requireDashboardSession } from "@/lib/dashboardAuth";
 
 export const dynamic = "force-dynamic"; // selalu ambil data terbaru
 
 export default async function DashboardPage() {
+  await requireDashboardSession();
   let summary: SummaryResponse | null = null;
   let leaderboard: LeaderboardResponse | null = null;
   let botStats: BotStats | null = null;

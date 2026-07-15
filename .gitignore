@@ -78,6 +78,7 @@ dashboard-example/.next/
 dashboard-example/out/
 dashboard-example/.env
 dashboard-example/.env.*
+staging/phase9a-keys/
 
 # Assets downloaded/generated at runtime
 fonts/

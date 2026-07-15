@@ -17,11 +17,14 @@ import re
 import hmac
 import hashlib
 import unicodedata
+from contextlib import asynccontextmanager
 
 import math
 
 from runtime_config import (
     DATABASE_PATH_STRING, STAGING_MODE, STARTUP_CONFIGURATION, command_sync_guild_id,
+    DASHBOARD_PUBLIC_URL, DASHBOARD_INTERNAL_KEY_ID, DASHBOARD_INTERNAL_SIGNING_KEY,
+    DASHBOARD_SESSION_KEY_ID, DASHBOARD_SESSION_HASH_KEY,
 )
 
 from economy.database import ensure_phase1_schema
@@ -32,6 +35,17 @@ from economy.constants import (
 )
 from economy.profile import get_profile_snapshot
 from economy.treasury import get_supply_report
+from economy.dashboard_auth import (
+    consume_csrf, create_oauth_attempt, establish_session, has_permission, issue_csrf,
+    list_permissions, revoke_session, rotate_session, validate_session,
+)
+from economy.dashboard_operations import change_permission, revoke_dashboard_session
+from economy.dashboard_security import (
+    DashboardSecurityError, canonical_json, consume_internal_nonce, enforce_rate_limit,
+    envelope_from_headers, payload_hash, record_security_event, sha256_text,
+    verify_envelope_signature,
+)
+from economy.phase9a_schema import PHASE9A_SCHEMA_CHECKSUM, phase9a_capability
 
 try:
     from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance, ImageChops
@@ -2203,21 +2217,34 @@ async def on_ready():
 
 @web.middleware
 async def cors_middleware(request, handler):
-    response = await handler(request)
+    try:
+        response = await handler(request)
+    except DashboardSecurityError as exc:
+        response = web.json_response({'error': exc.code}, status=exc.status)
+    except web.HTTPException:
+        raise
+    except Exception:
+        logging.error("dashboard backend request failed route=%s", request.path, exc_info=True)
+        response = web.json_response({'error': 'internal_error'}, status=500)
     origin = request.headers.get('Origin')
-    if ALLOWED_ORIGINS:
-        if origin in ALLOWED_ORIGINS:
-            response.headers['Access-Control-Allow-Origin'] = origin
-            response.headers['Vary'] = 'Origin'
-    else:
-        # Dev mode: tidak ada whitelist, izinkan semua.
-        response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, X-Auth-Token'
+    if origin and origin in ALLOWED_ORIGINS and not request.path.startswith('/internal/'):
+        response.headers['Access-Control-Allow-Origin'] = origin
+        response.headers['Vary'] = 'Origin'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['Referrer-Policy'] = 'no-referrer'
+    response.headers['Cache-Control'] = 'no-store'
+    response.headers['Content-Security-Policy'] = "default-src 'none'; frame-ancestors 'none'"
     return response
 
 async def handle_options(request):
-    return web.Response(status=200)
+    origin = request.headers.get('Origin')
+    if not origin or origin not in ALLOWED_ORIGINS:
+        return web.json_response({'error': 'forbidden'}, status=403)
+    response = web.Response(status=204)
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    return response
 
 async def api_radar(request):
     data = []
@@ -3433,65 +3460,423 @@ async def api_bot_stats(request):
     })
 
 
-async def start_web_server():
-    app = web.Application(middlewares=[cors_middleware])
+def _json_without_duplicates(raw):
+    def pairs(values):
+        result = {}
+        for key, value in values:
+            if key in result:
+                raise DashboardSecurityError('invalid_request', 400)
+            result[key] = value
+        return result
+    try:
+        value = json.loads(raw.decode('utf-8'), object_pairs_hook=pairs)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise DashboardSecurityError('invalid_request', 400)
+    if not isinstance(value, dict):
+        raise DashboardSecurityError('invalid_request', 400)
+    canonical_json(value)
+    return value
+
+
+async def _internal_payload(request):
+    if request.headers.get('Origin'):
+        raise DashboardSecurityError('forbidden', 403)
+    if request.content_type != 'application/json':
+        raise DashboardSecurityError('invalid_request', 415)
+    raw = await request.read()
+    if len(raw) > 65536:
+        raise DashboardSecurityError('invalid_request', 413)
+    return _json_without_duplicates(raw)
+
+
+def _assert_keys(payload, allowed, required=()):
+    if set(payload) - set(allowed) or any(key not in payload for key in required):
+        raise DashboardSecurityError('invalid_request', 400)
+
+
+async def _current_dashboard_member(guild_id, actor_id):
+    if str(guild_id) != str(ALLOWED_SERVER_ID):
+        return None, False
+    guild = client.get_guild(int(guild_id))
+    if guild is None:
+        return None, False
+    member = guild.get_member(int(actor_id))
+    return member, bool(member and member.guild_permissions.administrator)
+
+
+@asynccontextmanager
+async def _signed_internal(request, payload, *, permission='DASHBOARD_VIEW', session_required=True,
+                           rate_limit=120):
+    if not DASHBOARD_INTERNAL_SIGNING_KEY or not DASHBOARD_INTERNAL_KEY_ID:
+        raise DashboardSecurityError('capability_unavailable', 503)
+    envelope = envelope_from_headers(request.headers)
+    if envelope.key_id != DASHBOARD_INTERNAL_KEY_ID or envelope.guild_id != str(ALLOWED_SERVER_ID):
+        raise DashboardSecurityError('unauthenticated', 401)
+    verify_envelope_signature(
+        envelope, request.headers.get('X-W2E-Signature'), DASHBOARD_INTERNAL_SIGNING_KEY,
+        method=request.method, route=request.path, payload=payload,
+    )
+    db = await aiosqlite.connect(DB_PATH, isolation_level=None)
+    try:
+        await db.execute('PRAGMA foreign_keys=ON')
+        await db.execute('BEGIN IMMEDIATE')
+        if not await phase9a_capability(db):
+            raise DashboardSecurityError('capability_unavailable', 503)
+        expected_fingerprint = hashlib.sha256(DASHBOARD_INTERNAL_SIGNING_KEY.encode('utf-8')).hexdigest()
+        async with db.execute(
+            "SELECT fingerprintSha256 FROM DashboardSigningKeyVersion WHERE keyId=? "
+            "AND purpose='INTERNAL_REQUEST' AND status='ACTIVE'", (envelope.key_id,),
+        ) as cursor:
+            key_row = await cursor.fetchone()
+        if not key_row or not hmac.compare_digest(key_row[0], expected_fingerprint):
+            raise DashboardSecurityError('capability_unavailable', 503)
+        await consume_internal_nonce(db, envelope)
+        session = None
+        if session_required:
+            member, administrator = await _current_dashboard_member(envelope.guild_id, envelope.actor_id)
+            session = await validate_session(
+                db, token_hash=envelope.session_token_hash, required_permission=permission,
+                discord_member=member is not None, discord_administrator=administrator,
+                expected_version=envelope.session_version,
+            )
+            if session['guildId'] != envelope.guild_id or session['userId'] != envelope.actor_id:
+                raise DashboardSecurityError('unauthenticated', 401)
+            await enforce_rate_limit(
+                db, scope_hash=envelope.session_token_hash, route_group='internal',
+                limit=rate_limit, window_seconds=60,
+            )
+        yield db, envelope, session
+        await db.commit()
+    except DashboardSecurityError as exc:
+        try:
+            await db.rollback()
+            await db.execute('BEGIN IMMEDIATE')
+            await record_security_event(
+                db, event_type='INTERNAL_REQUEST_REJECTED', code=exc.code, route=request.path,
+                guild_id=getattr(envelope, 'guild_id', None), actor_id=getattr(envelope, 'actor_id', None),
+                request_id=getattr(envelope, 'request_id', None),
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+        raise
+    except Exception:
+        await db.rollback()
+        raise
+    finally:
+        await db.close()
+
+
+async def public_health(request):
+    return web.json_response({'status': 'ok'})
+
+
+async def dashboard_root(request):
+    if DASHBOARD_PUBLIC_URL.startswith('https://'):
+        raise web.HTTPTemporaryRedirect(f"{DASHBOARD_PUBLIC_URL}/login")
+    return web.json_response({'error': 'capability_unavailable'}, status=503)
+
+
+async def legacy_dashboard_read_disabled(request):
+    return web.json_response({'error': 'legacy_dashboard_read_disabled'}, status=410)
+
+
+async def legacy_dashboard_write_disabled(request):
+    return web.json_response({'error': 'legacy_dashboard_write_disabled'}, status=410)
+
+
+async def internal_oauth_start(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'stateHash', 'pkceChallenge', 'ipHash', 'returnPath'},
+                 {'stateHash', 'pkceChallenge', 'ipHash'})
+    async with _signed_internal(request, payload, session_required=False) as (db, envelope, _):
+        await enforce_rate_limit(db, scope_hash=str(payload['ipHash']), route_group='login',
+                                 limit=10, window_seconds=600)
+        attempt_id = await create_oauth_attempt(
+            db, state_hash=str(payload['stateHash']), pkce_challenge=str(payload['pkceChallenge']),
+            ip_hash=str(payload['ipHash']), return_path=str(payload.get('returnPath', '/')),
+        )
+        return web.json_response({'attemptId': attempt_id, 'expiresIn': 600})
+
+
+async def internal_session_establish(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'tokenHash', 'stateHash', 'pkceChallenge', 'ipHash'},
+                 {'tokenHash', 'stateHash', 'pkceChallenge', 'ipHash'})
+    async with _signed_internal(request, payload, session_required=False) as (db, envelope, _):
+        from economy.dashboard_auth import consume_oauth_attempt
+        attempt = await consume_oauth_attempt(db, state_hash=str(payload['stateHash']),
+                                              pkce_challenge=str(payload['pkceChallenge']))
+        if not hmac.compare_digest(str(attempt['ipHash']), str(payload['ipHash'])):
+            raise DashboardSecurityError('unauthenticated', 401)
+        await enforce_rate_limit(db, scope_hash=str(payload['ipHash']), route_group='callback',
+                                 limit=20, window_seconds=600)
+        member, administrator = await _current_dashboard_member(envelope.guild_id, envelope.actor_id)
+        if member is None:
+            raise DashboardSecurityError('forbidden', 403)
+        session_id = await establish_session(
+            db, guild_id=envelope.guild_id, user_id=envelope.actor_id,
+            token_hash=str(payload['tokenHash']), session_key_id=DASHBOARD_SESSION_KEY_ID,
+            discord_administrator=administrator,
+        )
+        return web.json_response({'sessionId': session_id, 'sessionVersion': 0})
+
+
+async def internal_session_validate(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, set())
+    async with _signed_internal(request, payload, session_required=False) as (db, envelope, _):
+        async with db.execute(
+            "SELECT guildId,userId FROM DashboardSession WHERE tokenHash=? AND status='ACTIVE'",
+            (envelope.session_token_hash,),
+        ) as cursor:
+            identity = await cursor.fetchone()
+        if not identity or identity[0] != envelope.guild_id:
+            raise DashboardSecurityError('unauthenticated', 401)
+        member, administrator = await _current_dashboard_member(identity[0], identity[1])
+        session = await validate_session(
+            db, token_hash=envelope.session_token_hash, required_permission='DASHBOARD_VIEW',
+            discord_member=member is not None, discord_administrator=administrator,
+            expected_version=envelope.session_version,
+        )
+        return web.json_response({'session': session})
+
+
+async def internal_csrf_issue(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'method', 'canonicalRoute', 'requestId'},
+                 {'method', 'canonicalRoute', 'requestId'})
+    async with _signed_internal(request, payload) as (db, _, session):
+        if not DASHBOARD_SESSION_HASH_KEY:
+            raise DashboardSecurityError('capability_unavailable', 503)
+        result = await issue_csrf(
+            db, session_id=session['sessionId'], method=str(payload['method']),
+            canonical_route=str(payload['canonicalRoute']), request_id=str(payload['requestId']),
+            session_hash_key=DASHBOARD_SESSION_HASH_KEY,
+        )
+        return web.json_response(result)
+
+
+async def internal_session_logout(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'requestId', 'csrfToken'}, {'requestId', 'csrfToken'})
+    async with _signed_internal(request, payload) as (db, _, session):
+        await consume_csrf(
+            db, raw_token=str(payload['csrfToken']), session_id=session['sessionId'], method='POST',
+            canonical_route='/api/auth/logout', request_id=str(payload['requestId']),
+            session_hash_key=DASHBOARD_SESSION_HASH_KEY,
+        )
+        await revoke_session(db, session_id=session['sessionId'], reason_code='USER_LOGOUT',
+                             expected_version=session['version'])
+        return web.json_response({'status': 'logged_out'})
+
+
+async def internal_session_rotate(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'newTokenHash'}, {'newTokenHash'})
+    async with _signed_internal(request, payload) as (db, _, session):
+        version = await rotate_session(
+            db, session_id=session['sessionId'], new_token_hash=str(payload['newTokenHash']),
+            expected_version=session['version'],
+        )
+        return web.json_response({'sessionId': session['sessionId'], 'sessionVersion': version})
+
+
+async def internal_operators_list(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'limit', 'cursor'})
+    async with _signed_internal(request, payload, permission='DASHBOARD_SECURITY_ADMIN') as (db, _, _):
+        limit = max(1, min(int(payload.get('limit', 100)), 200))
+        async with db.execute(
+            "SELECT assignmentId,guildId,userId,permissionClass,status,grantedAt,revokedAt,version "
+            "FROM DashboardOperatorPermission ORDER BY grantedAt DESC,assignmentId DESC LIMIT ?", (limit,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return web.json_response({'operators': [dict(zip(
+            ('assignmentId','guildId','userId','permissionClass','status','grantedAt','revokedAt','version'), row
+        )) for row in rows]})
+
+
+async def _internal_permission_change(request, action):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'requestId','targetUserId','permissionClass','expectedVersion','csrfToken'},
+                 {'requestId','targetUserId','permissionClass','expectedVersion','csrfToken'})
+    async with _signed_internal(request, payload, permission='DASHBOARD_SECURITY_ADMIN', rate_limit=10) as (db, envelope, session):
+        browser_route = f"/api/admin/operators/{action.lower()}"
+        await consume_csrf(
+            db, raw_token=str(payload['csrfToken']), session_id=session['sessionId'], method='POST',
+            canonical_route=browser_route, request_id=str(payload['requestId']),
+            session_hash_key=DASHBOARD_SESSION_HASH_KEY,
+        )
+        receipt = await change_permission(
+            db, action=action, guild_id=envelope.guild_id, actor_id=envelope.actor_id,
+            target_user_id=str(payload['targetUserId']), permission_class=str(payload['permissionClass']),
+            request_id=str(payload['requestId']), expected_version=int(payload['expectedVersion']),
+            source_route=browser_route,
+        )
+        return web.json_response(receipt)
+
+
+async def internal_operators_grant(request):
+    return await _internal_permission_change(request, 'GRANT')
+
+
+async def internal_operators_revoke(request):
+    return await _internal_permission_change(request, 'REVOKE')
+
+
+async def internal_session_revoke(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'requestId','sessionId','expectedVersion','csrfToken'},
+                 {'requestId','sessionId','expectedVersion','csrfToken'})
+    async with _signed_internal(request, payload, permission='DASHBOARD_SECURITY_ADMIN', rate_limit=10) as (db, _, session):
+        await consume_csrf(
+            db, raw_token=str(payload['csrfToken']), session_id=session['sessionId'], method='POST',
+            canonical_route='/api/admin/sessions/revoke', request_id=str(payload['requestId']),
+            session_hash_key=DASHBOARD_SESSION_HASH_KEY,
+        )
+        receipt = await revoke_dashboard_session(
+            db, guild_id=session['guildId'], actor_id=session['userId'],
+            target_session_id=str(payload['sessionId']), request_id=str(payload['requestId']),
+            expected_version=int(payload['expectedVersion']), source_route='/api/admin/sessions/revoke',
+        )
+        return web.json_response(receipt)
+
+
+async def internal_operator_audit(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'limit'})
+    async with _signed_internal(request, payload, permission='OPERATOR_AUDIT_READ') as (db, _, _):
+        limit = max(1, min(int(payload.get('limit', 100)), 200))
+        async with db.execute(
+            "SELECT auditId,executorUserId,permissionClass,operationType,targetType,targetId,requestId,"
+            "resultStatus,createdAt FROM DashboardOperatorAudit ORDER BY createdAt DESC,auditId DESC LIMIT ?",
+            (limit,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        keys = ('auditId','executorUserId','permissionClass','operationType','targetType','targetId',
+                'requestId','resultStatus','createdAt')
+        return web.json_response({'entries': [dict(zip(keys, row)) for row in rows]})
+
+
+async def internal_security_events(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'limit'})
+    async with _signed_internal(request, payload, permission='DASHBOARD_SECURITY_ADMIN') as (db, _, _):
+        limit = max(1, min(int(payload.get('limit', 100)), 200))
+        async with db.execute(
+            "SELECT eventId,eventType,safeErrorCode,route,createdAt FROM DashboardSecurityEvent "
+            "ORDER BY createdAt DESC,eventId DESC LIMIT ?", (limit,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return web.json_response({'events': [dict(zip(
+            ('eventId','eventType','safeErrorCode','route','createdAt'), row
+        )) for row in rows]})
+
+
+async def internal_phase9a_health(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, set())
+    async with _signed_internal(request, payload) as (db, _, _):
+        async with db.execute(
+            "SELECT purpose,COUNT(*) FROM DashboardSigningKeyVersion WHERE status='ACTIVE' GROUP BY purpose"
+        ) as cursor:
+            keys = {row[0]: row[1] for row in await cursor.fetchall()}
+        return web.json_response({
+            'schemaCapable': True,
+            'internalRequestKeyReady': keys.get('INTERNAL_REQUEST') == 1,
+            'sessionHashKeyReady': keys.get('SESSION_HASH') == 1,
+            'migrationChecksum': PHASE9A_SCHEMA_CHECKSUM,
+        })
+
+
+class _InternalReadRequest:
+    def __init__(self, query=None, params=None):
+        self.query = {str(k): str(v) for k, v in (query or {}).items()}
+        self.match_info = {str(k): str(v) for k, v in (params or {}).items()}
+
+
+INTERNAL_READ_HANDLERS = {
+    'server': get_server_data, 'radar': api_radar, 'channels': api_channels,
+    'announce-config': get_announce_config_api, 'leaderboard': api_leaderboard,
+    'user': api_user, 'market': api_market, 'treasury': api_treasury, 'boss': api_boss,
+    'economy/stats': api_economy_stats, 'economy/supply': api_economy_v1_supply,
+    'economy/profile': api_economy_v1_profile, 'economy/marketplace': api_marketplace_v1_status,
+    'economy/casino': api_casino_v1_status, 'economy/crypto': api_crypto_v1_status,
+    'economy/mining': api_mining_v1_status, 'economy/phase8': api_phase8_status,
+    'marriages': api_marriages, 'stats/summary': api_stats_summary,
+    'bot/stats': api_bot_stats, 'economy/level-distribution': api_level_distribution,
+}
+
+
+async def internal_dashboard_read(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'query','params'})
+    resource = request.match_info.get('resource', '')
+    handler = INTERNAL_READ_HANDLERS.get(resource)
+    if handler is None:
+        raise DashboardSecurityError('invalid_request', 404)
+    query = payload.get('query', {})
+    params = payload.get('params', {})
+    if not isinstance(query, dict) or not isinstance(params, dict):
+        raise DashboardSecurityError('invalid_request', 400)
+    allowed_query = {'sort','limit'} if resource == 'leaderboard' else set()
+    allowed_params = {'id'} if resource in {'user','economy/profile'} else set()
+    if set(query) - allowed_query or set(params) - allowed_params:
+        raise DashboardSecurityError('invalid_request', 400)
+    async with _signed_internal(request, payload) as (_, _, _):
+        return await handler(_InternalReadRequest(query, params))
+
+
+def build_web_application():
+    app = web.Application(middlewares=[cors_middleware], client_max_size=65536)
     app.router.add_options('/{tail:.*}', handle_options)
-    app.router.add_get('/', serve_dashboard)
-    app.router.add_get('/api/config', get_config_api)
-    app.router.add_get('/api/server', get_server_data)
-    app.router.add_post('/api/config', update_config_api)
-    app.router.add_get('/api/radar', api_radar)
-    app.router.add_post('/api/broadcast', api_broadcast)
-    app.router.add_get('/api/channels', api_channels)
-    app.router.add_get('/api/announce-config', get_announce_config_api)
-    app.router.add_post('/api/announce-config', update_announce_config_api)
+    app.router.add_get('/healthz', public_health)
+    app.router.add_get('/', dashboard_root)
+    for route in (
+        '/api/config','/api/server','/api/radar','/api/channels','/api/announce-config',
+        '/api/leaderboard','/api/user/{id}','/api/market','/api/treasury','/api/boss',
+        '/api/economy/stats','/api/economy/v1-supply','/api/economy/v1-profile/{id}',
+        '/api/economy/v1-marketplace','/api/economy/v1-casino','/api/economy/v1-crypto',
+        '/api/economy/v1-mining','/api/economy/v1-phase8','/api/marriages',
+        '/api/stats/summary','/api/bot/stats','/api/economy/level-distribution','/api/audit',
+    ):
+        app.router.add_get(route, legacy_dashboard_read_disabled)
+    for route in (
+        '/api/config','/api/announce-config','/api/broadcast','/api/announce',
+        '/api/user/{id}/coins','/api/user/{id}/xp','/api/user/{id}/give-item',
+        '/api/user/{id}/reset-cooldown','/api/user/{id}/persona','/api/user/{id}/birthday',
+        '/api/user/{id}/bg','/api/user/{id}/divorce','/api/user/{id}/bounty',
+        '/api/user/{id}/reset-weekly','/api/user/{id}/reset-quest','/api/user/{id}/reset',
+        '/api/reset-all-players','/api/boss/spawn','/api/boss/settle',
+        '/api/economy/v1-marketplace/action',
+    ):
+        app.router.add_post(route, legacy_dashboard_write_disabled)
+    app.router.add_post('/internal/phase9a/oauth/start', internal_oauth_start)
+    app.router.add_post('/internal/phase9a/session/establish', internal_session_establish)
+    app.router.add_post('/internal/phase9a/session/validate', internal_session_validate)
+    app.router.add_post('/internal/phase9a/session/rotate', internal_session_rotate)
+    app.router.add_post('/internal/phase9a/session/logout', internal_session_logout)
+    app.router.add_post('/internal/phase9a/session/revoke', internal_session_revoke)
+    app.router.add_post('/internal/phase9a/csrf/issue', internal_csrf_issue)
+    app.router.add_post('/internal/phase9a/operators/list', internal_operators_list)
+    app.router.add_post('/internal/phase9a/operators/grant', internal_operators_grant)
+    app.router.add_post('/internal/phase9a/operators/revoke', internal_operators_revoke)
+    app.router.add_post('/internal/phase9a/audit/list', internal_operator_audit)
+    app.router.add_post('/internal/phase9a/security-events/list', internal_security_events)
+    app.router.add_post('/internal/phase9a/health', internal_phase9a_health)
+    app.router.add_post('/internal/phase9a/read/{resource:.+}', internal_dashboard_read)
+    return app
 
-    # READ tambahan (tanpa token)
-    app.router.add_get('/api/leaderboard', api_leaderboard)
-    app.router.add_get('/api/user/{id}', api_user)
-    app.router.add_get('/api/market', api_market)
-    app.router.add_get('/api/treasury', api_treasury)
-    app.router.add_get('/api/boss', api_boss)
-    app.router.add_get('/api/economy/stats', api_economy_stats)
-    app.router.add_get('/api/economy/v1-supply', api_economy_v1_supply)
-    app.router.add_get('/api/economy/v1-profile/{id}', api_economy_v1_profile)
-    app.router.add_get('/api/economy/v1-marketplace', api_marketplace_v1_status)
-    app.router.add_get('/api/economy/v1-casino', api_casino_v1_status)
-    app.router.add_get('/api/economy/v1-crypto', api_crypto_v1_status)
-    app.router.add_get('/api/economy/v1-mining', api_mining_v1_status)
-    app.router.add_get('/api/economy/v1-phase8', api_phase8_status)
-    app.router.add_get('/api/marriages', api_marriages)
-    app.router.add_get('/api/stats/summary', api_stats_summary)
-    app.router.add_get('/api/bot/stats', api_bot_stats)
-    app.router.add_get('/api/economy/level-distribution', api_level_distribution)
-    app.router.add_get('/api/audit', api_audit)
 
-    # WRITE tambahan (token wajib)
-    app.router.add_post('/api/user/{id}/coins', api_user_coins)
-    app.router.add_post('/api/user/{id}/xp', api_user_xp)
-    app.router.add_post('/api/user/{id}/give-item', api_user_give_item)
-    app.router.add_post('/api/user/{id}/reset-cooldown', api_user_reset_cooldown)
-    app.router.add_post('/api/user/{id}/persona', api_user_persona)
-    app.router.add_post('/api/user/{id}/birthday', api_user_birthday)
-    app.router.add_post('/api/user/{id}/bg', api_user_bg)
-    app.router.add_post('/api/user/{id}/divorce', api_user_divorce)
-    app.router.add_post('/api/user/{id}/bounty', api_user_bounty)
-    app.router.add_post('/api/user/{id}/reset-weekly', api_user_reset_weekly)
-    app.router.add_post('/api/user/{id}/reset-quest', api_user_reset_quest)
-    app.router.add_post('/api/user/{id}/reset', api_user_reset_player)
-    app.router.add_post('/api/reset-all-players', api_reset_all_players)
-    app.router.add_post('/api/boss/spawn', api_boss_spawn)
-    app.router.add_post('/api/boss/settle', api_boss_settle)
-    app.router.add_post('/api/economy/v1-marketplace/action', api_marketplace_v1_action)
-    app.router.add_post('/api/announce', api_announce)
-    
+async def start_web_server():
+    app = build_web_application()
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', 8081)
     await site.start()
     logging.info("Bot API started on port 8081")
-    if not DASHBOARD_TOKEN:
-        logging.warning("DASHBOARD_TOKEN is not set — /api/broadcast and POST /api/config are disabled (fail closed). Set DASHBOARD_TOKEN to enable them.")
+    logging.info("Legacy dashboard routes disabled; Phase 9A internal routes fail closed.")
 
 @client.event
 async def on_voice_state_update(member, before, after):

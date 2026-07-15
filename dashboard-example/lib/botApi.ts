@@ -1,21 +1,14 @@
 // lib/botApi.ts
 //
-// Helper untuk memanggil W2E Bot API.
-// botGet  -> boleh dipakai di server maupun (versi public) di client.
-// botPost -> HANYA boleh dipakai di server (Route Handler / Server Action),
-//            karena membawa DASHBOARD_TOKEN.
-
-const SERVER_BASE = process.env.BOT_API_URL ?? "http://localhost:8081";
-const TOKEN = process.env.DASHBOARD_TOKEN ?? "";
+// Seluruh pembacaan melewati sesi dashboard dan envelope internal bertanda tangan.
+import "server-only";
+import { requireDashboardSession } from "./dashboardAuth";
+import { dashboardRead } from "./dashboardReads";
 
 /** GET ke bot API (server-side, tanpa cache). */
 export async function botGet<T = unknown>(path: string): Promise<T> {
-  const res = await fetch(`${SERVER_BASE}${path}`, { cache: "no-store" });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error((data as any).error || `GET ${path} -> ${res.status}`);
-  }
-  return res.json() as Promise<T>;
+  const validated = await requireDashboardSession();
+  return dashboardRead<T>(path, validated.identity);
 }
 
 /**
@@ -23,26 +16,10 @@ export async function botGet<T = unknown>(path: string): Promise<T> {
  * Melempar Error berisi pesan dari bot kalau gagal (termasuk 401/409/400).
  */
 export async function botPost<T = unknown>(
-  path: string,
-  body: unknown,
+  _path: string,
+  _body: unknown,
 ): Promise<T> {
-  if (!TOKEN) {
-    throw new Error("DASHBOARD_TOKEN belum di-set di server Next.js");
-  }
-  const res = await fetch(`${SERVER_BASE}${path}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Auth-Token": TOKEN,
-    },
-    body: JSON.stringify(body),
-    cache: "no-store",
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error((data as any).error || `POST ${path} -> ${res.status}`);
-  }
-  return data as T;
+  throw new Error("legacy_dashboard_write_disabled");
 }
 
 /**
@@ -50,18 +27,7 @@ export async function botPost<T = unknown>(
  * WAJIB dipanggil dari server saja.
  */
 export async function botGetToken<T = unknown>(path: string): Promise<T> {
-  if (!TOKEN) {
-    throw new Error("DASHBOARD_TOKEN belum di-set di server Next.js");
-  }
-  const res = await fetch(`${SERVER_BASE}${path}`, {
-    headers: { "X-Auth-Token": TOKEN },
-    cache: "no-store",
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error((data as any).error || `GET ${path} -> ${res.status}`);
-  }
-  return data as T;
+  return botGet<T>(path);
 }
 
 // ── Tipe ringkas (sesuaikan kalau perlu) ─────────────────────────────────────
@@ -313,15 +279,17 @@ export interface LevelDistribution {
 }
 
 export interface AuditEntry {
-  id: number;
-  ts: string;
-  action: string;
-  target_id: string | null;
-  detail: string | null;
-  source: string;
+  auditId: string;
+  executorUserId: string;
+  permissionClass: string;
+  operationType: string;
+  targetType: string;
+  targetId: string;
+  requestId: string;
+  resultStatus: string;
+  createdAt: string;
 }
 
 export interface AuditResponse {
-  limit: number;
   entries: AuditEntry[];
 }

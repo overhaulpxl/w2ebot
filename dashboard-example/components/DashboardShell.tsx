@@ -7,12 +7,9 @@
 
 import { useState } from "react";
 import { Icon } from "./Icon";
-import { AdminPanel } from "./AdminPanel";
-import { AnnounceSettings } from "./AnnounceSettings";
 import { Analytics } from "./Analytics";
 import { AuditLog } from "./AuditLog";
 import { UserModal } from "./UserModal";
-import { useToast } from "./Toast";
 import type {
   SummaryResponse,
   LeaderboardResponse,
@@ -366,7 +363,6 @@ function Economy({ summary }: { summary: SummaryResponse | null }) {
           </span>
         </section>
       )}
-      <AdminPanel only="user" />
     </>
   );
 }
@@ -379,58 +375,13 @@ function ServerAdmin({
   announceConfig: AnnounceConfig | null;
 }) {
   return (
-    <div className="stack">
-      <AnnounceSettings channels={channels} config={announceConfig} />
-      <AdminPanel only="server" />
-      <ResetAllPlayers />
-    </div>
-  );
-}
-
-function ResetAllPlayers() {
-  const toast = useToast();
-  const [confirm, setConfirm] = useState(false);
-  const [busy, setBusy] = useState(false);
-
-  async function doReset() {
-    setBusy(true);
-    try {
-      const res = await fetch("/api/admin/reset-all-players", { method: "POST" });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || `Gagal (${res.status})`);
-      toast("success", `Reset berhasil: ${data.players_reset} pemain direset.`);
-      setConfirm(false);
-    } catch (e: any) {
-      toast("error", e.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <section className="card card-pad stack" aria-labelledby="reset-all">
-      <h3 id="reset-all">Reset All Players</h3>
-      <p className="helper" style={{ margin: 0 }}>
-        Reset semua data pemain (koin, XP, level, items, crypto, rigs, achievements, marriage, dll)
-        ke kondisi awal. Settingan bot (announce channels, config, treasury, market) TIDAK terpengaruh.
-      </p>
-      {!confirm ? (
-        <button className="btn btn-danger" onClick={() => setConfirm(true)}>
-          <Icon name="close" size={14} />
-          Reset Semua Pemain
-        </button>
-      ) : (
-        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <button className="btn btn-danger" disabled={busy} onClick={doReset}>
-            {busy ? <span className="spinner" /> : <Icon name="close" size={14} />}
-            Konfirmasi Reset All
-          </button>
-          <button className="btn btn-ghost" onClick={() => setConfirm(false)}>
-            Batal
-          </button>
-          <span className="error-text" style={{ fontSize: 12 }}>DESTRUKTIF — tidak bisa di-undo!</span>
-        </div>
-      )}
+    <section className="card card-pad stack">
+      <h3>Konfigurasi Pengumuman (Baca Saja)</h3>
+      <p className="muted">Phase 9A menonaktifkan seluruh mutasi dashboard lama.</p>
+      <div className="stat-grid">
+        <StatCard icon="signal" label="Channel Tersedia" value={nf(channels.length)} />
+        <StatCard icon="activity" label="Rute Terkonfigurasi" value={nf(Object.values(announceConfig ?? {}).filter(Boolean).length)} />
+      </div>
     </section>
   );
 }

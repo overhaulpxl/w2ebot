@@ -17,7 +17,7 @@ docker compose up -d --build        # Docker (mounts w2ebot.db as volume)
 - There is no test suite, linter, or build step. Verify changes by tracing code paths mentally and, when possible, running the bot.
 - FFmpeg must be on PATH for voice/listen features.
 - A web API/dashboard runs on port `8081` (started as a background task in `on_ready`).
-- Required env vars (`.env`): `DISCORD_TOKEN`, `GEMINI_API_KEY`, `ALLOWED_SERVER_ID` (default `887968847842402355`), `BOT_PREFIX` (default `w!`). Optional: `DASHBOARD_TOKEN` (auth token for state-changing web endpoints; empty = those endpoints fail closed), `ALLOWED_ORIGINS` (comma-separated CORS whitelist; empty = allow all, dev only).
+- Required env vars (`.env`): `DISCORD_TOKEN`, `GEMINI_API_KEY`, `ALLOWED_SERVER_ID` (default `887968847842402355`), `BOT_PREFIX` (default `w!`). Phase 9A dashboard operation additionally requires explicit HTTPS OAuth and distinct session/internal/IP hash keys. `ALLOWED_ORIGINS` is an explicit allowlist; empty never means wildcard.
 
 ## Architecture
 
@@ -63,7 +63,7 @@ For any announcement the bot posts (market events, level-ups, birthdays, boss ra
 
 ### Web API
 
-Endpoints live in `core.py` and are registered in `start_web_server` (port `8081`). State-changing routes (`POST /api/config`, `POST /api/announce-config`, `POST /api/broadcast`) guard with `require_token(request)` (compares `X-Auth-Token` header to `DASHBOARD_TOKEN` via `hmac.compare_digest`, fail-closed when the token is unset). CORS is handled by `cors_middleware` using the `ALLOWED_ORIGINS` whitelist. See `API.md` for the full endpoint contract.
+Endpoints live in `core.py` and are registered through `build_web_application` (port `8081`). `GET /healthz` is the only public data endpoint. Legacy `/api/*` reads and writes return unconditional `410` tombstones. Authenticated Next.js routes use HMAC-signed internal Phase 9A requests; aiohttp independently validates session, Discord membership, permission, signature, nonce, route, and payload. See `API.md` and `docs/PHASE9A_BACKEND_SAFETY_PRD.md`.
 
 ## File ownership
 

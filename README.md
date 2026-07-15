@@ -218,8 +218,15 @@ GEMINI_API_KEY=
 ALLOWED_SERVER_ID=887968847842402355
 BOT_PREFIX=w!
 
-# Optional — Web API & Dashboard
-DASHBOARD_TOKEN=              # Auth token for write endpoints. Empty = write disabled (fail closed).
+# Phase 9A Web API & Dashboard (server-side only)
+DASHBOARD_PUBLIC_URL=
+DASHBOARD_DISCORD_CLIENT_ID=
+DASHBOARD_DISCORD_CLIENT_SECRET=
+DASHBOARD_INTERNAL_KEY_ID=
+DASHBOARD_INTERNAL_SIGNING_KEY=
+DASHBOARD_SESSION_KEY_ID=
+DASHBOARD_SESSION_HASH_KEY=
+DASHBOARD_IP_HASH_KEY=
 ALLOWED_ORIGINS=              # Comma-separated CORS whitelist. Empty = allow all (dev only).
 AI_AUTO_REPLY_CHANNEL_ID=0    # Channel where bot auto-replies without prefix. 0 = disabled.
 ```
@@ -305,9 +312,19 @@ Boss spawns hourly (20% chance) or via admin API. Pets add bonus damage.
 
 ## Web API & Dashboard
 
-On startup the bot launches an HTTP server on port **8081**. Full endpoint contract with curl examples lives in **[`API.md`](API.md)**.
+On startup the bot launches aiohttp on port **8081**. Phase 9A makes
+`GET /healthz` the only public data endpoint. Every legacy `/api/*` read and
+write below is retained only as an unconditional `410` tombstone; the tables
+describe the isolated legacy surface, not callable public functionality.
 
-### Read endpoints (open, no token)
+The included Next.js dashboard owns Discord OAuth2 with PKCE and signs every
+backend request with a short-lived HMAC envelope. Next.js and aiohttp
+independently validate the current session, guild membership, and permission.
+Sensitive data is available only through strict signed internal routes. See
+**[`API.md`](API.md)** and
+**[`docs/PHASE9A_BACKEND_SAFETY_PRD.md`](docs/PHASE9A_BACKEND_SAFETY_PRD.md)**.
+
+### Disabled legacy read endpoints
 | Endpoint | Purpose |
 |---|---|
 | `GET /api/server` | Guild info (name, members, channels, roles, boosts) |
@@ -326,7 +343,7 @@ On startup the bot launches an HTTP server on port **8081**. Full endpoint contr
 | `GET /api/config` | Raw config.json |
 | `GET /api/announce-config` | Announcement channel mapping |
 
-### Write endpoints (require `X-Auth-Token`)
+### Disabled legacy write endpoints
 | Endpoint | Purpose |
 |---|---|
 | `POST /api/user/{id}/coins` | Adjust or set coins |
@@ -347,7 +364,9 @@ On startup the bot launches an HTTP server on port **8081**. Full endpoint contr
 | `POST /api/config` | Overwrite config.json |
 | `GET /api/audit` | Audit log of all admin writes (token-gated) |
 
-Every write action is logged to the `AuditLog` table with timestamp, action, target, and detail.
+These legacy operations are inaccessible. Phase 9A security-administration
+mutations use atomic `DashboardControlledOperation` receipts and append-only
+`DashboardOperatorAudit` records.
 
 ### Announcement Channels
 
@@ -357,12 +376,13 @@ Every write action is logged to the `AuditLog` table with timestamp, action, tar
 
 ```
 Browser (external dashboard)
-   └─> Your backend (keeps DASHBOARD_TOKEN secret)
-          └─> https://api.way2eternal.com/api/...
+   └─> Authenticated Next.js server
+          └─> signed /internal/phase9a/* request
                  └─> W2E bot :8081
 ```
 
-Never expose `DASHBOARD_TOKEN` to the browser. A Next.js example dashboard is included in `dashboard-example/`.
+Legacy `DASHBOARD_TOKEN` cannot re-enable disabled routes. Session and signing
+keys remain server-side and are never exposed to browser JavaScript.
 
 ---
 
@@ -372,8 +392,8 @@ A ready-to-use **Next.js 14 App Router** admin dashboard with:
 - Liquid glass UI (dark theme, glassmorphism, animated background blobs)
 - CRM-style sidebar navigation (Ringkasan, Statistik Bot, Analitik, Pemain, Ekonomi, Server & Admin, Audit Log)
 - Charts (recharts): market price trends + level distribution
-- User detail page (`/user/[id]`): full profile + top 3 minigame + admin controls
-- All write actions proxied through Next.js Route Handlers (token stays server-side)
+- User detail page (`/user/[id]`): authenticated, read-only profile
+- Security administration uses CSRF, controlled operations, and append-only audit
 - Zero external CSS frameworks (pure CSS design tokens)
 
 Setup: see `dashboard-example/README.md`.

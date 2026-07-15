@@ -30,4 +30,6 @@ class Phase8CommandTests(unittest.TestCase):
     def test_no_phase8_write_api(self):
         core = (ROOT / "core.py").read_text(encoding="utf-8")
         self.assertNotIn("add_post('/api/economy/v1-phase8", core)
-        self.assertIn("add_get('/api/economy/v1-phase8", core)
+        self.assertIn("'economy/phase8': api_phase8_status", core)
+        self.assertIn("'/api/economy/v1-phase8'", core)
+        self.assertIn("app.router.add_get(route, legacy_dashboard_read_disabled)", core)
