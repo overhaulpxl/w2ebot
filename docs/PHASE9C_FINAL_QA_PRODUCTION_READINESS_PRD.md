@@ -55,6 +55,11 @@ Connected Discord/OAuth staging requires a separately approved staging manifest,
 resources, and complete staging-only credentials. The evidence tooling stores hashes and sanitized
 results only. It rejects production-equivalent database paths and secret-like fields.
 
+OAuth credential presence is checked through the authoritative Phase 9A names
+`DASHBOARD_DISCORD_CLIENT_ID` and `DASHBOARD_DISCORD_CLIENT_SECRET`. The launcher also requires
+`DISCORD_TOKEN`, `DASHBOARD_SESSION_HASH_KEY`, `DASHBOARD_INTERNAL_SIGNING_KEY`, and
+`DASHBOARD_IP_HASH_KEY`. Credential values are never added to the manifest, evidence, or logs.
+
 The 22-step acceptance sequence is defined in `PHASE9C_STAGING_ACCEPTANCE_CHECKLIST.md`. All Economy
 flags are disabled after staging acceptance. When approved resources are unavailable, the readiness
 state is `ready_for_connected_staging` and no network staging is attempted.

@@ -3,6 +3,13 @@
 Use only an explicitly approved staging manifest and staging credentials. Record hashes or sanitized
 booleans only; never record tokens, cookies, secrets, raw identifiers, database contents, or paths.
 
+The evidence launcher requires these credential environment variables without reading or persisting
+their values: `DISCORD_TOKEN`, `DASHBOARD_DISCORD_CLIENT_ID`,
+`DASHBOARD_DISCORD_CLIENT_SECRET`, `DASHBOARD_SESSION_HASH_KEY`,
+`DASHBOARD_INTERNAL_SIGNING_KEY`, and `DASHBOARD_IP_HASH_KEY`. The legacy
+`DISCORD_CLIENT_ID` and `DISCORD_CLIENT_SECRET` names are not accepted. The approved manifest remains
+credential-free.
+
 1. `S01` Verify staging database path and production refusal.
 2. `S02` Create and verify a staging database backup.
 3. `S03` Apply and verify migrations 100, 200, 300, 301, 400, 500, 600, 700, 800, 900, and 910.

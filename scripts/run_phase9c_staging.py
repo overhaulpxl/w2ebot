@@ -28,7 +28,7 @@ STEP_NAMES = (
     "persistent_recovery_and_adoption", "dashboard_reconciliation", "disable_all_flags",
 )
 REQUIRED_CREDENTIAL_ENV = (
-    "DISCORD_TOKEN", "DISCORD_CLIENT_ID", "DISCORD_CLIENT_SECRET",
+    "DISCORD_TOKEN", "DASHBOARD_DISCORD_CLIENT_ID", "DASHBOARD_DISCORD_CLIENT_SECRET",
     "DASHBOARD_SESSION_HASH_KEY", "DASHBOARD_INTERNAL_SIGNING_KEY", "DASHBOARD_IP_HASH_KEY",
 )
 
@@ -54,7 +54,7 @@ def load_approved_manifest(path: str | Path) -> dict:
 
 
 def credentials_available(environment: dict[str, str] | None = None) -> bool:
-    current = environment or os.environ
+    current = os.environ if environment is None else environment
     return all(bool(current.get(name, "").strip()) for name in REQUIRED_CREDENTIAL_ENV)
 
 

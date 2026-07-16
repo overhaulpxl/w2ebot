@@ -54,7 +54,8 @@ class LivingPrdToolingTests(unittest.TestCase):
         shutil.copy2(ROOT / "scripts" / "migrate_phase9b_dashboard.py", root / "scripts" / "migrate_phase9b_dashboard.py")
         for name in (
             "simulate_phase9c_full_system.py", "reconcile_phase9c_full_system.py",
-            "run_phase9c_local_qa.py", "verify_phase9c_staging_evidence.py",
+            "run_phase9c_local_qa.py", "run_phase9c_staging.py",
+            "verify_phase9c_staging_evidence.py",
         ):
             shutil.copy2(ROOT / "scripts" / name, root / "scripts" / name)
         (root / "dashboard-example").mkdir()
@@ -468,6 +469,12 @@ class LivingPrdToolingTests(unittest.TestCase):
         state["phase9cFinalQa"]["value"]["connectedStaging"]["networkAttempted"] = True
         self._write_state(root, state)
         self.assertIn("Phase 9C connected staging guard tidak valid", verify_ai_handoff.verify(root))
+
+        root = self._fixture_root()
+        state = json.loads(json.dumps(self.state))
+        state["phase9cFinalQa"]["value"]["connectedStaging"]["credentialEnvironment"][1] = "DISCORD_CLIENT_ID"
+        self._write_state(root, state)
+        self.assertIn("Phase 9C staging credential contract tidak valid", verify_ai_handoff.verify(root))
 
         root = self._fixture_root()
         state = json.loads(json.dumps(self.state))

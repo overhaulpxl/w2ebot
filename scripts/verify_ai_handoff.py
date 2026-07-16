@@ -731,6 +731,10 @@ def _phase9b_issues(root: Path, state: dict, phase9b_status: str | None) -> list
 
 def _phase9c_issues(root: Path, state: dict, phase9c_status: str | None) -> list[str]:
     issues: list[str] = []
+    expected_credentials = [
+        "DISCORD_TOKEN", "DASHBOARD_DISCORD_CLIENT_ID", "DASHBOARD_DISCORD_CLIENT_SECRET",
+        "DASHBOARD_SESSION_HASH_KEY", "DASHBOARD_INTERNAL_SIGNING_KEY", "DASHBOARD_IP_HASH_KEY",
+    ]
     phase9c = _claim_value(state.get("phase9cFinalQa", {}))
     if phase9c_status != "ready_for_connected_staging" or phase9c.get("status") != phase9c_status:
         issues.append("Phase 9C status harus ready_for_connected_staging")
@@ -758,6 +762,17 @@ def _phase9c_issues(root: Path, state: dict, phase9c_status: str | None) -> list
     if (staging.get("status") != "pending" or staging.get("manifestAvailable") is not False or
             staging.get("networkAttempted") is not False or staging.get("remainingExternalBlocker") is not True):
         issues.append("Phase 9C connected staging guard tidak valid")
+    if (staging.get("credentialEnvironment") != expected_credentials or
+            staging.get("legacyOauthAliasesAccepted") is not False or
+            staging.get("manifestStoresCredentials") is not False):
+        issues.append("Phase 9C staging credential contract tidak valid")
+    try:
+        launcher = _assignment_map(_parse_source(root / "scripts" / "run_phase9c_staging.py"))
+        observed_credentials = list(_literal(launcher["REQUIRED_CREDENTIAL_ENV"]))
+        if observed_credentials != expected_credentials:
+            issues.append("Phase 9C staging launcher credential contract tidak valid")
+    except (OSError, KeyError, SyntaxError, ValueError):
+        issues.append("Phase 9C staging launcher credential contract tidak dapat diverifikasi")
     production = phase9c.get("production", {})
     if production != {"status": "not_approved", "migrated": False, "seeded": False, "enabled": False, "accessed": False}:
         issues.append("Phase 9C production guard tidak valid")
@@ -770,6 +785,7 @@ def _phase9c_issues(root: Path, state: dict, phase9c_status: str | None) -> list
         "scripts/simulate_phase9c_full_system.py",
         "scripts/reconcile_phase9c_full_system.py",
         "scripts/run_phase9c_local_qa.py",
+        "scripts/run_phase9c_staging.py",
         "scripts/verify_phase9c_staging_evidence.py",
     ):
         if not (root / path).is_file():

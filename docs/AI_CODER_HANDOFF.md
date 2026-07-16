@@ -1539,7 +1539,16 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - **commit:** 1fbe1c52bff268e68794fd3006b7705a51f995b4
   - **immutable:** true
 - **connectedStaging:**
+  - **credentialEnvironment:**
+    - DISCORD_TOKEN
+    - DASHBOARD_DISCORD_CLIENT_ID
+    - DASHBOARD_DISCORD_CLIENT_SECRET
+    - DASHBOARD_SESSION_HASH_KEY
+    - DASHBOARD_INTERNAL_SIGNING_KEY
+    - DASHBOARD_IP_HASH_KEY
+  - **legacyOauthAliasesAccepted:** false
   - **manifestAvailable:** false
+  - **manifestStoresCredentials:** false
   - **networkAttempted:** false
   - **remainingExternalBlocker:** true
   - **status:** pending
@@ -1608,8 +1617,10 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - **phase9a:** 20 passed
   - **phase9b:** 19 passed
   - **phase9cFocusedTests:** 10 passed
+  - **phase9cStagingContractFixTests:** 4 passed
   - **pythonCompile:** passed
   - **pythonTestTotal:** 322
+  - **stagingContractFixCompile:** passed
   - **temporaryMainImport:** passed
 
 ## Module Ownership
@@ -1840,7 +1851,8 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 | 2931a47b0b7db2626f124d744391a788bcd79051 | 2026-07-14 | Phase 8 Giveaway And Eternal Options Implemented |
 | a5490ac1f2a914f1c0a81f2c80e4172f5fb37ef1 | 2026-07-15 | Phase 9A Backend Safety Foundation Implemented |
 | 1fbe1c52bff268e68794fd3006b7705a51f995b4 | 2026-07-15 | Phase 9B Economy Dashboard And Notification Routing Implemented |
-| PENDING | 2026-07-16 | Phase 9C Local QA And Production Readiness Implemented |
+| 2db167638fd283021dc9d20785385526f2bf7663 | 2026-07-16 | Phase 9C Local QA And Production Readiness Implemented |
+| PENDING | 2026-07-16 | Phase 9C Connected Staging OAuth Environment Contract Fixed |
 
 ## Current Handoff Summary
 
