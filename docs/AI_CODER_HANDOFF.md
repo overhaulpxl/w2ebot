@@ -22,11 +22,11 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 
 ## Repository Snapshot
 
-- **lastKnownBranch:** codex/economy-v1-phase9a
-- **observedBranch:** codex/economy-v1-phase9a
-- **observedHead:** a5490ac1f2a914f1c0a81f2c80e4172f5fb37ef1
+- **lastKnownBranch:** codex/economy-v1-phase9b
+- **observedBranch:** codex/economy-v1-phase9b
+- **observedHead:** 1fbe1c52bff268e68794fd3006b7705a51f995b4
 - **remotePushAfterPhase4:** false
-- **workingTreeAtSeed:** clean before Phase 9B implementation
+- **workingTreeAtSeed:** clean before Phase 9C implementation
 
 ## Project Progress
 
@@ -42,6 +42,7 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 | phase8 | Giveaway and Eternal Options | implemented_staging_ready |
 | phase9a | Backend Safety Foundation | implemented_local_verification |
 | phase9b | Economy Dashboard And Notification Routing | implemented_local_verification |
+| phase9c | Final QA, Connected Discord Staging, And Production Readiness | ready_for_connected_staging |
 
 ## Capabilities By Phase
 
@@ -132,6 +133,13 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - controlled pause and reviewed recovery
   - protected operational dashboard
   - migration 910
+- **phase9c:**
+  - deterministic 1000-user 90-day simulation
+  - full migration chain verification
+  - cross-domain reconciliation
+  - restart and notification adoption verification
+  - sanitized staging evidence contracts
+  - production rollback and forward-recovery runbooks
 
 ## Protected Systems
 
@@ -1524,6 +1532,86 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - **phase9aRegressionTests:** 20 passed
   - **phase9bFocusedTests:** 19 passed
 
+## Phase 9C Final QA And Production Readiness
+
+- **baseline:**
+  - **branch:** codex/economy-v1-phase9b
+  - **commit:** 1fbe1c52bff268e68794fd3006b7705a51f995b4
+  - **immutable:** true
+- **connectedStaging:**
+  - **manifestAvailable:** false
+  - **networkAttempted:** false
+  - **remainingExternalBlocker:** true
+  - **status:** pending
+- **featureFlagAdded:** false
+- **implementationStatus:** implemented_local_qa
+- **migrationAdded:** false
+- **migrationChain:**
+  - **newMigration:** false
+  - **result:** passed
+  - **versions:**
+    - 100
+    - 200
+    - 300
+    - 301
+    - 400
+    - 500
+    - 600
+    - 700
+    - 800
+    - 900
+    - 910
+- **production:**
+  - **accessed:** false
+  - **enabled:** false
+  - **migrated:** false
+  - **seeded:** false
+  - **status:** not_approved
+- **reconciliation:**
+  - **dashboardExact:** passed
+  - **duplicateOutcomes:** 0
+  - **ledgerZeroSum:** passed
+  - **liabilitiesExact:** passed
+  - **supplyExact:** passed
+- **runbooks:**
+  - docs/PHASE9C_PRODUCTION_RUNBOOK.md
+  - docs/PHASE9C_ROLLBACK_FORWARD_RECOVERY_RUNBOOK.md
+- **scope:** Local final QA, deterministic full-system simulation, reconciliation, staging evidence, and production-readiness runbooks
+- **simulation:**
+  - **artifactHash:** 3aa14ceb5dee96408d13337b3396ac2d576e102756475c39c671638cac4e8c8a
+  - **byteIdenticalRequired:** true
+  - **days:** 90
+  - **fileSha256:** f12012b7937699fc8b2fe3bca42740faee35067ecfb84d5b0eec25ba073be8b5
+  - **metrics:**
+    - **activeUsers30d:** 970
+    - **activityEvents:** 90000
+    - **notificationSourceEvents:** 990
+    - **restartInjections:** 54
+    - **unresolvedReviewCount:** 0
+  - **runsRequired:** 2
+  - **seed:** 9100090
+  - **transactions:** 96175
+  - **users:** 1000
+- **status:** ready_for_connected_staging
+- **verificationResults:**
+  - **combinedTestTotal:** 336
+  - **dashboardDependencyAudit:** 0 vulnerabilities
+  - **dashboardProductionBuild:** passed
+  - **dashboardTypecheck:** passed
+  - **dashboardVitest:** 14 passed
+  - **economyPhase1To8:** 191 passed
+  - **foreignKeyErrors:** 0
+  - **fullLocalQa:** passed
+  - **integrityCheck:** ok
+  - **livingPrd:** 18 passed
+  - **marketplace:** 64 passed
+  - **phase9a:** 20 passed
+  - **phase9b:** 19 passed
+  - **phase9cFocusedTests:** 10 passed
+  - **pythonCompile:** passed
+  - **pythonTestTotal:** 322
+  - **temporaryMainImport:** passed
+
 ## Module Ownership
 
 - **cogs:**
@@ -1553,6 +1641,12 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - **scripts/generate ai handoff.py:** pure renderer and generator
   - **scripts/update ai handoff.py:** generator/verifier wrapper
   - **scripts/verify ai handoff.py:** static verifier
+- **phase9c:**
+  - **docs/PHASE9C FINAL QA PRODUCTION READINESS PRD.md:** Phase 9C specification and readiness state
+  - **scripts/reconcile phase9c full system.py:** ledger, supply, liability, and dashboard reconciliation
+  - **scripts/run phase9c local qa.py:** serial local acceptance orchestration
+  - **scripts/simulate phase9c full system.py:** deterministic full-system simulation
+  - **scripts/verify phase9c staging evidence.py:** sanitized staging evidence validation
 - **runtime:**
   - **core.py:** shared persistence, FakeInteraction, events, public tombstones, and signed internal web API
   - **main.py:** entry point and cog setup
@@ -1563,13 +1657,15 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - **tests/test economy *.py:** Phase 1-8 economy/RPG/Casino/Crypto/Mining/Giveaway/Options
   - **tests/test marketplace*.py:** Phase 4 Marketplace
   - **tests/test phase9a *.py:** Phase 9A authentication, security, operations, migration, routes, and dashboard contract
+  - **tests/test phase9c *.py:** full-system, migration-chain, recovery, and staging contracts
 
 ## Verification History
 
 - **casinoTests:** 33 passed
+- **combinedTestTotal:** 336
 - **commandOwnership:** passed through static verifier
 - **cryptoTests:** 26 passed
-- **dashboardDependencyAudit:** 0 vulnerabilities (historical Phase 9A)
+- **dashboardDependencyAudit:** 0 vulnerabilities
 - **dashboardProductionBuild:** passed on Next.js 16.2.10
 - **dashboardTypecheck:** passed
 - **dashboardVitest:** 14 passed
@@ -1579,7 +1675,7 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - **marketplaceTests:** 64 passed
   - **phase1To3Tests:** 87 passed
   - **total:** 151 passed
-- **livingPrdToolingTests:** 17 passed
+- **livingPrdToolingTests:** 18 passed
 - **mainImportTemporaryDatabaseMigrationAbsent:** passed
 - **mainImportTemporaryDatabaseMigrationPresent:** passed
 - **marketplaceTests:** 64 passed
@@ -1594,35 +1690,42 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 - **migration910Reconciliation:** passed
 - **migration910RollbackInjection:** all six stages passed
 - **migration910SecondRun:** idempotent replay
+- **migrationChain100To910:** passed
 - **miningTests:** 25 passed
 - **phase1To8EconomyTests:** 191 passed
 - **phase8FocusedTests:** 20 passed
 - **phase8Simulation:** 10000 Giveaway draws and 20 x 100000 Options positions; both gates passed
 - **phase9aFocusedTests:** 20 passed
 - **phase9bFocusedTests:** 19 passed
+- **phase9cArtifactHash:** 3aa14ceb5dee96408d13337b3396ac2d576e102756475c39c671638cac4e8c8a
+- **phase9cFocusedTests:** 10 passed
+- **phase9cSimulation:** 1000 users x 90 days, two byte-identical runs, 96175 transactions
 - **pyCompile:** passed
+- **pythonTestTotal:** 322
 - **sqliteForeignKeyErrors:** 0
 - **sqliteIntegrityCheck:** ok
 
 ## Staging
 
+- **approvedManifestAvailable:** false
 - **liveDiscord:** pending
+- **networkAttemptedByPhase9c:** false
 - **phase5Readiness:** ready_for_connected_discord_staging
 - **phase6Readiness:** ready_for_connected_discord_staging
 - **phase7Readiness:** ready_for_connected_discord_staging
 - **phase8Readiness:** ready_for_connected_discord_staging
+- **phase9cReadiness:** ready_for_connected_staging
 - **requirements:**
-  - dedicated staging bot
+  - explicit approved staging manifest
+  - dedicated staging bot and OAuth application
   - non-production SQLite copy
-  - dedicated staging guild
-  - required flags enabled only for staging
-  - manual command and restart smoke test
+  - dedicated staging guild and notification channels
+  - staging-only dashboard origin
+  - manual command, notification, OAuth, restart, and recovery evidence
 - **scripts:**
-  - scripts/migrate_economy_phase8.py
-  - scripts/setup_phase8_staging.py
-  - scripts/run_phase8_staging.py
-  - scripts/run_phase8_staging.ps1
-  - scripts/simulate_phase8.py
+  - scripts/run_phase9c_staging.py
+  - scripts/run_phase9c_staging.ps1
+  - scripts/verify_phase9c_staging_evidence.py
 
 ## Dashboard
 
@@ -1657,14 +1760,14 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 - Connected Discord staging remains pending for Phase 5 through Phase 8.
 - Phase 9A connected Discord OAuth staging remains pending.
 - Phase 9B connected notification-routing staging remains pending.
-- Phase 9C is not implemented.
+- Phase 9C connected staging requires an approved manifest and dedicated staging credentials that are not present.
 - Deal runtime claims are retained as last-known until a separately scoped audit verifies them.
 
 ## Blockers
 
 - Production cutover requires separate explicit approval.
 - Production migrations 500, 600, 700, 800, 900, and 910 have not occurred and all Economy production flags must remain disabled.
-- Connected Discord and OAuth staging has not been executed.
+- Connected Discord and OAuth staging requires an explicit approved Phase 9C staging manifest and dedicated staging credentials.
 
 ## Pending Work
 
@@ -1674,6 +1777,7 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 - Phase 8 connected Discord staging validation
 - Phase 9A connected Discord OAuth staging validation
 - Phase 9B connected Discord notification-routing staging validation
+- Phase 9C connected staging execution with an approved manifest and dedicated staging credentials
 - Production rollout approval
 
 ## AI Coder Onboarding
@@ -1735,7 +1839,8 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 | 381d99a249dd9d009fc582947635c1aabffbd9c3 | 2026-07-14 | Phase 7 Mining Implemented |
 | 2931a47b0b7db2626f124d744391a788bcd79051 | 2026-07-14 | Phase 8 Giveaway And Eternal Options Implemented |
 | a5490ac1f2a914f1c0a81f2c80e4172f5fb37ef1 | 2026-07-15 | Phase 9A Backend Safety Foundation Implemented |
-| PENDING | 2026-07-15 | Phase 9B Economy Dashboard And Notification Routing Implemented |
+| 1fbe1c52bff268e68794fd3006b7705a51f995b4 | 2026-07-15 | Phase 9B Economy Dashboard And Notification Routing Implemented |
+| PENDING | 2026-07-16 | Phase 9C Local QA And Production Readiness Implemented |
 
 ## Current Handoff Summary
 
@@ -1750,6 +1855,7 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - Phase 6 Crypto
   - Phase 7 Mining
   - Phase 8 Giveaway and Eternal Options
-  - Phase 9A backend safety foundation runtime, migration, authenticated dashboard boundary, and local tests
-  - Phase 9B Economy dashboard, durable notification routing, controlled operations, migration, dashboard build, and local tests
-- **current:** Phase 9B is implemented locally without a feature flag. Migration 910 is manual and depends on Phase 9A. Reporting and notification delivery are protected by authenticated signed routes; connected Discord/OAuth notification staging and production approval remain pending.
+  - Phase 9A backend safety foundation
+  - Phase 9B Economy dashboard and durable notification routing
+  - Phase 9C local QA orchestration, deterministic full-system simulation, reconciliation, staging evidence tooling, and production runbooks
+- **current:** Phase 9C local acceptance is implemented against immutable Phase 9B commit 1fbe1c52bff268e68794fd3006b7705a51f995b4. No migration or feature flag was added. Connected Discord/OAuth staging awaits an approved staging manifest and credentials; production remains unapproved and untouched.

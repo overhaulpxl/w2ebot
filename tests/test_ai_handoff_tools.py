@@ -39,6 +39,8 @@ class LivingPrdToolingTests(unittest.TestCase):
         shutil.copy2(ROOT / "docs" / "PHASE8_GIVEAWAY_OPTIONS_PRD.md", root / "docs" / "PHASE8_GIVEAWAY_OPTIONS_PRD.md")
         shutil.copy2(ROOT / "docs" / "PHASE9A_BACKEND_SAFETY_PRD.md", root / "docs" / "PHASE9A_BACKEND_SAFETY_PRD.md")
         shutil.copy2(ROOT / "docs" / "PHASE9B_DASHBOARD_NOTIFICATION_ROUTING_PRD.md", root / "docs" / "PHASE9B_DASHBOARD_NOTIFICATION_ROUTING_PRD.md")
+        shutil.copy2(ROOT / "docs" / "PHASE9C_FINAL_QA_PRODUCTION_READINESS_PRD.md", root / "docs" / "PHASE9C_FINAL_QA_PRODUCTION_READINESS_PRD.md")
+        shutil.copy2(ROOT / "docs" / "PHASE9C_STAGING_EVIDENCE_SCHEMA.json", root / "docs" / "PHASE9C_STAGING_EVIDENCE_SCHEMA.json")
         shutil.copy2(ROOT / "runtime_config.py", root / "runtime_config.py")
         shutil.copy2(ROOT / "core.py", root / "core.py")
         shutil.copytree(ROOT / "economy", root / "economy", ignore=shutil.ignore_patterns("__pycache__"))
@@ -50,6 +52,11 @@ class LivingPrdToolingTests(unittest.TestCase):
         shutil.copy2(ROOT / "scripts" / "migrate_economy_phase8.py", root / "scripts" / "migrate_economy_phase8.py")
         shutil.copy2(ROOT / "scripts" / "migrate_phase9a_backend_safety.py", root / "scripts" / "migrate_phase9a_backend_safety.py")
         shutil.copy2(ROOT / "scripts" / "migrate_phase9b_dashboard.py", root / "scripts" / "migrate_phase9b_dashboard.py")
+        for name in (
+            "simulate_phase9c_full_system.py", "reconcile_phase9c_full_system.py",
+            "run_phase9c_local_qa.py", "verify_phase9c_staging_evidence.py",
+        ):
+            shutil.copy2(ROOT / "scripts" / name, root / "scripts" / name)
         (root / "dashboard-example").mkdir()
         shutil.copy2(ROOT / "dashboard-example" / "middleware.ts", root / "dashboard-example" / "middleware.ts")
         (root / "dashboard-example" / "app" / "economy").mkdir(parents=True)
@@ -82,6 +89,7 @@ class LivingPrdToolingTests(unittest.TestCase):
         self.assertIn(b"## Phase 8 Giveaway And Eternal Options\n", first)
         self.assertIn(b"## Phase 9A Backend Safety Foundation\n", first)
         self.assertIn(b"## Phase 9B Economy Dashboard And Notification Routing\n", first)
+        self.assertIn(b"## Phase 9C Final QA And Production Readiness\n", first)
 
     def test_phase7_profile_claim_simulation_and_production_guards(self):
         mutations = (
@@ -433,6 +441,39 @@ class LivingPrdToolingTests(unittest.TestCase):
         state["phase9bDashboardNotificationRouting"]["value"]["delivery"]["automaticReviewRetry"] = True
         self._write_state(root, state)
         self.assertIn("Phase 9B durable delivery contract tidak valid", verify_ai_handoff.verify(root))
+
+    def test_phase9c_baseline_simulation_staging_and_production_guards(self):
+        cases = (
+            ("status", "planning", "Phase 9C status harus ready_for_connected_staging"),
+            ("implementationStatus", "not_started", "Phase 9C implementation status tidak valid"),
+            ("migrationAdded", True, "Phase 9C tidak boleh menambah migrasi atau feature flag"),
+            ("featureFlagAdded", True, "Phase 9C tidak boleh menambah migrasi atau feature flag"),
+        )
+        for field, value, expected in cases:
+            with self.subTest(field=field):
+                root = self._fixture_root()
+                state = json.loads(json.dumps(self.state))
+                state["phase9cFinalQa"]["value"][field] = value
+                self._write_state(root, state)
+                self.assertIn(expected, verify_ai_handoff.verify(root))
+
+        root = self._fixture_root()
+        state = json.loads(json.dumps(self.state))
+        state["phase9cFinalQa"]["value"]["simulation"]["users"] = 999
+        self._write_state(root, state)
+        self.assertIn("Phase 9C simulation contract tidak valid", verify_ai_handoff.verify(root))
+
+        root = self._fixture_root()
+        state = json.loads(json.dumps(self.state))
+        state["phase9cFinalQa"]["value"]["connectedStaging"]["networkAttempted"] = True
+        self._write_state(root, state)
+        self.assertIn("Phase 9C connected staging guard tidak valid", verify_ai_handoff.verify(root))
+
+        root = self._fixture_root()
+        state = json.loads(json.dumps(self.state))
+        state["phase9cFinalQa"]["value"]["production"]["accessed"] = True
+        self._write_state(root, state)
+        self.assertIn("Phase 9C production guard tidak valid", verify_ai_handoff.verify(root))
 
 
 if __name__ == "__main__":

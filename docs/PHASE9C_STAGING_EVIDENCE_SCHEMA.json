@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "approved": {"const": true},
+    "baselineCommit": {"const": "1fbe1c52bff268e68794fd3006b7705a51f995b4"},
+    "environment": {"const": "staging"},
+    "readiness": {"enum": ["CONNECTED_STAGING_PENDING", "CONNECTED_STAGING_PASSED", "CONNECTED_STAGING_FAILED"]},
+    "resources": {
+      "additionalProperties": false,
+      "properties": {
+        "manifestHash": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        "productionEquivalent": {"const": false}
+      },
+      "required": ["productionEquivalent", "manifestHash"],
+      "type": "object"
+    },
+    "schemaVersion": {"const": 1},
+    "steps": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "evidenceHash": {"anyOf": [{"pattern": "^[0-9a-f]{64}$", "type": "string"}, {"type": "null"}]},
+          "id": {"pattern": "^S(?:0[1-9]|1[0-9]|2[0-2])$", "type": "string"},
+          "name": {"type": "string"},
+          "status": {"enum": ["PENDING", "PASSED", "FAILED", "SKIPPED"]}
+        },
+        "required": ["id", "name", "status", "evidenceHash"],
+        "type": "object"
+      },
+      "maxItems": 22,
+      "minItems": 22,
+      "type": "array"
+    }
+  },
+  "required": ["schemaVersion", "baselineCommit", "environment", "approved", "resources", "steps", "readiness"],
+  "title": "W2E Phase 9C Connected Staging Evidence",
+  "type": "object"
+}

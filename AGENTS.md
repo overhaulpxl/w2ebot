@@ -20,6 +20,12 @@ Before completing such a task:
 4. Run `python scripts/update_ai_handoff.py` and review the generated handoff.
 5. Include `project_state.json` and `AI_CODER_HANDOFF.md` in the same change set and mention the Living PRD update in the final report.
 
+Phase 9C acceptance work is local-only unless an explicit approved staging
+manifest and dedicated staging credentials already exist. Use
+`python scripts/run_phase9c_local_qa.py` for the serial local gate and
+`python scripts/verify_phase9c_staging_evidence.py <evidence.json>` for
+sanitized connected-staging evidence. Never substitute production resources.
+
 If repository source, migration, tests, or command registration disagrees with
 the handoff, investigate and report the mismatch before changing behavior. The
 source-of-truth order is committed constraints, tests, service implementation,

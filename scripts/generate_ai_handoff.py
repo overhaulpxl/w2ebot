@@ -116,6 +116,7 @@ def render_handoff(state: dict) -> bytes:
         ("Phase 8 Giveaway And Eternal Options", "phase8GiveawayOptions"),
         ("Phase 9A Backend Safety Foundation", "phase9aBackendSafety"),
         ("Phase 9B Economy Dashboard And Notification Routing", "phase9bDashboardNotificationRouting"),
+        ("Phase 9C Final QA And Production Readiness", "phase9cFinalQa"),
         ("Module Ownership", "moduleOwnership"),
         ("Verification History", "verificationHistory"),
         ("Staging", "stagingStatus"),

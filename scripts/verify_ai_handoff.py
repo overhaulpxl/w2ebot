@@ -32,6 +32,7 @@ REQUIRED_TOP_LEVEL = {
     "phase4Marketplace", "marketplaceHardening", "moduleOwnership",
     "marketplaceLifecycleDefinitions", "phase5Casino", "phase6Crypto", "phase7Mining",
     "phase8GiveawayOptions", "phase9aBackendSafety", "phase9bDashboardNotificationRouting",
+    "phase9cFinalQa",
     "verificationHistory", "stagingStatus", "dashboardStatus", "productionStatus",
     "knownLimitations", "blockers", "pendingWork", "aiCoderOnboarding",
     "livingPrdWorkflow", "taskCompletionTemplate", "definitionOfDone",
@@ -728,6 +729,59 @@ def _phase9b_issues(root: Path, state: dict, phase9b_status: str | None) -> list
     return issues
 
 
+def _phase9c_issues(root: Path, state: dict, phase9c_status: str | None) -> list[str]:
+    issues: list[str] = []
+    phase9c = _claim_value(state.get("phase9cFinalQa", {}))
+    if phase9c_status != "ready_for_connected_staging" or phase9c.get("status") != phase9c_status:
+        issues.append("Phase 9C status harus ready_for_connected_staging")
+    if phase9c.get("implementationStatus") != "implemented_local_qa":
+        issues.append("Phase 9C implementation status tidak valid")
+    baseline = phase9c.get("baseline", {})
+    if (baseline.get("branch") != "codex/economy-v1-phase9b" or
+            baseline.get("commit") != "1fbe1c52bff268e68794fd3006b7705a51f995b4" or
+            baseline.get("immutable") is not True):
+        issues.append("Phase 9C baseline Phase 9B tidak valid")
+    if phase9c.get("migrationAdded") is not False or phase9c.get("featureFlagAdded") is not False:
+        issues.append("Phase 9C tidak boleh menambah migrasi atau feature flag")
+    simulation = phase9c.get("simulation", {})
+    if (simulation.get("users") != 1000 or simulation.get("days") != 90 or
+            simulation.get("runsRequired") != 2 or simulation.get("byteIdenticalRequired") is not True):
+        issues.append("Phase 9C simulation contract tidak valid")
+    for key in ("artifactHash", "fileSha256"):
+        value = str(simulation.get(key, ""))
+        if value != "PENDING" and not CHECKSUM.fullmatch(value):
+            issues.append("Phase 9C simulation hash tidak valid")
+    chain = phase9c.get("migrationChain", {})
+    if chain.get("versions") != [100, 200, 300, 301, 400, 500, 600, 700, 800, 900, 910] or chain.get("newMigration") is not False:
+        issues.append("Phase 9C migration chain tidak valid")
+    staging = phase9c.get("connectedStaging", {})
+    if (staging.get("status") != "pending" or staging.get("manifestAvailable") is not False or
+            staging.get("networkAttempted") is not False or staging.get("remainingExternalBlocker") is not True):
+        issues.append("Phase 9C connected staging guard tidak valid")
+    production = phase9c.get("production", {})
+    if production != {"status": "not_approved", "migrated": False, "seeded": False, "enabled": False, "accessed": False}:
+        issues.append("Phase 9C production guard tidak valid")
+    pending = _claim_value(state.get("pendingWork", []))
+    if not isinstance(pending, list) or not any("phase 9c connected staging" in str(item).lower() for item in pending):
+        issues.append("Phase 9C connected staging tidak tercatat sebagai pending work")
+    for path in (
+        "docs/PHASE9C_FINAL_QA_PRODUCTION_READINESS_PRD.md",
+        "docs/PHASE9C_STAGING_EVIDENCE_SCHEMA.json",
+        "scripts/simulate_phase9c_full_system.py",
+        "scripts/reconcile_phase9c_full_system.py",
+        "scripts/run_phase9c_local_qa.py",
+        "scripts/verify_phase9c_staging_evidence.py",
+    ):
+        if not (root / path).is_file():
+            issues.append(f"Artefak Phase 9C tidak ditemukan: {path}")
+    runtime_source = (root / "runtime_config.py").read_text(encoding="utf-8")
+    if "ECONOMY_PHASE9C_ENABLED" in runtime_source:
+        issues.append("Phase 9C feature flag tidak boleh ada")
+    if any((root / "economy").glob("phase9c_schema.py")):
+        issues.append("Phase 9C migration tidak boleh ada")
+    return issues
+
+
 def verify(root: Path = PROJECT_ROOT) -> list[str]:
     root = root.resolve()
     state_path = root / "docs" / "project_state.json"
@@ -822,6 +876,8 @@ def verify(root: Path = PROJECT_ROOT) -> list[str]:
     issues.extend(_phase9a_issues(root, state, phase9a.get("status")))
     phase9b = next((row for row in phases if isinstance(row, dict) and row.get("id") == "phase9b"), {})
     issues.extend(_phase9b_issues(root, state, phase9b.get("status")))
+    phase9c = next((row for row in phases if isinstance(row, dict) and row.get("id") == "phase9c"), {})
+    issues.extend(_phase9c_issues(root, state, phase9c.get("status")))
     issues.extend(_secret_issues(raw_state, "project_state.json"))
     issues.extend(_private_content_issues(raw_state, "project_state.json"))
     if not handoff_path.exists():
