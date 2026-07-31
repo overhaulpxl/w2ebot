@@ -4,6 +4,34 @@ Way 2 Eternal Bot (W2E): single-guild Discord bot — Gemini AI chat + RPG/econo
 
 Detailed architecture lives in `CLAUDE.md` (read it first). This file only captures the gotchas an agent would otherwise miss.
 
+## Living PRD Workflow
+
+`docs/project_state.json` is the repository's machine-readable Living PRD and
+`docs/AI_CODER_HANDOFF.md` is generated output. Do not edit the generated file
+manually. Every task that changes behavior, architecture, schema, migrations,
+commands, tests, feature flags, rollout state, commits, blockers, staging,
+production, or project progress is incomplete until the Living PRD is updated.
+
+Before completing such a task:
+
+1. Read `docs/AI_CODER_HANDOFF.md` and inspect Git status, branch, and the relevant baseline.
+2. Implement the requested change and run its required verification.
+3. Update `docs/project_state.json` with current state plus task history.
+4. Run `python scripts/update_ai_handoff.py` and review the generated handoff.
+5. Include `project_state.json` and `AI_CODER_HANDOFF.md` in the same change set and mention the Living PRD update in the final report.
+
+Phase 9C acceptance work is local-only unless an explicit approved staging
+manifest and dedicated staging credentials already exist. Use
+`python scripts/run_phase9c_local_qa.py` for the serial local gate and
+`python scripts/verify_phase9c_staging_evidence.py <evidence.json>` for
+sanitized connected-staging evidence. Never substitute production resources.
+
+If repository source, migration, tests, or command registration disagrees with
+the handoff, investigate and report the mismatch before changing behavior. The
+source-of-truth order is committed constraints, tests, service implementation,
+runtime configuration/command registration, project state, generated handoff,
+historical reports, then chat history.
+
 ## Commands
 
 ```bash
@@ -15,7 +43,7 @@ docker compose up -d --build   # Docker; mounts ./w2ebot.db as a volume
 - No tests, no linter, no build/typecheck step. Verify changes by tracing code paths and, when possible, running the bot. Do not invent a test command.
 - FFmpeg must be on PATH for voice/`listen` features.
 - Web API/dashboard serves on port `8081`, launched as a background task in `on_ready`.
-- Required `.env`: `DISCORD_TOKEN`, `GEMINI_API_KEY`, `ALLOWED_SERVER_ID` (default `887968847842402355`), `BOT_PREFIX` (default `w!`). Optional: `DASHBOARD_TOKEN`, `ALLOWED_ORIGINS`.
+- Required `.env`: `DISCORD_TOKEN`, `GEMINI_API_KEY`, `ALLOWED_SERVER_ID` (default `887968847842402355`), `BOT_PREFIX` (default `w!`). The Phase 9A dashboard additionally requires HTTPS OAuth, session-hash, internal-signing, and IP-hash key configuration. Raw key material must never be committed.
 
 ## Where code goes
 
@@ -36,7 +64,8 @@ docker compose up -d --build   # Docker; mounts ./w2ebot.db as a volume
 - **Treasury (`treasury.json`, `{'balance': N}`)** is a JSON blob — use `add_treasury(amount)` to credit it. Not as atomic as `DiscordStat.coins`, but only fees flow in (low risk). `/kas` reads it.
 - **Minigame tracking:** use `record_game(uid, game, won)` (in `core.py`) after every minigame result. Stores `users[uid]['games'][game] = {plays, wins, losses}`. Games tracked: `slot`, `blackjack`, `cf`, `rps`, `crash`, `tebak`, `gacha`, `box`, `hunt`. Exposed via `/api/user/{id}` as `games` + `top_games`.
 - **Announcements:** always resolve target channel via `get_announce_channel(guild, category)`. Don't re-implement channel search. Categories: `market`, `levelup`, `birthday`, `boss`, `booster`, `binomo`.
-- **Web API write routes** (`POST /api/config`, `/api/announce-config`, `/api/broadcast`, `/api/user/{id}/coins|xp|give-item|reset-cooldown|persona|birthday|bg|divorce|bounty|reset-weekly|reset-quest`, `/api/boss/spawn`, `/api/announce`) guard with `require_token(request)` (fail-closed when `DASHBOARD_TOKEN` unset). Read routes (`/api/leaderboard`, `/api/user/{id}`, `/api/market`, `/api/treasury`, `/api/boss`, `/api/economy/stats`, `/api/economy/level-distribution`, `/api/marriages`, `/api/stats/summary`, `/api/bot/stats`) are open; `/api/audit` is token-gated. All handlers live in `core.py` and are registered in `start_web_server()`. Coin/XP write routes go through the atomic helpers (`adjust_coins`/`add_xp`); never add a raw coin write. Every write route calls `write_audit(...)` → `AuditLog` table. Full contract in `API.md`.
+- **Dashboard API safety:** `GET /healthz` is the only public data route. Legacy `/api/*` reads and writes are unconditional `410` tombstones. Sensitive reads are available only through strict signed `/internal/phase9a/*` routes after current session, Discord membership, and permission validation. Browser code must call authenticated Next.js proxies and must never call aiohttp directly. Security mutations use `DashboardControlledOperation` plus append-only Phase 9A audits; never restore `DASHBOARD_TOKEN` access or add arbitrary internal path forwarding. Full contract in `API.md`.
+- **Phase 9B notification authority:** guild-wide notifications use an authoritative domain outbox or a deterministic `DashboardNotificationDelivery` reservation before Discord delivery. Only the centralized worker sends. Route changes affect future reservations only. A send with uncertain acceptance becomes `REVIEW_REQUIRED` and is never retried automatically. Test deliveries remain separate from real-event history.
 - New tables: add `CREATE TABLE IF NOT EXISTS` to `_init_db()`. New imports: add to `requirements.txt`.
 - Embed colors: info `0x5865F2`, success `0x57F287`, warning `0xFEE75C`, error `0xED4245`, premium `0xFFD700`.
 

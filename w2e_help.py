@@ -63,22 +63,37 @@ def get_help_embed(category: str, guild=None) -> discord.Embed:
             (f"`{BOT_PREFIX}inventory`", "Lihat isi inventory kamu."),
             (f"`{BOT_PREFIX}sell <item>`", "Jual item dengan harga 50%."),
             (f"`{BOT_PREFIX}buyrig <tier> <koin>`", "Beli mining rig untuk koin tertentu."),
+            (f"`{BOT_PREFIX}mining <aksi>`", "Mining V1: status, katalog, rig, maintenance, target, klaim, dan riwayat."),
             (f"`{BOT_PREFIX}moverig <tier> <dari> <ke>`", "Pindahkan rig ke koin lain."),
             (f"`{BOT_PREFIX}miner`", "Lihat status mining rig kamu."),
             (f"`{BOT_PREFIX}market`", "Lihat harga kripto saat ini."),
             (f"`{BOT_PREFIX}portfolio`", "Lihat kepemilikan dan nilai kripto kamu."),
-            (f"`{BOT_PREFIX}buycoin <symbol> <jumlah>`", "Beli kripto pakai koin (fee 2%, dukung `all`)."),
-            (f"`{BOT_PREFIX}sellcoin <symbol> <jumlah>`", "Jual kripto jadi koin (fee 2%, dukung `all`)."),
+            (f"`{BOT_PREFIX}buycoin <symbol> <jumlah>`", "Beli kripto; Phase 6 memakai ECY, unit hingga 8 desimal, fee 2%, dan `all`."),
+            (f"`{BOT_PREFIX}sellcoin <symbol> <jumlah>`", "Jual kripto; Phase 6 memakai ECY, profit/cost basis, fee 2%, dan `all`."),
             (f"`{BOT_PREFIX}tebak <1-10>`", "Tebak angka, benar dapat 100 koin."),
             (f"`{BOT_PREFIX}cf <head/tail> <bet>`", "Coinflip - tebak sisi koin."),
             (f"`{BOT_PREFIX}blackjack <bet>`", "Main blackjack lawan bandar."),
             (f"`{BOT_PREFIX}crash <bet>`", "Judi grafik crash."),
+            (f"`{BOT_PREFIX}eternal-options <aksi>`", "Options ECY: open, positions, history, details (Phase 8)."),
             (f"`{BOT_PREFIX}attack`", "Serang Boss Raid yang sedang aktif."),
             (f"`{BOT_PREFIX}buypet <slime/wolf/dragon>`", "Beli pet untuk bonus damage Boss Raid."),
             (f"`{BOT_PREFIX}gacha` & `{BOT_PREFIX}box`", "Gacha item acak atau buka loot box."),
         ]
         for cmd, desc in commands:
             embed.add_field(name=cmd, value=desc, inline=False)
+        embed.add_field(
+            name="Economy V1 Phase 1-5",
+            value=(
+                "Fondasi wallet ETM/ECY, ledger, treasury, dan migration dry-run telah tersedia "
+                "namun **belum diaktifkan untuk production**. Phase 2 menyiapkan profile RPG, "
+                "Daily/Weekly, Work, transfer ETM, dan Eternal Exchange. Phase 3 menyiapkan starter, "
+                "equipment, enhancement, pet, Hunt, Dungeon, Boss, dan Quest. Phase 4 menyiapkan "
+                "Eternal Marketplace dengan escrow dan settlement ETM. Phase 5 menyiapkan Casino ECY "
+                "dengan bankroll dan exposure reservation. Command legacy tetap berjalan "
+                "selama feature flag nonaktif; seluruh flag Economy default-nya `false`."
+            ),
+            inline=False,
+        )
         embed.set_footer(text=f"Gunakan prefix `{BOT_PREFIX}` sebelum menulis command.")
         return embed
 
@@ -283,7 +298,7 @@ def get_help_embed(category: str, guild=None) -> discord.Embed:
             (f"`{BOT_PREFIX}find @user`", "Cari member di voice channel mana + berapa lama."),
             (f"`{BOT_PREFIX}ping`", "Cek latency bot."),
             (f"`{BOT_PREFIX}poll`", "Buat voting untuk komunitas."),
-            (f"`{BOT_PREFIX}giveaway`", "Buat giveaway dengan timer (Admin only)."),
+            (f"`{BOT_PREFIX}giveaway <aksi>`", "Giveaway V1: create, enter, end, cancel, redraw, list, info, status."),
             (f"`{BOT_PREFIX}remindme <menit> <pesan>`", "Set reminder/alarm."),
             (f"`{BOT_PREFIX}birthday <DD-MM>`", "Daftarkan ulang tahun kamu."),
             (f"`{BOT_PREFIX}bg <url>`", "Ganti background profile card kamu."),

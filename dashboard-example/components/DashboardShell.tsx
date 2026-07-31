@@ -7,12 +7,9 @@
 
 import { useState } from "react";
 import { Icon } from "./Icon";
-import { AdminPanel } from "./AdminPanel";
-import { AnnounceSettings } from "./AnnounceSettings";
 import { Analytics } from "./Analytics";
 import { AuditLog } from "./AuditLog";
 import { UserModal } from "./UserModal";
-import { useToast } from "./Toast";
 import type {
   SummaryResponse,
   LeaderboardResponse,
@@ -21,6 +18,7 @@ import type {
   AnnounceConfig,
   MarketData,
   LevelDistribution,
+  MarketplaceV1Status,
 } from "@/lib/botApi";
 
 type SectionId = "overview" | "stats" | "analytics" | "players" | "economy" | "server" | "audit";
@@ -57,6 +55,8 @@ export function DashboardShell({
   announceConfig,
   market,
   levels,
+  marketplace,
+  casino,
   loadError,
 }: {
   summary: SummaryResponse | null;
@@ -66,6 +66,8 @@ export function DashboardShell({
   announceConfig: AnnounceConfig | null;
   market: MarketData | null;
   levels: LevelDistribution | null;
+  marketplace: MarketplaceV1Status | null;
+  casino: import("@/lib/botApi").CasinoV1Status | null;
   loadError: string | null;
 }) {
   const [section, setSection] = useState<SectionId>("overview");
@@ -176,7 +178,7 @@ export function DashboardShell({
           <div key={section} className="section-anim">
             {section === "overview" && <Overview summary={summary} />}
             {section === "stats" && <BotStatsView stats={botStats} loadError={loadError} />}
-            {section === "analytics" && <Analytics market={market} levels={levels} />}
+            {section === "analytics" && <Analytics market={market} levels={levels} marketplace={marketplace} casino={casino} />}
             {section === "players" && <Players leaderboard={leaderboard} loadError={loadError} onSelectUser={setSelectedUserId} />}
             {section === "economy" && <Economy summary={summary} />}
             {section === "server" && (
@@ -342,7 +344,25 @@ function Economy({ summary }: { summary: SummaryResponse | null }) {
           />
         </section>
       )}
-      <AdminPanel only="user" />
+      {summary?.v1_supply && (
+        <section className="card card-pad stack" aria-label="Economy V1 Phase 1 supply">
+          <h3>Economy V1 Phase 1 {summary.v1_enabled ? "(Staging Aktif)" : "(Belum Diaktifkan)"}</h3>
+          {(["ETM", "ECY"] as const).map((currency) => {
+            const supply = summary.v1_supply![currency];
+            return (
+              <div key={currency} className="stat-grid">
+                <StatCard icon="coins" label={`${currency} Net Issued`} value={nf(supply.net_issued_supply)} />
+                <StatCard icon="coins" label={`${currency} Circulating`} value={nf(supply.circulating_supply)} />
+                <StatCard icon="vault" label={`${currency} Locked Reserve`} value={nf(supply.non_circulating_supply)} />
+                <StatCard icon="vault" label={`${currency} Burned`} value={nf(supply.burned_supply)} />
+              </div>
+            );
+          })}
+          <span className={summary.v1_supply.ledger_zero_sum ? "badge badge-on" : "badge badge-off"}>
+            Ledger {summary.v1_supply.ledger_zero_sum ? "seimbang" : "tidak seimbang"}
+          </span>
+        </section>
+      )}
     </>
   );
 }
@@ -355,58 +375,13 @@ function ServerAdmin({
   announceConfig: AnnounceConfig | null;
 }) {
   return (
-    <div className="stack">
-      <AnnounceSettings channels={channels} config={announceConfig} />
-      <AdminPanel only="server" />
-      <ResetAllPlayers />
-    </div>
-  );
-}
-
-function ResetAllPlayers() {
-  const toast = useToast();
-  const [confirm, setConfirm] = useState(false);
-  const [busy, setBusy] = useState(false);
-
-  async function doReset() {
-    setBusy(true);
-    try {
-      const res = await fetch("/api/admin/reset-all-players", { method: "POST" });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || `Gagal (${res.status})`);
-      toast("success", `Reset berhasil: ${data.players_reset} pemain direset.`);
-      setConfirm(false);
-    } catch (e: any) {
-      toast("error", e.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <section className="card card-pad stack" aria-labelledby="reset-all">
-      <h3 id="reset-all">Reset All Players</h3>
-      <p className="helper" style={{ margin: 0 }}>
-        Reset semua data pemain (koin, XP, level, items, crypto, rigs, achievements, marriage, dll)
-        ke kondisi awal. Settingan bot (announce channels, config, treasury, market) TIDAK terpengaruh.
-      </p>
-      {!confirm ? (
-        <button className="btn btn-danger" onClick={() => setConfirm(true)}>
-          <Icon name="close" size={14} />
-          Reset Semua Pemain
-        </button>
-      ) : (
-        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <button className="btn btn-danger" disabled={busy} onClick={doReset}>
-            {busy ? <span className="spinner" /> : <Icon name="close" size={14} />}
-            Konfirmasi Reset All
-          </button>
-          <button className="btn btn-ghost" onClick={() => setConfirm(false)}>
-            Batal
-          </button>
-          <span className="error-text" style={{ fontSize: 12 }}>DESTRUKTIF — tidak bisa di-undo!</span>
-        </div>
-      )}
+    <section className="card card-pad stack">
+      <h3>Konfigurasi Pengumuman (Baca Saja)</h3>
+      <p className="muted">Phase 9A menonaktifkan seluruh mutasi dashboard lama.</p>
+      <div className="stat-grid">
+        <StatCard icon="signal" label="Channel Tersedia" value={nf(channels.length)} />
+        <StatCard icon="activity" label="Rute Terkonfigurasi" value={nf(Object.values(announceConfig ?? {}).filter(Boolean).length)} />
+      </div>
     </section>
   );
 }

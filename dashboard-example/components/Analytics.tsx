@@ -17,7 +17,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
-import type { MarketData, LevelDistribution } from "@/lib/botApi";
+import type { CasinoV1Status, MarketData, LevelDistribution, MarketplaceV1Status } from "@/lib/botApi";
 
 function useReducedMotion() {
   const [reduced, setReduced] = useState(false);
@@ -42,9 +42,13 @@ const tooltipStyle = {
 export function Analytics({
   market,
   levels,
+  marketplace,
+  casino,
 }: {
   market: MarketData | null;
   levels: LevelDistribution | null;
+  marketplace: MarketplaceV1Status | null;
+  casino: CasinoV1Status | null;
 }) {
   const reduced = useReducedMotion();
   const symbols = market ? Object.keys(market.coins) : [];
@@ -57,6 +61,26 @@ export function Analytics({
 
   return (
     <div className="stack">
+      <section className="card card-pad" aria-labelledby="marketplace-v1-status">
+        <h3 id="marketplace-v1-status" style={{ marginBottom: 12 }}>Eternal Marketplace</h3>
+        <div className="faint">
+          {!marketplace?.enabled
+            ? "Phase 4 nonaktif."
+            : !marketplace.schema_ready
+              ? "Phase 4 aktif tetapi schema belum siap."
+              : `Paused: ${marketplace.paused ? "Ya" : "Tidak"} | Listing unresolved: ${marketplace.unresolved ?? 0} | Purchase review: ${marketplace.purchase_reviews ?? 0}`}
+        </div>
+      </section>
+      <section className="card card-pad" aria-labelledby="casino-v1-status">
+        <h3 id="casino-v1-status" style={{ marginBottom: 12 }}>Casino V1</h3>
+        <div className="faint">
+          {!casino?.enabled
+            ? "Phase 5 nonaktif."
+            : !casino.schema_ready
+              ? "Phase 5 aktif tetapi migration 500 belum siap."
+              : `Bankroll: ${(casino.bankrollEcy ?? 0).toLocaleString()} ECY | Reserved: ${(casino.reservedLiabilityEcy ?? 0).toLocaleString()} ECY | Exposure: ${(casino.exposureCapEcy ?? 0).toLocaleString()} ECY | Review: ${casino.reviewRequired ?? 0}`}
+        </div>
+      </section>
       {/* Tren harga market */}
       <section className="card card-pad" aria-labelledby="chart-market">
         <div

@@ -1,17 +1,16 @@
-// app/api/admin/audit/route.ts
-//
-// Proxy aman untuk GET /api/audit (token-gated). Token disuntik di server;
-// browser cukup panggil /api/admin/audit.
+import { NextRequest, NextResponse } from "next/server";
+import { getDashboardSession } from "@/lib/dashboardAuth";
+import { internalRequest } from "@/lib/internalRequest";
 
-import { botGetToken } from "@/lib/botApi";
-import { NextResponse } from "next/server";
-
-export async function GET() {
-  // TODO: cek session admin di sini sebelum lanjut.
+export async function GET(request: NextRequest) {
+  const validated = await getDashboardSession("OPERATOR_AUDIT_READ");
+  if (!validated) return NextResponse.json({ error: "forbidden" }, { status: 403 });
   try {
-    const data = await botGetToken("/api/audit?limit=100");
-    return NextResponse.json(data);
-  } catch (e: any) {
-    return NextResponse.json({ error: e.message }, { status: 400 });
+    const limit = Math.max(1, Math.min(Number(request.nextUrl.searchParams.get("limit") ?? "100"), 100));
+    const data = await internalRequest("/internal/phase9b/audit/list", { limit },
+      validated.identity, "OPERATOR_AUDIT_READ");
+    return NextResponse.json(data, { headers: { "Cache-Control": "no-store" } });
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : "internal_error" }, { status: 403 });
   }
 }

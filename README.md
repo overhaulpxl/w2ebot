@@ -4,6 +4,187 @@ Single-guild Discord bot — **Gemini AI chat** + **RPG/economy** + **Pillow ima
 
 Built with **discord.py** (App Commands + Prefix via FakeInteraction), **aiosqlite**, and **Google Gemini 2.5 Flash**.
 
+## Economy V1 Phase 1
+
+Repository ini memiliki fondasi wallet ETM/ECY, double-entry ledger, treasury,
+whitelist admin, emergency controls, dan migration dry-run. Phase 1 bersifat
+**disabled by default** melalui `ECONOMY_V1_ENABLED=false` dan tidak mengalihkan
+command RPG legacy atau saldo production ke wallet baru.
+
+Dry-run yang aman:
+
+```bash
+python scripts/migrate_economy_v1.py --dry-run
+```
+
+Apply Phase 1 hanya diizinkan untuk database staging/temporary dengan target
+eksplisit. Script menolak apply terhadap `w2ebot.db` production. Semua seed
+Phase 1 tetap `0`; production cutover memerlukan persetujuan terpisah.
+
+## Economy V1 Phase 2 (Disabled)
+
+Phase 2 menambahkan profile RPG V1, reward Daily/Weekly, Work dengan stored
+reward roll, transfer ETM, Eternal Exchange ETM ke ECY, Energy regeneration,
+dan Activity Score rolling 30 hari. Fitur ini tetap nonaktif sampai kedua flag
+berikut diaktifkan secara eksplisit pada environment staging:
+
+```dotenv
+ECONOMY_V1_ENABLED=false
+ECONOMY_PHASE2_ENABLED=false
+```
+
+Saat salah satu flag `false`, `/profile`, `/daily`, `/weekly`, `/work`, dan
+`/transfer` tetap memakai jalur legacy. `/exchange` tanpa amount hanya
+menampilkan rate, fee, level, limit, usage, dan availability tanpa membuat
+wallet, usage row, atau transaksi.
+
+Dry-run migration profile/cooldown Phase 2:
+
+```bash
+python scripts/migrate_economy_phase2.py
+```
+
+Apply hanya tersedia untuk database temporary/staging dengan
+`--allow-staging-apply`; target production `w2ebot.db` selalu ditolak.
+
+## Economy V1 Phase 3 RPG (Disabled)
+
+Phase 3 menambahkan katalog versioned, starter package, equipment instance,
+effective stats, enhancement, crafting, pet, Hunt, Dungeon, Boss Raid, Quest,
+dan recovery outcome acak. Seluruh jalur baru memerlukan tiga flag berikut:
+
+```dotenv
+ECONOMY_V1_ENABLED=false
+ECONOMY_PHASE2_ENABLED=false
+ECONOMY_PHASE3_ENABLED=false
+```
+
+Selama salah satu flag masih `false`, command lama tetap memakai penyimpanan
+legacy. Schema dan katalog Phase 3 tidak diterapkan oleh import/startup bot.
+Migrasi hanya boleh dijalankan terhadap database temporary atau staging:
+
+```bash
+python scripts/migrate_economy_phase3.py --database staging-phase3.db
+python scripts/migrate_economy_phase3.py --database staging-phase3.db --apply
+```
+
+CLI menolak target production `w2ebot.db`. Katalog tidak di-seed ke production,
+Boss tidak spawn otomatis, dan raid `AWAITING_FUNDS` tidak menerima mint diam-diam.
+
+### Harness Staging Phase 3
+
+Runtime memakai satu `DATABASE_PATH` yang di-resolve menjadi path absolut. Default
+production tetap `./w2ebot.db`. Saat ketiga flag economy aktif, startup hanya
+diizinkan jika `STAGING_MODE=true`, database bukan production, file database dapat
+dibuka, `STAGING_GUILD_ID` valid, dan `DISCORD_TOKEN` tersedia. Command disinkronkan
+hanya ke guild staging tersebut. Gunakan `.env.staging.example` sebagai template;
+file staging berisi token tidak boleh di-commit.
+
+Backup staging menggunakan SQLite backup API dan diverifikasi secara logical melalui
+schema object, row count, checksum data deterministik, `integrity_check`, dan
+`foreign_key_check`. Backup logical tidak diklaim byte-identik dengan sumber.
+
+Workflow lokal:
+
+```powershell
+python scripts/setup_phase3_staging.py
+```
+
+Lalu edit hanya `.env.staging` untuk mengisi `STAGING_GUILD_ID` dan
+`DISCORD_TOKEN`, kemudian jalankan:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_phase3_staging.ps1
+```
+
+Hentikan bot dengan `Ctrl+C`. Verifikasi database yang dipakai melalui
+`python scripts/setup_phase3_staging.py --verify`; output harus menunjuk ke
+`staging/w2ebot-staging.db`, bukan `w2ebot.db`.
+
+Hardening Phase 3 memakai migrasi additive yang mencatat checksum schema. Outcome
+acak disimpan sekali di `RpgOperation.outcomeJson`; receipt settlement baru ditulis
+sekali ke `resultJson` saat operasi menjadi `COMMITTED` atau `VOID`. Recovery memakai
+outcome yang sama dan tidak melakukan reroll. Starter package dilacak oleh satu
+`RpgStarterGrant`, sedangkan item/pet/state legacy hanya dikarantina sebagai
+`LEGACY_BOUND` di `RpgLegacyAsset` dan tidak memberi combat power V1.
+
+## Economy V1 Phase 4 Marketplace (Disabled)
+
+Phase 4 menambahkan Eternal Marketplace ETM untuk equipment dan stack tradeable.
+Listing memakai escrow atomik, purchase memakai pasangan reservasi
+`EconomyTransaction` + `MarketplaceSale`, dan return selalu memakai pemilik escrow
+authoritative. Fitur ini tetap nonaktif secara default:
+
+```dotenv
+ECONOMY_PHASE4_ENABLED=false
+```
+
+Phase 3 tetap dapat berjalan tanpa migrasi 400. Marketplace baru tersedia jika
+keempat flag economy aktif pada staging dan marker, checksum, kolom stack, indeks,
+serta trigger Phase 4 terverifikasi. Migrasi tidak berjalan saat startup.
+
+```powershell
+python scripts/migrate_economy_phase4.py dry-run staging/w2ebot-staging.db
+python scripts/migrate_economy_phase4.py apply staging/w2ebot-staging.db --backup staging/pre-phase4.backup.db
+python scripts/migrate_economy_phase4.py verify staging/w2ebot-staging.db
+python scripts/migrate_economy_phase4.py reconcile staging/w2ebot-staging.db
+python scripts/migrate_economy_phase4.py --restore staging/pre-phase4.backup.db --database staging/w2ebot-staging.db --confirm-restore-staging
+```
+
+Restore hanya tersedia untuk staging. Tool memvalidasi manifest, checksum migration
+dan catalog, `integrity_check`, serta `foreign_key_check`; safety backup dibuat
+sebelum target diganti secara atomik.
+
+Launcher `scripts/run_phase4_staging.py` hanya membaca `.env.staging`, menolak
+database production, mewajibkan keempat flag staging, dan memverifikasi schema
+sebelum memulai bot.
+
+## Economy V1 Phase 5 Casino (Disabled)
+
+Casino V1 menggunakan ECY, ledger Economy V1, bankroll `ECY_CASINO`, dan
+reservasi gross liability. Default `ECONOMY_PHASE5_ENABLED=false`; migration
+500 tidak pernah berjalan saat startup dan production belum disetujui.
+
+```powershell
+python scripts/migrate_economy_phase5.py --mode dry-run --database staging/casino.db
+python scripts/migrate_economy_phase5.py --mode apply --database staging/casino.db --backup staging/pre-phase5.db
+python scripts/migrate_economy_phase5.py --mode verify --database staging/casino.db
+python scripts/migrate_economy_phase5.py --mode reconcile --database staging/casino.db
+python scripts/simulate_phase5_casino.py
+```
+
+Command Casino lama tetap memakai wallet legacy selama flag Phase 5 false. Saat
+flag true, schema, seed, pause state, wallet, dan exposure harus lolos guard;
+kegagalan tidak fallback ke saldo legacy.
+
+## Economy V1 Phase 6 Crypto (Disabled)
+
+Crypto V1 memakai ECY, satu seri harga global, unit aset integer 1e-8, fee
+beli/jual 2%, cost basis, profit terealisasi, dan `ECY_MARKET` guild-scoped.
+Default `ECONOMY_PHASE6_ENABLED=false`; migration eksplisit `600 / phase6-crypto`
+serta seed Market Reserve staging wajib tersedia sebelum command V1 dapat dipakai.
+Startup tidak pernah menjalankan migration atau seed. Mining dan Binomo tetap
+memakai storage legacy.
+
+## Economy V1 Phase 7 Mining (Disabled)
+
+Mining V1 memakai ECY untuk pembelian dan maintenance, menghasilkan unit aset
+Crypto V1, dan menyimpan accrual, carry pecahan, klaim, serta asset ledger secara
+atomik. Default `ECONOMY_PHASE7_ENABLED=false`; migration eksplisit
+`700 / phase7-mining` memerlukan schema profil RPG Phase 3 dan Crypto Phase 6.
+
+### Phase 8 Giveaway dan Eternal Options
+
+Default `ECONOMY_PHASE8_ENABLED=false`. Migration eksplisit
+`800 / phase8-giveaway-options` memerlukan capability Phase 5 dan Phase 6 dan tidak
+pernah dijalankan otomatis. Giveaway V1 memakai tiket ECY, capped Activity Score,
+voice block 30 menit, secure draw, dan structured redraw evidence. Eternal Options
+memakai exact global Crypto price history serta shared Casino exposure. Gunakan
+`scripts/migrate_economy_phase8.py` dan `scripts/simulate_phase8.py` hanya pada
+database staging/non-production.
+Startup tidak menjalankan migration atau seed. Selama flag false, `/buyrig`,
+`/miner`, `/moverig`, dan prefix kompatibilitas tetap memakai perilaku legacy.
+
 ---
 
 ## Quick Start
@@ -37,8 +218,15 @@ GEMINI_API_KEY=
 ALLOWED_SERVER_ID=887968847842402355
 BOT_PREFIX=w!
 
-# Optional — Web API & Dashboard
-DASHBOARD_TOKEN=              # Auth token for write endpoints. Empty = write disabled (fail closed).
+# Phase 9A Web API & Dashboard (server-side only)
+DASHBOARD_PUBLIC_URL=
+DASHBOARD_DISCORD_CLIENT_ID=
+DASHBOARD_DISCORD_CLIENT_SECRET=
+DASHBOARD_INTERNAL_KEY_ID=
+DASHBOARD_INTERNAL_SIGNING_KEY=
+DASHBOARD_SESSION_KEY_ID=
+DASHBOARD_SESSION_HASH_KEY=
+DASHBOARD_IP_HASH_KEY=
 ALLOWED_ORIGINS=              # Comma-separated CORS whitelist. Empty = allow all (dev only).
 AI_AUTO_REPLY_CHANNEL_ID=0    # Channel where bot auto-replies without prefix. 0 = disabled.
 ```
@@ -124,9 +312,19 @@ Boss spawns hourly (20% chance) or via admin API. Pets add bonus damage.
 
 ## Web API & Dashboard
 
-On startup the bot launches an HTTP server on port **8081**. Full endpoint contract with curl examples lives in **[`API.md`](API.md)**.
+On startup the bot launches aiohttp on port **8081**. Phase 9A makes
+`GET /healthz` the only public data endpoint. Every legacy `/api/*` read and
+write below is retained only as an unconditional `410` tombstone; the tables
+describe the isolated legacy surface, not callable public functionality.
 
-### Read endpoints (open, no token)
+The included Next.js dashboard owns Discord OAuth2 with PKCE and signs every
+backend request with a short-lived HMAC envelope. Next.js and aiohttp
+independently validate the current session, guild membership, and permission.
+Sensitive data is available only through strict signed internal routes. See
+**[`API.md`](API.md)** and
+**[`docs/PHASE9A_BACKEND_SAFETY_PRD.md`](docs/PHASE9A_BACKEND_SAFETY_PRD.md)**.
+
+### Disabled legacy read endpoints
 | Endpoint | Purpose |
 |---|---|
 | `GET /api/server` | Guild info (name, members, channels, roles, boosts) |
@@ -145,7 +343,7 @@ On startup the bot launches an HTTP server on port **8081**. Full endpoint contr
 | `GET /api/config` | Raw config.json |
 | `GET /api/announce-config` | Announcement channel mapping |
 
-### Write endpoints (require `X-Auth-Token`)
+### Disabled legacy write endpoints
 | Endpoint | Purpose |
 |---|---|
 | `POST /api/user/{id}/coins` | Adjust or set coins |
@@ -166,7 +364,9 @@ On startup the bot launches an HTTP server on port **8081**. Full endpoint contr
 | `POST /api/config` | Overwrite config.json |
 | `GET /api/audit` | Audit log of all admin writes (token-gated) |
 
-Every write action is logged to the `AuditLog` table with timestamp, action, target, and detail.
+These legacy operations are inaccessible. Phase 9A security-administration
+mutations use atomic `DashboardControlledOperation` receipts and append-only
+`DashboardOperatorAudit` records.
 
 ### Announcement Channels
 
@@ -176,12 +376,13 @@ Every write action is logged to the `AuditLog` table with timestamp, action, tar
 
 ```
 Browser (external dashboard)
-   └─> Your backend (keeps DASHBOARD_TOKEN secret)
-          └─> https://api.way2eternal.com/api/...
+   └─> Authenticated Next.js server
+          └─> signed /internal/phase9a/* request
                  └─> W2E bot :8081
 ```
 
-Never expose `DASHBOARD_TOKEN` to the browser. A Next.js example dashboard is included in `dashboard-example/`.
+Legacy `DASHBOARD_TOKEN` cannot re-enable disabled routes. Session and signing
+keys remain server-side and are never exposed to browser JavaScript.
 
 ---
 
@@ -191,8 +392,8 @@ A ready-to-use **Next.js 14 App Router** admin dashboard with:
 - Liquid glass UI (dark theme, glassmorphism, animated background blobs)
 - CRM-style sidebar navigation (Ringkasan, Statistik Bot, Analitik, Pemain, Ekonomi, Server & Admin, Audit Log)
 - Charts (recharts): market price trends + level distribution
-- User detail page (`/user/[id]`): full profile + top 3 minigame + admin controls
-- All write actions proxied through Next.js Route Handlers (token stays server-side)
+- User detail page (`/user/[id]`): authenticated, read-only profile
+- Security administration uses CSRF, controlled operations, and append-only audit
 - Zero external CSS frameworks (pure CSS design tokens)
 
 Setup: see `dashboard-example/README.md`.
@@ -261,3 +462,10 @@ All significant actions are logged to console with tags:
 ---
 
 *Copyright © Way 2 Eternal Community.*
+
+## Phase 9B Dashboard Economy
+
+Phase 9B menambahkan read model Economy yang terautentikasi, routing notifikasi durable, kontrol
+pause/resume terbatas, dan reviewed recovery allowlist. Migrasi `910 / phase9b-dashboard-notification-routing`
+bersifat manual dan tidak dijalankan saat startup. Dashboard memerlukan capability Phase 9A dan 9B;
+production serta connected Discord/OAuth staging tetap nonaktif dan pending.

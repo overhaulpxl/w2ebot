@@ -17,8 +17,46 @@ import re
 import hmac
 import hashlib
 import unicodedata
+from contextlib import asynccontextmanager
 
 import math
+
+from runtime_config import (
+    DATABASE_PATH_STRING, STAGING_MODE, STARTUP_CONFIGURATION, command_sync_guild_id,
+    DASHBOARD_PUBLIC_URL, DASHBOARD_INTERNAL_KEY_ID, DASHBOARD_INTERNAL_SIGNING_KEY,
+    DASHBOARD_SESSION_KEY_ID, DASHBOARD_SESSION_HASH_KEY,
+)
+
+from economy.database import ensure_phase1_schema
+from economy.constants import (
+    ECONOMY_PHASE2_ENABLED, ECONOMY_PHASE3_ENABLED, ECONOMY_PHASE4_ENABLED, ECONOMY_PHASE5_ENABLED,
+    ECONOMY_PHASE6_ENABLED, ECONOMY_V1_ENABLED,
+    ECONOMY_PHASE7_ENABLED, ECONOMY_PHASE8_ENABLED,
+)
+from economy.profile import get_profile_snapshot
+from economy.treasury import get_supply_report
+from economy.dashboard_auth import (
+    consume_csrf, create_oauth_attempt, establish_session, has_permission, issue_csrf,
+    list_permissions, revoke_session, rotate_session, validate_session,
+)
+from economy.dashboard_operations import change_permission, revoke_dashboard_session
+from economy.dashboard_security import (
+    DashboardSecurityError, canonical_json, consume_internal_nonce, enforce_rate_limit,
+    envelope_from_headers, payload_hash, record_security_event, sha256_text,
+    verify_envelope_signature,
+)
+from economy.phase9a_schema import PHASE9A_SCHEMA_CHECKSUM, phase9a_capability
+from economy.phase9b_schema import PHASE9B_SCHEMA_CHECKSUM, NOTIFICATION_CATEGORIES, phase9b_capability
+from economy.dashboard_reporting import (
+    domain_metrics, flows_report, liabilities_report, overview_report, recovery_report, supply_report,
+)
+from economy.notification_routing import get_notification_route, list_notification_routes
+from economy.notification_delivery import reserve_delivery
+from economy.dashboard_economy_operations import controlled_feature_pause, controlled_route_update
+from economy.reporting_taxonomy import NOTIFICATION_EVENT_TYPES
+from economy.phase9b_recovery import (
+    RECOVERY_TARGETS, finalize_reviewed_recovery, reserve_reviewed_recovery,
+)
 
 try:
     from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance, ImageChops
@@ -28,7 +66,7 @@ except ImportError:
     logging.warning("Pillow not installed. Family tree/profile images will use text fallback.")
 
 
-DB_PATH = "w2ebot.db"
+DB_PATH = DATABASE_PATH_STRING
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -40,7 +78,8 @@ load_dotenv()
 
 DISCORD_API_KEY = os.getenv('DISCORD_TOKEN', 'MMM')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', 'MMM')
-ALLOWED_SERVER_ID = int(os.getenv('ALLOWED_SERVER_ID', '887968847842402355'))
+CONFIGURED_ALLOWED_SERVER_ID = int(os.getenv('ALLOWED_SERVER_ID', '887968847842402355'))
+ALLOWED_SERVER_ID = command_sync_guild_id(CONFIGURED_ALLOWED_SERVER_ID)
 BOT_PREFIX = os.getenv('BOT_PREFIX', 'w!')
 DASHBOARD_TOKEN = os.getenv('DASHBOARD_TOKEN', '')
 # Channel tempat bot auto-reply pakai AI tanpa perlu prefix. 0 = nonaktif.
@@ -60,6 +99,7 @@ intents.members = True
 client = discord.Client(intents=intents)
 tree = discord.app_commands.CommandTree(client)
 READY_STARTUP_CALLBACKS = []
+VOICE_STATE_CALLBACKS = []
 READY_TASKS = {}
 READY_ONCE_TASKS = set()
 TREE_SYNC_DONE = False
@@ -101,6 +141,11 @@ def register_ready_startup_task(callback):
     if callback not in READY_STARTUP_CALLBACKS:
         READY_STARTUP_CALLBACKS.append(callback)
 
+
+def register_voice_state_callback(callback):
+    if callback not in VOICE_STATE_CALLBACKS:
+        VOICE_STATE_CALLBACKS.append(callback)
+
 # Waktu start proses (untuk uptime di /api/bot/stats).
 BOT_START_TIME = datetime.utcnow()
 
@@ -137,7 +182,7 @@ import sqlite3
 import os
 
 def _init_db():
-    conn = sqlite3.connect('w2ebot.db')
+    conn = sqlite3.connect(DB_PATH)
     conn.execute("CREATE TABLE IF NOT EXISTS json_store (filename TEXT PRIMARY KEY, content TEXT)")
     conn.execute('''
         CREATE TABLE IF NOT EXISTS DiscordStat (
@@ -718,6 +763,9 @@ def _init_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_vouch_report_vouch ON VouchReport(guildId, vouchId, status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_scam_report_status ON scammerReports(guildId, status, reportedUserId)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_trust_moderation_status ON trustModerationStatus(guildId, status)")
+    # Economy V1 foundation creates only empty, additive tables. It does not
+    # migrate DiscordStat/json_store or enable Phase 1/2 wallet mutations.
+    ensure_phase1_schema(conn)
     conn.commit()
     conn.close()
 
@@ -1840,6 +1888,34 @@ def get_announce_channel(guild, category):
 
     return _find_fallback_channel(guild)
 
+
+async def reserve_phase9b_legacy_notification(guild, *, category, event_type, source_type,
+                                               source_key, payload):
+    """Return True when capability 910 owns routing, even without a configured route."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('PRAGMA foreign_keys=ON')
+        if not await phase9b_capability(db):
+            return False
+        await db.execute('BEGIN IMMEDIATE')
+        try:
+            await reserve_delivery(
+                db, guild_id=guild.id, delivery_kind='EVENT', source_type=source_type,
+                source_key=str(source_key), category=category, event_type=event_type, payload=payload,
+            )
+            await db.commit()
+        except DashboardSecurityError as exc:
+            await db.rollback()
+            if exc.code not in {'not_configured', 'forbidden'}:
+                raise
+            logging.info("Phase 9B notification skipped code=%s category=%s", exc.code, category)
+        return True
+
+
+async def phase9b_schema_ready():
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('PRAGMA foreign_keys=ON')
+        return await phase9b_capability(db)
+
 async def check_birthdays():
     await client.wait_until_ready()
     while not client.is_closed():
@@ -1850,7 +1926,7 @@ async def check_birthdays():
         for guild in client.guilds:
             announce_channel = get_announce_channel(guild, 'birthday')
 
-            if announce_channel:
+            if announce_channel or await phase9b_schema_ready():
                 for uid, date_str in bdays.items():
                     if date_str == today_str:
                         # Check if we already announced this year
@@ -1865,7 +1941,14 @@ async def check_birthdays():
                         name = user.display_name if user else f"User {uid}"
                         await adjust_coins(uid, 1000, name)
                         
-                        await announce_channel.send(f"🎉 **SELAMAT ULANG TAHUN!** 🎉\nHari ini adalah hari ulang tahun {user.mention if user else name}!\nSebagai hadiah, kamu mendapatkan **1000 Koin**! 🎁")
+                        content = f"🎉 **SELAMAT ULANG TAHUN!** 🎉\nHari ini adalah hari ulang tahun {user.mention if user else name}!\nSebagai hadiah, kamu mendapatkan **1000 Koin**! 🎁"
+                        routed = await reserve_phase9b_legacy_notification(
+                            guild, category='BIRTHDAY', event_type='BIRTHDAY', source_type='LEGACY_BIRTHDAY',
+                            source_key=f"{guild.id}:{uid}:{year}",
+                            payload={'content': content, 'userId': str(uid), 'year': year},
+                        )
+                        if not routed and announce_channel:
+                            await announce_channel.send(content)
                         
                         last_bday[key] = True
                         await save_json('last_bday.json', last_bday)
@@ -1957,14 +2040,21 @@ async def update_market_prices():
             logging.info(f"[MARKET] Event harga: {target_coin} {event_type}")
         
         # Broadcast event message
-        if event_message:
+        if event_message and not (ECONOMY_V1_ENABLED and ECONOMY_PHASE6_ENABLED):
             for guild in client.guilds:
-                ch = get_announce_channel(guild, 'market')
-                if ch:
-                    client.loop.create_task(ch.send(event_message))
+                routed = await reserve_phase9b_legacy_notification(
+                    guild, category='MARKET_CRYPTO', event_type='CRYPTO_MARKET_ALERT',
+                    source_type='LEGACY_MARKET_EVENT',
+                    source_key=f"{market['last_updated']}:{target_coin}:{hashlib.sha256(event_message.encode()).hexdigest()}",
+                    payload={'content': event_message, 'symbol': target_coin},
+                )
+                if not routed:
+                    ch = get_announce_channel(guild, 'market')
+                    if ch:
+                        client.loop.create_task(ch.send(event_message))
                             
         # Resolve Binomo Bets
-        binomo = await load_json(BINOMO_FILE)
+        binomo = {} if ECONOMY_PHASE8_ENABLED else await load_json(BINOMO_FILE)
         if binomo:
             results = []
             for uid, bet_data in list(binomo.items()):
@@ -1993,6 +2083,9 @@ async def update_market_prices():
             if results:
                 result_str = "🎰 **HASIL JUDI BINOMO 10 MENIT INI:** 🎰\n" + "\n".join(results)
                 for guild in client.guilds:
+                    if await phase9b_schema_ready():
+                        logging.info("Legacy Binomo notification is deprecated after migration 910.")
+                        continue
                     ch = get_announce_channel(guild, 'binomo')
                     if ch:
                         client.loop.create_task(ch.send(result_str))
@@ -2023,10 +2116,17 @@ async def voice_salary_loop():
                             await add_xp(uid, m.display_name, ECON_VC_XP_PER_10MIN)
                             stat_after = await get_discord_stat(uid)
 
-                            if stat_after['level'] > level_before and announce_channel:
-                                client.loop.create_task(
-                                    announce_channel.send(f"Selamat {m.mention}, kamu naik ke **Level {stat_after['level']}** dari Voice Channel!")
+                            if stat_after['level'] > level_before:
+                                content = f"Selamat {m.mention}, kamu naik ke **Level {stat_after['level']}** dari Voice Channel!"
+                                routed = await reserve_phase9b_legacy_notification(
+                                    guild, category='LEVEL_UP', event_type='LEVEL_UP',
+                                    source_type='LEGACY_LEVEL_UP',
+                                    source_key=f"{guild.id}:{m.id}:{stat_after['level']}",
+                                    payload={'content': content, 'userId': str(m.id),
+                                             'level': str(stat_after['level'])},
                                 )
+                                if not routed and announce_channel:
+                                    client.loop.create_task(announce_channel.send(content))
 
 async def boss_raid_loop():
     await client.wait_until_ready()
@@ -2045,14 +2145,30 @@ async def boss_raid_loop():
                 logging.info(f"[BOSS] Boss raid spawn: {boss_data['name']} HP {boss_data['hp']}")
                 # Cari channel pengumuman
                 for guild in client.guilds:
-                    ch = get_announce_channel(guild, 'boss')
-                    if ch:
-                        client.loop.create_task(
-                            ch.send(f"⚠️ **BOSS RAID EVENT DIMULAI!** ⚠️\n**{boss_data['name']}** telah muncul dengan {boss_data['hp']} HP!\nKetik `!attack` untuk menyerang! Yang berhasil membunuhnya mendapat hadiah 5000 Koin!")
-                        )
+                    content = (f"⚠️ **BOSS RAID EVENT DIMULAI!** ⚠️\n**{boss_data['name']}** telah muncul "
+                               f"dengan {boss_data['hp']} HP!\nKetik `!attack` untuk menyerang! Yang berhasil "
+                               "membunuhnya mendapat hadiah 5000 Koin!")
+                    hour = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0).isoformat()
+                    routed = await reserve_phase9b_legacy_notification(
+                        guild, category='BOSS', event_type='BOSS_STARTED', source_type='LEGACY_BOSS',
+                        source_key=f"{guild.id}:{hour}:{boss_data['name']}",
+                        payload={'content': content, 'bossName': boss_data['name']},
+                    )
+                    if not routed:
+                        ch = get_announce_channel(guild, 'boss')
+                        if ch:
+                            client.loop.create_task(ch.send(content))
                                 
 async def crypto_mining_loop():
     await client.wait_until_ready()
+    if ECONOMY_V1_ENABLED and ECONOMY_PHASE2_ENABLED and ECONOMY_PHASE7_ENABLED:
+        from economy.phase7_recovery import recover_phase7
+        while not client.is_closed():
+            result = await recover_phase7(DB_PATH)
+            if not result.get("ready"):
+                logging.warning("Phase 7 Mining recovery fail-closed: %s", result.get("code"))
+            await asyncio.sleep(3600)
+        return
     while not client.is_closed():
         await asyncio.sleep(3600) # Every 1 hour
         users = await load_json('users.json')
@@ -2108,16 +2224,54 @@ async def on_ready():
         public_trust_panel_loop.start()
     if not staff_operation_panel_loop.is_running():
         staff_operation_panel_loop.start()
+    runtime_guild_id = ALLOWED_SERVER_ID
+    if runtime_guild_id is None:
+        raise RuntimeError("Guild runtime belum dikonfigurasi.")
     # Single Server Lock
     for guild in client.guilds:
-        if guild.id != ALLOWED_SERVER_ID:
+        if guild.id != runtime_guild_id:
             logging.warning(f"Leaving unauthorized server: {guild.name}")
             await guild.leave()
 
-    tree.copy_global_to(guild=discord.Object(id=ALLOWED_SERVER_ID))
+    def collect_command_names(commands, prefix=""):
+        names = []
+        for command in commands:
+            qualified = f"{prefix} {command.name}".strip()
+            names.append(qualified)
+            if isinstance(command, discord.app_commands.Group):
+                names.extend(collect_command_names(command.commands, qualified))
+        return names
+
+    command_names = collect_command_names(tree.get_commands())
+    duplicate_names = sorted({name for name in command_names if command_names.count(name) > 1})
+    if duplicate_names:
+        logging.error("Duplicate command registration names=%s", duplicate_names)
+        raise RuntimeError("Duplicate command registration terdeteksi.")
+
+    sync_guild = discord.Object(id=runtime_guild_id)
+    tree.copy_global_to(guild=sync_guild)
     if not TREE_SYNC_DONE:
-        await tree.sync(guild=discord.Object(id=ALLOWED_SERVER_ID))
+        synced = await tree.sync(guild=sync_guild)
         TREE_SYNC_DONE = True
+        logging.info(
+            "Command sync completed staging_mode=%s guild_id=%s count=%s names=%s",
+            STAGING_MODE, runtime_guild_id, len(synced), sorted(command.name for command in synced),
+        )
+    if STAGING_MODE:
+        from economy.catalog import catalog_hash
+        from economy.constants import RPG_PHASE3_CATALOG_VERSION
+        from economy.phase3_schema import PHASE3_HARDENING_CHECKSUM, PHASE3_HARDENING_VERSION
+        logging.info(
+            "Staging startup database_path=%s database_role=staging guild_id=%s "
+            "economy_flags=%s/%s/%s migration_version=%s migration_checksum=%s "
+            "catalog_version=%s catalog_checksum=%s registered_command_count=%s",
+            DB_PATH, runtime_guild_id,
+            STARTUP_CONFIGURATION.economy_v1_enabled,
+            STARTUP_CONFIGURATION.economy_phase2_enabled,
+            STARTUP_CONFIGURATION.economy_phase3_enabled,
+            PHASE3_HARDENING_VERSION, PHASE3_HARDENING_CHECKSUM,
+            RPG_PHASE3_CATALOG_VERSION, catalog_hash(), len(command_names),
+        )
     _schedule_ready_task("web_server", start_web_server, once=True)
     _schedule_ready_task("check_birthdays", check_birthdays)
     _schedule_ready_task("update_market_prices", update_market_prices)
@@ -2134,21 +2288,34 @@ async def on_ready():
 
 @web.middleware
 async def cors_middleware(request, handler):
-    response = await handler(request)
+    try:
+        response = await handler(request)
+    except DashboardSecurityError as exc:
+        response = web.json_response({'error': exc.code}, status=exc.status)
+    except web.HTTPException:
+        raise
+    except Exception:
+        logging.error("dashboard backend request failed route=%s", request.path, exc_info=True)
+        response = web.json_response({'error': 'internal_error'}, status=500)
     origin = request.headers.get('Origin')
-    if ALLOWED_ORIGINS:
-        if origin in ALLOWED_ORIGINS:
-            response.headers['Access-Control-Allow-Origin'] = origin
-            response.headers['Vary'] = 'Origin'
-    else:
-        # Dev mode: tidak ada whitelist, izinkan semua.
-        response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, X-Auth-Token'
+    if origin and origin in ALLOWED_ORIGINS and not request.path.startswith('/internal/'):
+        response.headers['Access-Control-Allow-Origin'] = origin
+        response.headers['Vary'] = 'Origin'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['Referrer-Policy'] = 'no-referrer'
+    response.headers['Cache-Control'] = 'no-store'
+    response.headers['Content-Security-Policy'] = "default-src 'none'; frame-ancestors 'none'"
     return response
 
 async def handle_options(request):
-    return web.Response(status=200)
+    origin = request.headers.get('Origin')
+    if not origin or origin not in ALLOWED_ORIGINS:
+        return web.json_response({'error': 'forbidden'}, status=403)
+    response = web.Response(status=204)
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    return response
 
 async def api_radar(request):
     data = []
@@ -2432,8 +2599,27 @@ async def api_user(request):
 
 
 async def api_market(request):
+    if ECONOMY_V1_ENABLED and ECONOMY_PHASE6_ENABLED:
+        from economy.crypto_market import market_snapshot
+        return web.json_response(await market_snapshot(DB_PATH))
     market = await load_json(MARKET_FILE)
     return web.json_response(market or {})
+
+
+async def api_crypto_v1_status(request):
+    """Status Crypto read-only; semua mutasi tetap melalui service transaksi."""
+    if not (ECONOMY_V1_ENABLED and ECONOMY_PHASE6_ENABLED):
+        return web.json_response({'enabled': False, 'schema_ready': False})
+    from economy.crypto import crypto_readiness
+    from economy.crypto_market import market_snapshot
+    readiness = await crypto_readiness(DB_PATH, ALLOWED_SERVER_ID)
+    snapshot = await market_snapshot(DB_PATH)
+    return web.json_response({
+        'enabled': True,
+        'schema_ready': bool(snapshot.get('available')),
+        'readiness': readiness,
+        'market': snapshot,
+    })
 
 
 async def api_treasury(request):
@@ -2443,6 +2629,9 @@ async def api_treasury(request):
 
 
 async def api_boss(request):
+    if ECONOMY_V1_ENABLED and ECONOMY_PHASE2_ENABLED and ECONOMY_PHASE3_ENABLED:
+        from economy.bosses import boss_status
+        return web.json_response(await boss_status(DB_PATH, ALLOWED_SERVER_ID) or {"active": False})
     boss = await load_json(BOSS_FILE)
     return web.json_response(boss or {'active': False})
 
@@ -2463,6 +2652,7 @@ async def api_economy_stats(request):
     top_holder = None
     if top:
         top_holder = {'id': str(top[0]), 'displayName': top[1] or _resolve_name(top[0]), 'coins': top[2]}
+    v1_supply = await get_supply_report(DB_PATH, ALLOWED_SERVER_ID)
     return web.json_response({
         'player_count': count,
         'total_coins_in_circulation': int(total_coins),
@@ -2470,7 +2660,195 @@ async def api_economy_stats(request):
         'richest_coins': int(max_coins),
         'top_holder': top_holder,
         'treasury_balance': treasury.get('balance', 0) if isinstance(treasury, dict) else 0,
+        'v1_enabled': os.getenv('ECONOMY_V1_ENABLED', 'false').strip().lower() in ('1', 'true', 'yes', 'on'),
+        'v1_supply': v1_supply,
     })
+
+
+async def api_economy_v1_supply(request):
+    return web.json_response({
+        'enabled': os.getenv('ECONOMY_V1_ENABLED', 'false').strip().lower() in ('1', 'true', 'yes', 'on'),
+        'guild_id': str(ALLOWED_SERVER_ID),
+        'supply': await get_supply_report(DB_PATH, ALLOWED_SERVER_ID),
+    })
+
+
+async def api_economy_v1_profile(request):
+    user_id = str(request.match_info.get('id', '')).strip()
+    if not user_id.isdigit():
+        return web.json_response({'error': 'invalid user id'}, status=400)
+    profile = await get_profile_snapshot(
+        DB_PATH, ALLOWED_SERVER_ID, user_id, create=False,
+    )
+    if profile is None:
+        return web.json_response({'error': 'v1 profile not found'}, status=404)
+    payload = {
+        'guild_id': profile.guild_id,
+        'user_id': profile.user_id,
+        'level': profile.level,
+        'xp': profile.xp,
+        'etm_balance': profile.etm_balance,
+        'ecy_balance': profile.ecy_balance,
+        'max_hp': profile.max_hp,
+        'current_hp': profile.current_hp,
+        'attack': profile.attack,
+        'defense': profile.defense,
+        'crit_bps': profile.crit_bps,
+        'energy': profile.energy,
+        'power_score': profile.power_score,
+        'activity_score_30d': profile.activity_score_30d,
+        'active_weapon_instance_id': profile.active_weapon_instance_id,
+        'active_armor_instance_id': profile.active_armor_instance_id,
+        'active_accessory_instance_id': profile.active_accessory_instance_id,
+        'active_pet_instance_id': profile.active_pet_instance_id,
+        'phase3_enabled': ECONOMY_V1_ENABLED and ECONOMY_PHASE2_ENABLED and ECONOMY_PHASE3_ENABLED,
+    }
+    if payload['phase3_enabled']:
+        from economy.equipment import get_active_loadout, get_effective_stats
+        effective = await get_effective_stats(DB_PATH, ALLOWED_SERVER_ID, user_id)
+        if effective:
+            payload.update({
+                'effective_max_hp': effective.max_hp,
+                'effective_attack': effective.attack,
+                'effective_defense': effective.defense,
+                'effective_crit_bps': effective.crit_bps,
+                'effective_power_score': effective.power_score,
+                'active_loadout': await get_active_loadout(DB_PATH, ALLOWED_SERVER_ID, user_id),
+            })
+    return web.json_response(payload)
+
+
+async def api_marketplace_v1_status(request):
+    if not (ECONOMY_V1_ENABLED and ECONOMY_PHASE2_ENABLED and
+            ECONOMY_PHASE3_ENABLED and ECONOMY_PHASE4_ENABLED):
+        return web.json_response({'enabled': False, 'schema_ready': False})
+    from economy.marketplace import marketplace_status
+    from economy.phase4_schema import phase4_schema_capability
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            ready = await phase4_schema_capability(db)
+        if not ready:
+            return web.json_response({'enabled': True, 'schema_ready': False})
+        payload = await marketplace_status(DB_PATH, ALLOWED_SERVER_ID)
+        return web.json_response({'enabled': True, 'schema_ready': True, **payload})
+    except Exception:
+        logging.error("api_marketplace_v1_status error", exc_info=True)
+        return web.json_response({'error': 'internal error'}, status=500)
+
+
+async def api_mining_v1_status(request):
+    """Status Mining read-only; tidak menyediakan jalur mutasi API."""
+    if not (ECONOMY_V1_ENABLED and ECONOMY_PHASE2_ENABLED and ECONOMY_PHASE7_ENABLED):
+        return web.json_response({'enabled': False, 'schema_ready': False})
+    from economy.mining import mining_readiness
+    try:
+        payload = await mining_readiness(DB_PATH, ALLOWED_SERVER_ID)
+        return web.json_response({
+            'enabled': True,
+            'schema_ready': payload.get('code') != 'schema_unavailable',
+            **payload,
+        })
+    except Exception:
+        logging.error("api_mining_v1_status error", exc_info=True)
+        return web.json_response({'error': 'internal error'}, status=500)
+
+
+async def api_casino_v1_status(request):
+    """Status Casino read-only; tidak menyediakan jalur mutasi API."""
+    if not (ECONOMY_V1_ENABLED and ECONOMY_PHASE2_ENABLED and ECONOMY_PHASE5_ENABLED):
+        return web.json_response({'enabled': False, 'schema_ready': False})
+    from economy.casino import casino_status
+    try:
+        payload = await casino_status(DB_PATH, ALLOWED_SERVER_ID)
+        return web.json_response({
+            'enabled': True,
+            'schema_ready': bool(payload.pop('schemaCapable', False)),
+            **payload,
+        })
+    except Exception:
+        logging.error("api_casino_v1_status error", exc_info=True)
+        return web.json_response({'error': 'internal error'}, status=500)
+
+
+async def api_phase8_status(request):
+    """Status Phase 8 read-only; tidak menyediakan mutasi Giveaway/Options."""
+    if not (ECONOMY_V1_ENABLED and ECONOMY_PHASE2_ENABLED and ECONOMY_PHASE5_ENABLED
+            and ECONOMY_PHASE6_ENABLED and ECONOMY_PHASE8_ENABLED):
+        return web.json_response({'enabled': False, 'schema_ready': False})
+    from economy.eternal_options import options_status
+    try:
+        payload = await options_status(DB_PATH, ALLOWED_SERVER_ID)
+        return web.json_response({'enabled': True,
+                                  'schema_ready': bool(payload.pop('schemaCapable', False)), **payload})
+    except Exception:
+        logging.error("api_phase8_status error", exc_info=True)
+        return web.json_response({'error': 'internal error'}, status=500)
+
+
+async def api_marketplace_v1_action(request):
+    if not require_token(request):
+        return web.json_response({'error': 'unauthorized'}, status=401)
+    if not (ECONOMY_V1_ENABLED and ECONOMY_PHASE2_ENABLED and
+            ECONOMY_PHASE3_ENABLED and ECONOMY_PHASE4_ENABLED):
+        return web.json_response({'error': 'marketplace disabled'}, status=409)
+    try:
+        data = await request.json()
+        action = str(data.get('action', '')).strip().lower()
+        actor_id = 'internal-api-principal'
+        reason = _audit_safe_text(data.get('reason'), 100) or 'internal_api'
+        from economy.marketplace import (
+            issue_internal_api_authorization, require_authorization,
+            set_marketplace_pause,
+        )
+        authorization = issue_internal_api_authorization(
+            actor_id=actor_id, guild_id=ALLOWED_SERVER_ID,
+            request_id=str(request.headers.get('X-Request-ID') or f'api:{id(request)}'),
+            verified_api_principal=True,
+        )
+        if action == 'reconcile':
+            from economy.phase4_recovery import recover_phase4_runtime
+            require_authorization(authorization, guild_id=ALLOWED_SERVER_ID, staff=True)
+            result = await recover_phase4_runtime(DB_PATH)
+        elif action in ('pause', 'resume'):
+            response = await set_marketplace_pause(
+                DB_PATH, guild_id=ALLOWED_SERVER_ID, paused=action == 'pause',
+                reason=reason, authorization=authorization,
+            )
+            result = {'ok': response.ok, 'code': response.code}
+        elif action == 'return':
+            from economy.marketplace import cancel_listing
+            listing_id = str(data.get('listing_id', '')).strip()
+            if not listing_id:
+                return web.json_response({'error': 'listing_id required'}, status=400)
+            response = await cancel_listing(
+                DB_PATH, guild_id=ALLOWED_SERVER_ID, listing_id=listing_id,
+                authorization=authorization, reason_code=reason,
+            )
+            result = {'ok': response.ok, 'code': response.code,
+                      'listing_id': response.listing_id}
+        elif action == 'user-state':
+            from economy.marketplace import set_marketplace_user_state
+            user_id = str(data.get('user_id', '')).strip()
+            state = str(data.get('status', '')).strip().upper()
+            if not user_id.isdigit():
+                return web.json_response({'error': 'invalid user_id'}, status=400)
+            response = await set_marketplace_user_state(
+                DB_PATH, guild_id=ALLOWED_SERVER_ID, user_id=user_id, status=state,
+                authorization=authorization, reason_code=reason,
+            )
+            result = {'ok': response.ok, 'code': response.code}
+        else:
+            return web.json_response({'error': 'unsupported action'}, status=400)
+        await write_audit(
+            'marketplace_internal_action', target_id=data.get('listing_id') or data.get('user_id'),
+            detail=f"action={action};result={result.get('code', 'ok')}", source='internal_api',
+        )
+        return web.json_response(result)
+    except (ValueError, json.JSONDecodeError):
+        return web.json_response({'error': 'invalid request'}, status=400)
+    except Exception:
+        logging.error("api_marketplace_v1_action error", exc_info=True)
+        return web.json_response({'error': 'internal error'}, status=500)
 
 
 async def api_marriages(request):
@@ -2627,6 +3005,22 @@ async def api_user_reset_cooldown(request):
 async def api_boss_spawn(request):
     if not require_token(request):
         return web.json_response({'error': 'unauthorized'}, status=401)
+    if ECONOMY_V1_ENABLED and ECONOMY_PHASE2_ENABLED and ECONOMY_PHASE3_ENABLED:
+        from economy.bosses import start_boss
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        try:
+            result = await start_boss(
+                DB_PATH, guild_id=ALLOWED_SERVER_ID, tier=body.get("tier", "normal"),
+                start_key=body.get("request_id") or request.headers.get("X-Request-ID") or os.urandom(8).hex(),
+                authorized=True,
+            )
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        await write_audit('boss-spawn-v1', result['raid_id'], result['tier'])
+        return web.json_response({'status': 'success', 'boss': result})
     boss_data = await load_json(BOSS_FILE)
     if boss_data.get('active', False):
         return web.json_response({'error': 'boss already active', 'boss': boss_data}, status=409)
@@ -2641,6 +3035,19 @@ async def api_boss_spawn(request):
                 ch.send(f"⚠️ **BOSS RAID EVENT DIMULAI!** ⚠️\n**{boss_data['name']}** telah muncul dengan {boss_data['hp']} HP!\nKetik `!attack` untuk menyerang! Yang berhasil membunuhnya mendapat hadiah 5000 Koin!")
             )
     return web.json_response({'status': 'success', 'boss': boss_data})
+
+
+async def api_boss_settle(request):
+    if not require_token(request):
+        return web.json_response({'error': 'unauthorized'}, status=401)
+    if not (ECONOMY_V1_ENABLED and ECONOMY_PHASE2_ENABLED and ECONOMY_PHASE3_ENABLED):
+        return web.json_response({'error': 'phase 3 disabled'}, status=409)
+    from economy.bosses import settle_boss
+    result = await settle_boss(DB_PATH, guild_id=ALLOWED_SERVER_ID, authorized=True)
+    return web.json_response({
+        'ok': result.ok, 'code': result.code, 'message': result.message,
+        'transaction_id': result.transaction_id, 'replayed': result.replayed,
+    }, status=200 if result.ok else 409)
 
 
 async def api_announce(request):
@@ -3124,59 +3531,701 @@ async def api_bot_stats(request):
     })
 
 
-async def start_web_server():
-    app = web.Application(middlewares=[cors_middleware])
+def _json_without_duplicates(raw):
+    def pairs(values):
+        result = {}
+        for key, value in values:
+            if key in result:
+                raise DashboardSecurityError('invalid_request', 400)
+            result[key] = value
+        return result
+    try:
+        value = json.loads(raw.decode('utf-8'), object_pairs_hook=pairs)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise DashboardSecurityError('invalid_request', 400)
+    if not isinstance(value, dict):
+        raise DashboardSecurityError('invalid_request', 400)
+    canonical_json(value)
+    return value
+
+
+async def _internal_payload(request):
+    if request.headers.get('Origin'):
+        raise DashboardSecurityError('forbidden', 403)
+    if request.content_type != 'application/json':
+        raise DashboardSecurityError('invalid_request', 415)
+    raw = await request.read()
+    if len(raw) > 65536:
+        raise DashboardSecurityError('invalid_request', 413)
+    return _json_without_duplicates(raw)
+
+
+def _assert_keys(payload, allowed, required=()):
+    if set(payload) - set(allowed) or any(key not in payload for key in required):
+        raise DashboardSecurityError('invalid_request', 400)
+
+
+async def _current_dashboard_member(guild_id, actor_id):
+    if str(guild_id) != str(ALLOWED_SERVER_ID):
+        return None, False
+    guild = client.get_guild(int(guild_id))
+    if guild is None:
+        return None, False
+    member = guild.get_member(int(actor_id))
+    return member, bool(member and member.guild_permissions.administrator)
+
+
+@asynccontextmanager
+async def _signed_internal(request, payload, *, permission='DASHBOARD_VIEW', session_required=True,
+                           rate_limit=120):
+    if not DASHBOARD_INTERNAL_SIGNING_KEY or not DASHBOARD_INTERNAL_KEY_ID:
+        raise DashboardSecurityError('capability_unavailable', 503)
+    envelope = envelope_from_headers(request.headers)
+    if envelope.key_id != DASHBOARD_INTERNAL_KEY_ID or envelope.guild_id != str(ALLOWED_SERVER_ID):
+        raise DashboardSecurityError('unauthenticated', 401)
+    verify_envelope_signature(
+        envelope, request.headers.get('X-W2E-Signature'), DASHBOARD_INTERNAL_SIGNING_KEY,
+        method=request.method, route=request.path, payload=payload,
+    )
+    db = await aiosqlite.connect(DB_PATH, isolation_level=None)
+    try:
+        await db.execute('PRAGMA foreign_keys=ON')
+        await db.execute('BEGIN IMMEDIATE')
+        if not await phase9a_capability(db):
+            raise DashboardSecurityError('capability_unavailable', 503)
+        expected_fingerprint = hashlib.sha256(DASHBOARD_INTERNAL_SIGNING_KEY.encode('utf-8')).hexdigest()
+        async with db.execute(
+            "SELECT fingerprintSha256 FROM DashboardSigningKeyVersion WHERE keyId=? "
+            "AND purpose='INTERNAL_REQUEST' AND status='ACTIVE'", (envelope.key_id,),
+        ) as cursor:
+            key_row = await cursor.fetchone()
+        if not key_row or not hmac.compare_digest(key_row[0], expected_fingerprint):
+            raise DashboardSecurityError('capability_unavailable', 503)
+        await consume_internal_nonce(db, envelope)
+        session = None
+        if session_required:
+            member, administrator = await _current_dashboard_member(envelope.guild_id, envelope.actor_id)
+            session = await validate_session(
+                db, token_hash=envelope.session_token_hash, required_permission=permission,
+                discord_member=member is not None, discord_administrator=administrator,
+                expected_version=envelope.session_version,
+            )
+            if session['guildId'] != envelope.guild_id or session['userId'] != envelope.actor_id:
+                raise DashboardSecurityError('unauthenticated', 401)
+            await enforce_rate_limit(
+                db, scope_hash=envelope.session_token_hash, route_group='internal',
+                limit=rate_limit, window_seconds=60,
+            )
+        yield db, envelope, session
+        await db.commit()
+    except DashboardSecurityError as exc:
+        try:
+            await db.rollback()
+            await db.execute('BEGIN IMMEDIATE')
+            await record_security_event(
+                db, event_type='INTERNAL_REQUEST_REJECTED', code=exc.code, route=request.path,
+                guild_id=getattr(envelope, 'guild_id', None), actor_id=getattr(envelope, 'actor_id', None),
+                request_id=getattr(envelope, 'request_id', None),
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+        raise
+    except Exception:
+        await db.rollback()
+        raise
+    finally:
+        await db.close()
+
+
+async def public_health(request):
+    return web.json_response({'status': 'ok'})
+
+
+async def dashboard_root(request):
+    if DASHBOARD_PUBLIC_URL.startswith('https://'):
+        raise web.HTTPTemporaryRedirect(f"{DASHBOARD_PUBLIC_URL}/login")
+    return web.json_response({'error': 'capability_unavailable'}, status=503)
+
+
+async def legacy_dashboard_read_disabled(request):
+    return web.json_response({'error': 'legacy_dashboard_read_disabled'}, status=410)
+
+
+async def legacy_dashboard_write_disabled(request):
+    return web.json_response({'error': 'legacy_dashboard_write_disabled'}, status=410)
+
+
+async def internal_oauth_start(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'stateHash', 'pkceChallenge', 'ipHash', 'returnPath'},
+                 {'stateHash', 'pkceChallenge', 'ipHash'})
+    async with _signed_internal(request, payload, session_required=False) as (db, envelope, _):
+        await enforce_rate_limit(db, scope_hash=str(payload['ipHash']), route_group='login',
+                                 limit=10, window_seconds=600)
+        attempt_id = await create_oauth_attempt(
+            db, state_hash=str(payload['stateHash']), pkce_challenge=str(payload['pkceChallenge']),
+            ip_hash=str(payload['ipHash']), return_path=str(payload.get('returnPath', '/')),
+        )
+        return web.json_response({'attemptId': attempt_id, 'expiresIn': 600})
+
+
+async def internal_session_establish(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'tokenHash', 'stateHash', 'pkceChallenge', 'ipHash'},
+                 {'tokenHash', 'stateHash', 'pkceChallenge', 'ipHash'})
+    async with _signed_internal(request, payload, session_required=False) as (db, envelope, _):
+        from economy.dashboard_auth import consume_oauth_attempt
+        attempt = await consume_oauth_attempt(db, state_hash=str(payload['stateHash']),
+                                              pkce_challenge=str(payload['pkceChallenge']))
+        if not hmac.compare_digest(str(attempt['ipHash']), str(payload['ipHash'])):
+            raise DashboardSecurityError('unauthenticated', 401)
+        await enforce_rate_limit(db, scope_hash=str(payload['ipHash']), route_group='callback',
+                                 limit=20, window_seconds=600)
+        member, administrator = await _current_dashboard_member(envelope.guild_id, envelope.actor_id)
+        if member is None:
+            raise DashboardSecurityError('forbidden', 403)
+        session_id = await establish_session(
+            db, guild_id=envelope.guild_id, user_id=envelope.actor_id,
+            token_hash=str(payload['tokenHash']), session_key_id=DASHBOARD_SESSION_KEY_ID,
+            discord_administrator=administrator,
+        )
+        return web.json_response({'sessionId': session_id, 'sessionVersion': 0})
+
+
+async def internal_session_validate(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, set())
+    async with _signed_internal(request, payload, session_required=False) as (db, envelope, _):
+        async with db.execute(
+            "SELECT guildId,userId FROM DashboardSession WHERE tokenHash=? AND status='ACTIVE'",
+            (envelope.session_token_hash,),
+        ) as cursor:
+            identity = await cursor.fetchone()
+        if not identity or identity[0] != envelope.guild_id:
+            raise DashboardSecurityError('unauthenticated', 401)
+        member, administrator = await _current_dashboard_member(identity[0], identity[1])
+        session = await validate_session(
+            db, token_hash=envelope.session_token_hash, required_permission='DASHBOARD_VIEW',
+            discord_member=member is not None, discord_administrator=administrator,
+            expected_version=envelope.session_version,
+        )
+        return web.json_response({'session': session})
+
+
+async def internal_csrf_issue(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'method', 'canonicalRoute', 'requestId'},
+                 {'method', 'canonicalRoute', 'requestId'})
+    async with _signed_internal(request, payload) as (db, _, session):
+        if not DASHBOARD_SESSION_HASH_KEY:
+            raise DashboardSecurityError('capability_unavailable', 503)
+        result = await issue_csrf(
+            db, session_id=session['sessionId'], method=str(payload['method']),
+            canonical_route=str(payload['canonicalRoute']), request_id=str(payload['requestId']),
+            session_hash_key=DASHBOARD_SESSION_HASH_KEY,
+        )
+        return web.json_response(result)
+
+
+async def internal_session_logout(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'requestId', 'csrfToken'}, {'requestId', 'csrfToken'})
+    async with _signed_internal(request, payload) as (db, _, session):
+        await consume_csrf(
+            db, raw_token=str(payload['csrfToken']), session_id=session['sessionId'], method='POST',
+            canonical_route='/api/auth/logout', request_id=str(payload['requestId']),
+            session_hash_key=DASHBOARD_SESSION_HASH_KEY,
+        )
+        await revoke_session(db, session_id=session['sessionId'], reason_code='USER_LOGOUT',
+                             expected_version=session['version'])
+        return web.json_response({'status': 'logged_out'})
+
+
+async def internal_session_rotate(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'newTokenHash'}, {'newTokenHash'})
+    async with _signed_internal(request, payload) as (db, _, session):
+        version = await rotate_session(
+            db, session_id=session['sessionId'], new_token_hash=str(payload['newTokenHash']),
+            expected_version=session['version'],
+        )
+        return web.json_response({'sessionId': session['sessionId'], 'sessionVersion': version})
+
+
+async def internal_operators_list(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'limit', 'cursor'})
+    async with _signed_internal(request, payload, permission='DASHBOARD_SECURITY_ADMIN') as (db, _, _):
+        limit = max(1, min(int(payload.get('limit', 100)), 200))
+        async with db.execute(
+            "SELECT assignmentId,guildId,userId,permissionClass,status,grantedAt,revokedAt,version "
+            "FROM DashboardOperatorPermission ORDER BY grantedAt DESC,assignmentId DESC LIMIT ?", (limit,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return web.json_response({'operators': [dict(zip(
+            ('assignmentId','guildId','userId','permissionClass','status','grantedAt','revokedAt','version'), row
+        )) for row in rows]})
+
+
+async def _internal_permission_change(request, action):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'requestId','targetUserId','permissionClass','expectedVersion','csrfToken'},
+                 {'requestId','targetUserId','permissionClass','expectedVersion','csrfToken'})
+    async with _signed_internal(request, payload, permission='DASHBOARD_SECURITY_ADMIN', rate_limit=10) as (db, envelope, session):
+        browser_route = f"/api/admin/operators/{action.lower()}"
+        await consume_csrf(
+            db, raw_token=str(payload['csrfToken']), session_id=session['sessionId'], method='POST',
+            canonical_route=browser_route, request_id=str(payload['requestId']),
+            session_hash_key=DASHBOARD_SESSION_HASH_KEY,
+        )
+        receipt = await change_permission(
+            db, action=action, guild_id=envelope.guild_id, actor_id=envelope.actor_id,
+            target_user_id=str(payload['targetUserId']), permission_class=str(payload['permissionClass']),
+            request_id=str(payload['requestId']), expected_version=int(payload['expectedVersion']),
+            source_route=browser_route,
+        )
+        return web.json_response(receipt)
+
+
+async def internal_operators_grant(request):
+    return await _internal_permission_change(request, 'GRANT')
+
+
+async def internal_operators_revoke(request):
+    return await _internal_permission_change(request, 'REVOKE')
+
+
+async def internal_session_revoke(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'requestId','sessionId','expectedVersion','csrfToken'},
+                 {'requestId','sessionId','expectedVersion','csrfToken'})
+    async with _signed_internal(request, payload, permission='DASHBOARD_SECURITY_ADMIN', rate_limit=10) as (db, _, session):
+        await consume_csrf(
+            db, raw_token=str(payload['csrfToken']), session_id=session['sessionId'], method='POST',
+            canonical_route='/api/admin/sessions/revoke', request_id=str(payload['requestId']),
+            session_hash_key=DASHBOARD_SESSION_HASH_KEY,
+        )
+        receipt = await revoke_dashboard_session(
+            db, guild_id=session['guildId'], actor_id=session['userId'],
+            target_session_id=str(payload['sessionId']), request_id=str(payload['requestId']),
+            expected_version=int(payload['expectedVersion']), source_route='/api/admin/sessions/revoke',
+        )
+        return web.json_response(receipt)
+
+
+async def internal_operator_audit(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'limit'})
+    async with _signed_internal(request, payload, permission='OPERATOR_AUDIT_READ') as (db, _, _):
+        limit = max(1, min(int(payload.get('limit', 100)), 200))
+        async with db.execute(
+            "SELECT auditId,executorUserId,permissionClass,operationType,targetType,targetId,requestId,"
+            "resultStatus,createdAt FROM DashboardOperatorAudit ORDER BY createdAt DESC,auditId DESC LIMIT ?",
+            (limit,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        keys = ('auditId','executorUserId','permissionClass','operationType','targetType','targetId',
+                'requestId','resultStatus','createdAt')
+        return web.json_response({'entries': [dict(zip(keys, row)) for row in rows]})
+
+
+async def internal_security_events(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'limit'})
+    async with _signed_internal(request, payload, permission='DASHBOARD_SECURITY_ADMIN') as (db, _, _):
+        limit = max(1, min(int(payload.get('limit', 100)), 200))
+        async with db.execute(
+            "SELECT eventId,eventType,safeErrorCode,route,createdAt FROM DashboardSecurityEvent "
+            "ORDER BY createdAt DESC,eventId DESC LIMIT ?", (limit,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return web.json_response({'events': [dict(zip(
+            ('eventId','eventType','safeErrorCode','route','createdAt'), row
+        )) for row in rows]})
+
+
+async def internal_phase9a_health(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, set())
+    async with _signed_internal(request, payload) as (db, _, _):
+        async with db.execute(
+            "SELECT purpose,COUNT(*) FROM DashboardSigningKeyVersion WHERE status='ACTIVE' GROUP BY purpose"
+        ) as cursor:
+            keys = {row[0]: row[1] for row in await cursor.fetchall()}
+        return web.json_response({
+            'schemaCapable': True,
+            'internalRequestKeyReady': keys.get('INTERNAL_REQUEST') == 1,
+            'sessionHashKeyReady': keys.get('SESSION_HASH') == 1,
+            'migrationChecksum': PHASE9A_SCHEMA_CHECKSUM,
+        })
+
+
+class _InternalReadRequest:
+    def __init__(self, query=None, params=None):
+        self.query = {str(k): str(v) for k, v in (query or {}).items()}
+        self.match_info = {str(k): str(v) for k, v in (params or {}).items()}
+
+
+INTERNAL_READ_HANDLERS = {
+    'server': get_server_data, 'radar': api_radar, 'channels': api_channels,
+    'announce-config': get_announce_config_api, 'leaderboard': api_leaderboard,
+    'user': api_user, 'market': api_market, 'treasury': api_treasury, 'boss': api_boss,
+    'economy/stats': api_economy_stats, 'economy/supply': api_economy_v1_supply,
+    'economy/profile': api_economy_v1_profile, 'economy/marketplace': api_marketplace_v1_status,
+    'economy/casino': api_casino_v1_status, 'economy/crypto': api_crypto_v1_status,
+    'economy/mining': api_mining_v1_status, 'economy/phase8': api_phase8_status,
+    'marriages': api_marriages, 'stats/summary': api_stats_summary,
+    'bot/stats': api_bot_stats, 'economy/level-distribution': api_level_distribution,
+}
+
+
+async def internal_dashboard_read(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'query','params'})
+    resource = request.match_info.get('resource', '')
+    handler = INTERNAL_READ_HANDLERS.get(resource)
+    if handler is None:
+        raise DashboardSecurityError('invalid_request', 404)
+    query = payload.get('query', {})
+    params = payload.get('params', {})
+    if not isinstance(query, dict) or not isinstance(params, dict):
+        raise DashboardSecurityError('invalid_request', 400)
+    allowed_query = {'sort','limit'} if resource == 'leaderboard' else set()
+    allowed_params = {'id'} if resource in {'user','economy/profile'} else set()
+    if set(query) - allowed_query or set(params) - allowed_params:
+        raise DashboardSecurityError('invalid_request', 400)
+    async with _signed_internal(request, payload) as (_, _, _):
+        return await handler(_InternalReadRequest(query, params))
+
+
+async def _phase9b_read(request, reader, *, allowed=()):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, set(allowed))
+    async with _signed_internal(request, payload, permission='DASHBOARD_VIEW', rate_limit=60) as (db, envelope, _):
+        if not await phase9b_capability(db):
+            raise DashboardSecurityError('capability_unavailable', 503)
+        return web.json_response(await reader(db, envelope.guild_id, payload))
+
+
+async def internal_phase9b_overview(request):
+    async def read(db, guild_id, _):
+        guild = client.get_guild(int(guild_id))
+        member_ids = ({str(member.id) for member in guild.members if not member.bot}
+                      if guild is not None else None)
+        return await overview_report(db, guild_id, current_non_bot_user_ids=member_ids)
+    return await _phase9b_read(request, read)
+
+
+async def internal_phase9b_supply(request):
+    return await _phase9b_read(request, lambda db, guild, _: supply_report(db, guild))
+
+
+async def internal_phase9b_flows(request):
+    async def read(db, guild, payload):
+        return await flows_report(db, guild, window_days=int(payload.get('windowDays', 7)))
+    return await _phase9b_read(request, read, allowed={'windowDays'})
+
+
+async def internal_phase9b_liabilities(request):
+    return await _phase9b_read(request, lambda db, guild, _: liabilities_report(db, guild))
+
+
+def _domain_read(domain):
+    async def handler(request):
+        return await _phase9b_read(request, lambda db, guild, _: domain_metrics(db, guild, domain))
+    return handler
+
+
+internal_phase9b_marketplace = _domain_read('marketplace')
+internal_phase9b_casino_options = _domain_read('casino-options')
+internal_phase9b_giveaway = _domain_read('giveaway')
+internal_phase9b_crypto_mining = _domain_read('crypto-mining')
+
+
+async def internal_phase9b_recovery(request):
+    async def read(db, guild, payload):
+        return await recovery_report(db, guild, limit=int(payload.get('limit', 50)))
+    return await _phase9b_read(request, read, allowed={'cursor', 'limit'})
+
+
+async def internal_phase9b_routes_list(request):
+    async def read(db, guild, _):
+        return {'schemaVersion': '1', 'guildId': guild, 'routes': await list_notification_routes(db, guild)}
+    return await _phase9b_read(request, read)
+
+
+async def internal_phase9b_route_details(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'category'}, {'category'})
+    category = str(payload['category']).upper()
+    async with _signed_internal(request, payload, permission='DASHBOARD_VIEW', rate_limit=60) as (db, envelope, _):
+        route = await get_notification_route(db, envelope.guild_id, category)
+        async with db.execute(
+            "SELECT status,COUNT(*) FROM DashboardNotificationDelivery WHERE guildId=? AND category=? "
+            "GROUP BY status", (envelope.guild_id, category),
+        ) as cursor:
+            counts = {row[0]: str(row[1]) for row in await cursor.fetchall()}
+        return web.json_response({'schemaVersion': '1', 'guildId': envelope.guild_id,
+                                  'route': route, 'deliveries': counts})
+
+
+async def _consume_phase9b_csrf(db, session, payload, browser_route):
+    await consume_csrf(
+        db, raw_token=str(payload['csrfToken']), session_id=session['sessionId'], method='POST',
+        canonical_route=browser_route, request_id=str(payload['requestId']),
+        session_hash_key=DASHBOARD_SESSION_HASH_KEY,
+    )
+
+
+async def internal_phase9b_route_update(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'requestId','csrfToken','category','enabled','channelId','roleMentionId',
+                           'eventTypes','expectedVersion'},
+                 {'requestId','csrfToken','category','enabled','eventTypes','expectedVersion'})
+    category = str(payload['category']).upper()
+    async with _signed_internal(request, payload, permission='NOTIFICATION_ROUTING_CONTROL', rate_limit=10) as (db, envelope, session):
+        browser_route = f"/api/economy/notifications/routes/{category}"
+        await _consume_phase9b_csrf(db, session, payload, browser_route)
+        guild = client.get_guild(int(envelope.guild_id))
+        channel_id = payload.get('channelId'); role_id = payload.get('roleMentionId')
+        if channel_id is not None and not str(channel_id).isdigit():
+            raise DashboardSecurityError('invalid_request', 400)
+        if role_id is not None and not str(role_id).isdigit():
+            raise DashboardSecurityError('invalid_request', 400)
+        channel = guild.get_channel(int(channel_id)) if guild and channel_id else None
+        if payload['enabled']:
+            if not isinstance(channel, discord.TextChannel):
+                raise DashboardSecurityError('invalid_request', 400)
+            permissions = channel.permissions_for(guild.me)
+            if not permissions.view_channel or not permissions.send_messages:
+                raise DashboardSecurityError('forbidden', 403)
+        if role_id and (guild is None or guild.get_role(int(role_id)) is None):
+            raise DashboardSecurityError('invalid_request', 400)
+        receipt = await controlled_route_update(
+            db, guild_id=envelope.guild_id, actor_id=envelope.actor_id,
+            request_id=str(payload['requestId']), category=category, enabled=bool(payload['enabled']),
+            channel_id=str(channel_id) if channel_id else None, role_mention_id=str(role_id) if role_id else None,
+            event_types=payload['eventTypes'], expected_version=int(payload['expectedVersion']),
+            source_route=browser_route,
+        )
+        return web.json_response(receipt)
+
+
+async def internal_phase9b_route_test(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'requestId','csrfToken','category','message'},
+                 {'requestId','csrfToken','category','message'})
+    category = str(payload['category']).upper()
+    message = str(payload['message']).strip()
+    if category not in NOTIFICATION_CATEGORIES or not 1 <= len(message) <= 500:
+        raise DashboardSecurityError('invalid_request', 400)
+    async with _signed_internal(request, payload, permission='NOTIFICATION_ROUTING_CONTROL', rate_limit=3) as (db, envelope, session):
+        browser_route = f"/api/economy/notifications/routes/{category}/test"
+        await _consume_phase9b_csrf(db, session, payload, browser_route)
+        result = await reserve_delivery(
+            db, guild_id=envelope.guild_id, delivery_kind='TEST', source_type='DASHBOARD_TEST',
+            source_key=str(payload['requestId']), category=category,
+            event_type=NOTIFICATION_EVENT_TYPES[category][0],
+            payload={'content': message, 'allowedMentions': 'NONE'}, request_id=str(payload['requestId']),
+            actor_id=envelope.actor_id,
+        )
+        return web.json_response(result)
+
+
+async def _phase9b_feature_control(request, paused):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'requestId','csrfToken','feature','reason','expectedVersion'},
+                 {'requestId','csrfToken','feature','reason','expectedVersion'})
+    browser_route = '/api/economy/controls/pause' if paused else '/api/economy/controls/resume'
+    async with _signed_internal(request, payload, permission='ECONOMY_PAUSE_CONTROL', rate_limit=10) as (db, envelope, session):
+        await _consume_phase9b_csrf(db, session, payload, browser_route)
+        receipt = await controlled_feature_pause(
+            db, guild_id=envelope.guild_id, actor_id=envelope.actor_id,
+            request_id=str(payload['requestId']), feature=str(payload['feature']), paused=paused,
+            reason=str(payload['reason']), expected_version=int(payload['expectedVersion']),
+            source_route=browser_route,
+        )
+        return web.json_response(receipt)
+
+
+async def internal_phase9b_pause(request):
+    return await _phase9b_feature_control(request, True)
+
+
+async def internal_phase9b_resume(request):
+    return await _phase9b_feature_control(request, False)
+
+
+async def internal_phase9b_health(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, set())
+    async with _signed_internal(request, payload, permission='DASHBOARD_VIEW') as (db, _, _):
+        return web.json_response({'schemaCapable': await phase9b_capability(db),
+                                  'migrationChecksum': PHASE9B_SCHEMA_CHECKSUM})
+
+
+async def internal_phase9b_audit(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'cursor', 'limit', 'startAt', 'endAt'})
+    async with _signed_internal(request, payload, permission='OPERATOR_AUDIT_READ', rate_limit=60) as (db, envelope, _):
+        limit = max(1, min(int(payload.get('limit', 100)), 100))
+        params = [envelope.guild_id]
+        where = "guildId=?"
+        if payload.get('startAt'):
+            where += " AND createdAt>=?"; params.append(str(payload['startAt']))
+        if payload.get('endAt'):
+            where += " AND createdAt<?"; params.append(str(payload['endAt']))
+        if payload.get('cursor'):
+            where += " AND auditId<?"; params.append(str(payload['cursor']))
+        params.append(limit)
+        async with db.execute(
+            "SELECT auditId,executorUserId,permissionClass,operationType,targetType,targetId,requestId,"
+            f"resultStatus,createdAt FROM DashboardOperatorAudit WHERE {where} "
+            "ORDER BY createdAt DESC,auditId DESC LIMIT ?", tuple(params),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        keys = ('auditId','executorUserId','permissionClass','operationType','targetType','targetId',
+                'requestId','resultStatus','createdAt')
+        return web.json_response({'schemaVersion': '1', 'guildId': envelope.guild_id,
+                                  'rows': [dict(zip(keys, row)) for row in rows]})
+
+
+async def internal_phase9b_recovery_resolve(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'requestId','csrfToken','targetType','targetId','resolution','expectedVersion','reason'},
+                 {'requestId','csrfToken','targetType','targetId','resolution','expectedVersion','reason'})
+    browser_route = '/api/economy/recovery/resolve'
+    target_type = str(payload['targetType']).upper(); target_id = str(payload['targetId'])
+    resolution = str(payload['resolution']).upper()
+    async with _signed_internal(request, payload, permission='REVIEWED_RECOVERY_CONTROL', rate_limit=5) as (db, envelope, session):
+        await _consume_phase9b_csrf(db, session, payload, browser_route)
+        reservation = await reserve_reviewed_recovery(
+            db, guild_id=envelope.guild_id, actor_id=envelope.actor_id,
+            request_id=str(payload['requestId']), target_type=target_type, target_id=target_id,
+            resolution=resolution, expected_version=int(payload['expectedVersion']), reason=str(payload['reason']),
+        )
+        if reservation.get('receipt') is not None:
+            return web.json_response(reservation['receipt'])
+        await db.commit()
+        success = False; code = 'recovery_incomplete'
+        try:
+            if target_type == 'RPG_OPERATION':
+                from economy.phase3_recovery import recover_phase3_operations
+                await recover_phase3_operations(DB_PATH)
+            elif target_type in {'MARKETPLACE_SALE', 'MARKETPLACE_RETURN'}:
+                from economy.phase4_recovery import recover_phase4_runtime
+                await recover_phase4_runtime(DB_PATH)
+            elif target_type == 'CASINO_SESSION':
+                if resolution == 'REFUND':
+                    from economy.casino import resolve_review_session
+                    await resolve_review_session(
+                        DB_PATH, guild_id=envelope.guild_id, actor_id=envelope.actor_id,
+                        session_id=target_id, resolution='refund', request_id=str(payload['requestId']),
+                        reason=str(payload['reason']), authorization_override=True,
+                    )
+                else:
+                    from economy.phase5_recovery import recover_phase5_runtime
+                    await recover_phase5_runtime(DB_PATH, guild_id=envelope.guild_id)
+            elif target_type == 'MINING_OPERATION':
+                from economy.phase7_recovery import recover_phase7
+                await recover_phase7(DB_PATH)
+            elif target_type == 'ETERNAL_OPTION_POSITION':
+                from economy.phase8_recovery import recover_phase8
+                await recover_phase8(DB_PATH)
+            table, key_column, _ = RECOVERY_TARGETS[target_type]
+            await db.execute('BEGIN IMMEDIATE')
+            async with db.execute(f"SELECT status FROM {table} WHERE {key_column}=? AND guildId=?",
+                                  (target_id, envelope.guild_id)) as cursor:
+                source = await cursor.fetchone()
+            success = bool(source and source[0] != 'REVIEW_REQUIRED')
+            code = 'source_resolved' if success else 'source_still_review_required'
+        except Exception as exc:
+            logging.warning("Phase 9B reviewed recovery failed target=%s type=%s", target_type, type(exc).__name__)
+            await db.execute('BEGIN IMMEDIATE')
+            code = 'recovery_failed'
+        result = await finalize_reviewed_recovery(
+            db, operation_id=reservation['operationId'], success=success, result_code=code,
+        )
+        return web.json_response(result, status=200 if success else 409)
+
+
+def build_web_application():
+    app = web.Application(middlewares=[cors_middleware], client_max_size=65536)
     app.router.add_options('/{tail:.*}', handle_options)
-    app.router.add_get('/', serve_dashboard)
-    app.router.add_get('/api/config', get_config_api)
-    app.router.add_get('/api/server', get_server_data)
-    app.router.add_post('/api/config', update_config_api)
-    app.router.add_get('/api/radar', api_radar)
-    app.router.add_post('/api/broadcast', api_broadcast)
-    app.router.add_get('/api/channels', api_channels)
-    app.router.add_get('/api/announce-config', get_announce_config_api)
-    app.router.add_post('/api/announce-config', update_announce_config_api)
+    app.router.add_get('/healthz', public_health)
+    app.router.add_get('/', dashboard_root)
+    for route in (
+        '/api/config','/api/server','/api/radar','/api/channels','/api/announce-config',
+        '/api/leaderboard','/api/user/{id}','/api/market','/api/treasury','/api/boss',
+        '/api/economy/stats','/api/economy/v1-supply','/api/economy/v1-profile/{id}',
+        '/api/economy/v1-marketplace','/api/economy/v1-casino','/api/economy/v1-crypto',
+        '/api/economy/v1-mining','/api/economy/v1-phase8','/api/marriages',
+        '/api/stats/summary','/api/bot/stats','/api/economy/level-distribution','/api/audit',
+    ):
+        app.router.add_get(route, legacy_dashboard_read_disabled)
+    for route in (
+        '/api/config','/api/announce-config','/api/broadcast','/api/announce',
+        '/api/user/{id}/coins','/api/user/{id}/xp','/api/user/{id}/give-item',
+        '/api/user/{id}/reset-cooldown','/api/user/{id}/persona','/api/user/{id}/birthday',
+        '/api/user/{id}/bg','/api/user/{id}/divorce','/api/user/{id}/bounty',
+        '/api/user/{id}/reset-weekly','/api/user/{id}/reset-quest','/api/user/{id}/reset',
+        '/api/reset-all-players','/api/boss/spawn','/api/boss/settle',
+        '/api/economy/v1-marketplace/action',
+    ):
+        app.router.add_post(route, legacy_dashboard_write_disabled)
+    app.router.add_post('/internal/phase9a/oauth/start', internal_oauth_start)
+    app.router.add_post('/internal/phase9a/session/establish', internal_session_establish)
+    app.router.add_post('/internal/phase9a/session/validate', internal_session_validate)
+    app.router.add_post('/internal/phase9a/session/rotate', internal_session_rotate)
+    app.router.add_post('/internal/phase9a/session/logout', internal_session_logout)
+    app.router.add_post('/internal/phase9a/session/revoke', internal_session_revoke)
+    app.router.add_post('/internal/phase9a/csrf/issue', internal_csrf_issue)
+    app.router.add_post('/internal/phase9a/operators/list', internal_operators_list)
+    app.router.add_post('/internal/phase9a/operators/grant', internal_operators_grant)
+    app.router.add_post('/internal/phase9a/operators/revoke', internal_operators_revoke)
+    app.router.add_post('/internal/phase9a/audit/list', internal_operator_audit)
+    app.router.add_post('/internal/phase9a/security-events/list', internal_security_events)
+    app.router.add_post('/internal/phase9a/health', internal_phase9a_health)
+    app.router.add_post('/internal/phase9a/read/{resource:.+}', internal_dashboard_read)
+    app.router.add_post('/internal/phase9b/dashboard/overview', internal_phase9b_overview)
+    app.router.add_post('/internal/phase9b/dashboard/supply', internal_phase9b_supply)
+    app.router.add_post('/internal/phase9b/dashboard/flows', internal_phase9b_flows)
+    app.router.add_post('/internal/phase9b/dashboard/liabilities', internal_phase9b_liabilities)
+    app.router.add_post('/internal/phase9b/dashboard/marketplace', internal_phase9b_marketplace)
+    app.router.add_post('/internal/phase9b/dashboard/casino-options', internal_phase9b_casino_options)
+    app.router.add_post('/internal/phase9b/dashboard/giveaway', internal_phase9b_giveaway)
+    app.router.add_post('/internal/phase9b/dashboard/crypto-mining', internal_phase9b_crypto_mining)
+    app.router.add_post('/internal/phase9b/dashboard/recovery', internal_phase9b_recovery)
+    app.router.add_post('/internal/phase9b/notifications/routes/list', internal_phase9b_routes_list)
+    app.router.add_post('/internal/phase9b/notifications/routes/details', internal_phase9b_route_details)
+    app.router.add_post('/internal/phase9b/notifications/routes/update', internal_phase9b_route_update)
+    app.router.add_post('/internal/phase9b/notifications/routes/test', internal_phase9b_route_test)
+    app.router.add_post('/internal/phase9b/features/pause', internal_phase9b_pause)
+    app.router.add_post('/internal/phase9b/features/resume', internal_phase9b_resume)
+    app.router.add_post('/internal/phase9b/audit/list', internal_phase9b_audit)
+    app.router.add_post('/internal/phase9b/recovery/resolve', internal_phase9b_recovery_resolve)
+    app.router.add_post('/internal/phase9b/health', internal_phase9b_health)
+    return app
 
-    # READ tambahan (tanpa token)
-    app.router.add_get('/api/leaderboard', api_leaderboard)
-    app.router.add_get('/api/user/{id}', api_user)
-    app.router.add_get('/api/market', api_market)
-    app.router.add_get('/api/treasury', api_treasury)
-    app.router.add_get('/api/boss', api_boss)
-    app.router.add_get('/api/economy/stats', api_economy_stats)
-    app.router.add_get('/api/marriages', api_marriages)
-    app.router.add_get('/api/stats/summary', api_stats_summary)
-    app.router.add_get('/api/bot/stats', api_bot_stats)
-    app.router.add_get('/api/economy/level-distribution', api_level_distribution)
-    app.router.add_get('/api/audit', api_audit)
 
-    # WRITE tambahan (token wajib)
-    app.router.add_post('/api/user/{id}/coins', api_user_coins)
-    app.router.add_post('/api/user/{id}/xp', api_user_xp)
-    app.router.add_post('/api/user/{id}/give-item', api_user_give_item)
-    app.router.add_post('/api/user/{id}/reset-cooldown', api_user_reset_cooldown)
-    app.router.add_post('/api/user/{id}/persona', api_user_persona)
-    app.router.add_post('/api/user/{id}/birthday', api_user_birthday)
-    app.router.add_post('/api/user/{id}/bg', api_user_bg)
-    app.router.add_post('/api/user/{id}/divorce', api_user_divorce)
-    app.router.add_post('/api/user/{id}/bounty', api_user_bounty)
-    app.router.add_post('/api/user/{id}/reset-weekly', api_user_reset_weekly)
-    app.router.add_post('/api/user/{id}/reset-quest', api_user_reset_quest)
-    app.router.add_post('/api/user/{id}/reset', api_user_reset_player)
-    app.router.add_post('/api/reset-all-players', api_reset_all_players)
-    app.router.add_post('/api/boss/spawn', api_boss_spawn)
-    app.router.add_post('/api/announce', api_announce)
-    
+async def start_web_server():
+    app = build_web_application()
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', 8081)
     await site.start()
     logging.info("Bot API started on port 8081")
-    if not DASHBOARD_TOKEN:
-        logging.warning("DASHBOARD_TOKEN is not set — /api/broadcast and POST /api/config are disabled (fail closed). Set DASHBOARD_TOKEN to enable them.")
+    logging.info("Legacy dashboard routes disabled; Phase 9A internal routes fail closed.")
 
 @client.event
 async def on_voice_state_update(member, before, after):
+    for callback in list(VOICE_STATE_CALLBACKS):
+        try:
+            await callback(member, before, after)
+        except Exception as exc:
+            logging.error("Voice state callback failed callback=%s exception=%s",
+                          getattr(callback, "__name__", "callback"), type(exc).__name__)
     if before.channel is None and after.channel is not None:
         voice_join_times[member.id] = datetime.now()
         # 👑 Booster Voice Intro
@@ -3185,13 +4234,22 @@ async def on_voice_state_update(member, before, after):
             guild = member.guild
             notify_channel = get_announce_channel(guild, 'booster')
 
-            if notify_channel:
+            if notify_channel or await phase9b_schema_ready():
                 intros = [
                     f"👑 **{member.display_name}** (Donatur) telah bergabung ke VC **{after.channel.name}**.",
                     f"✨ **{member.display_name}** (Server Booster) telah bergabung ke VC **{after.channel.name}**.",
                     f"💎 **{member.display_name}** telah bergabung ke VC **{after.channel.name}**.",
                 ]
-                await notify_channel.send(random.choice(intros))
+                content = random.choice(intros)
+                routed = await reserve_phase9b_legacy_notification(
+                    guild, category='BOOSTER', event_type='BOOSTER_STARTED',
+                    source_type='LEGACY_BOOSTER',
+                    source_key=f"{guild.id}:{member.id}:{member.premium_since.isoformat()}",
+                    payload={'content': content, 'userId': str(member.id),
+                             'boostStartedAt': member.premium_since.isoformat()},
+                )
+                if not routed and notify_channel:
+                    await notify_channel.send(content)
 
     elif before.channel is not None and after.channel is None:
         if member.id in voice_join_times:
@@ -7354,6 +8412,8 @@ def schedule_reminder(rid, user_id, channel_id, message, fire_at):
 
 # ── Giveaway persistence ──────────────────────────────────────────────────────
 async def add_giveaway(channel_id, message_id, prize, host_id, end_at):
+    if ECONOMY_PHASE8_ENABLED:
+        return None
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             cur = await db.execute(
@@ -7367,6 +8427,8 @@ async def add_giveaway(channel_id, message_id, prize, host_id, end_at):
 
 
 async def _end_giveaway(gid, channel_id, message_id, prize, delay):
+    if ECONOMY_PHASE8_ENABLED:
+        return
     try:
         if delay > 0:
             await asyncio.sleep(delay)
@@ -7395,6 +8457,8 @@ async def _end_giveaway(gid, channel_id, message_id, prize, delay):
 
 
 def schedule_giveaway(gid, channel_id, message_id, prize, end_at):
+    if ECONOMY_PHASE8_ENABLED:
+        return None
     delay = (end_at - datetime.utcnow()).total_seconds()
     client.loop.create_task(_end_giveaway(gid, channel_id, message_id, prize, max(0, delay)))
 
@@ -7406,8 +8470,11 @@ async def resume_scheduled_jobs():
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute("SELECT id, user_id, channel_id, message, fire_at FROM Reminder") as cur:
                 reminders = await cur.fetchall()
-            async with db.execute("SELECT id, channel_id, message_id, prize, end_at FROM Giveaway WHERE ended=0") as cur:
-                giveaways = await cur.fetchall()
+            if ECONOMY_PHASE8_ENABLED:
+                giveaways = []
+            else:
+                async with db.execute("SELECT id, channel_id, message_id, prize, end_at FROM Giveaway WHERE ended=0") as cur:
+                    giveaways = await cur.fetchall()
         for rid, uid, cid, msg, fire_at in reminders:
             try:
                 schedule_reminder(rid, uid, cid, msg, datetime.fromisoformat(fire_at))
@@ -7770,6 +8837,7 @@ class FakeFollowup:
 class FakeInteraction:
     def __init__(self, message):
         self.message = message
+        self.id = getattr(message, "id", None)
         self.user = message.author
         self.guild = message.guild
         self.channel = message.channel
@@ -7780,6 +8848,14 @@ class FakeInteraction:
     @property
     def client(self):
         return client
+
+    @property
+    def guild_id(self):
+        return getattr(self.guild, "id", None)
+
+    @property
+    def channel_id(self):
+        return getattr(self.channel, "id", None)
 
     async def send(self, *args, **kwargs):
         kwargs.pop("ephemeral", None)
@@ -7895,6 +8971,7 @@ async def on_message(message):
             except Exception as e:
                 logging.error("Error executing prefix command command=%s exception=%s", cmd_name, type(e).__name__)
                 if interaction is not None and interaction.response.is_done():
+                    await interaction.followup.send("Gagal mengeksekusi perintah. Silakan coba lagi.")
                     return
                 await message.channel.send("❌ Gagal mengeksekusi perintah. Cek format argumennya ya.")
         return

@@ -2,6 +2,125 @@ import discord
 import random
 
 
+def _casino_receipt_text(result):
+    receipt = result.receipt or {}
+    if not result.ok:
+        return result.message
+    if result.code == "active":
+        hands = receipt.get("playerHands", [])
+        cards = " | ".join(", ".join(hand) for hand in hands) or "-"
+        actions = ", ".join(receipt.get("allowedActions", [])) or "menunggu settlement"
+        return (f"**Blackjack Casino V1**\nKartu kamu: **{cards}**\n"
+                f"Dealer: **{receipt.get('dealerUpCard', '-')}**\nAksi: **{actions}**")
+    game = receipt.get("game", "Casino")
+    stake = int(receipt.get("stakeEcy", 0))
+    payout = int(receipt.get("grossPayoutEcy", 0))
+    detail = receipt.get("result", {})
+    if game == "SLOT":
+        extra = " | ".join(detail.get("reels", []))
+    elif game == "COINFLIP":
+        extra = f"Hasil: {detail.get('result', '-')}"
+    elif game == "RPS":
+        extra = f"Lawan: {detail.get('opponent', '-')}"
+    elif game == "NUMBER":
+        extra = f"Angka: {detail.get('result', '-')}"
+    elif game == "GACHA":
+        extra = str(detail.get("label", "-"))
+    elif game == "BOX":
+        extra = "Loot Box selesai dibuka."
+    else:
+        extra = "Blackjack selesai."
+    return f"**{game} Casino V1**\n{extra}\nStake: **{stake:,} ECY**\nPayout: **{payout:,} ECY**"
+
+
+class CasinoBlackjackView(discord.ui.View):
+    def __init__(self, user, session_id):
+        super().__init__(timeout=600)
+        self.user = user
+        self.session_id = str(session_id)
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message("Sesi Blackjack ini bukan milik kamu.", ephemeral=True)
+            return False
+        return True
+
+    async def _act(self, interaction, action):
+        from core import DB_PATH
+        from economy.casino import blackjack_action
+        await interaction.response.defer(ephemeral=True)
+        result = await blackjack_action(
+            DB_PATH, session_id=self.session_id, user_id=interaction.user.id,
+            action=action, action_request_id=str(interaction.id),
+        )
+        if result.code == "committed":
+            for child in self.children:
+                child.disabled = True
+        await interaction.edit_original_response(content=_casino_receipt_text(result), view=self)
+
+    @discord.ui.button(label="Hit", style=discord.ButtonStyle.primary)
+    async def hit(self, interaction, button):
+        await self._act(interaction, "HIT")
+
+    @discord.ui.button(label="Stand", style=discord.ButtonStyle.secondary)
+    async def stand(self, interaction, button):
+        await self._act(interaction, "STAND")
+
+    @discord.ui.button(label="Double", style=discord.ButtonStyle.success)
+    async def double(self, interaction, button):
+        await self._act(interaction, "DOUBLE")
+
+    @discord.ui.button(label="Split", style=discord.ButtonStyle.success)
+    async def split(self, interaction, button):
+        await self._act(interaction, "SPLIT")
+
+
+class CasinoConfirmationView(discord.ui.View):
+    def __init__(self, user, *, request_id, game, stake, payload):
+        super().__init__(timeout=90)
+        self.user = user
+        self.request_id = str(request_id)
+        self.game = str(game)
+        self.stake = int(stake)
+        self.payload = dict(payload)
+        self.completed = False
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message("Konfirmasi ini hanya untuk pemohon.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Konfirmasi", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction, button):
+        from core import DB_PATH
+        from economy.casino import reserve_session
+        await interaction.response.defer(ephemeral=True)
+        if self.completed:
+            result_text = "Konfirmasi ini sudah diproses."
+            await interaction.edit_original_response(content=result_text, view=self)
+            return
+        self.completed = True
+        for child in self.children:
+            child.disabled = True
+        result = await reserve_session(
+            DB_PATH, guild_id=interaction.guild_id, user_id=interaction.user.id,
+            request_id=self.request_id, game=self.game, stake=self.stake, payload=self.payload,
+        )
+        if result.ok and result.code == "active" and self.game == "BLACKJACK":
+            view = CasinoBlackjackView(self.user, result.session_id)
+            await interaction.edit_original_response(content=_casino_receipt_text(result), view=view)
+            return
+        await interaction.edit_original_response(content=_casino_receipt_text(result), view=self)
+
+    @discord.ui.button(label="Batal", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction, button):
+        self.completed = True
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(content="Permintaan Casino dibatalkan sebelum reservasi.", view=self)
+
+
 async def _dispatch(interaction, command_name, *args):
     # `client` is a plain discord.Client; the CommandTree lives as a module
     # global in core, so resolve commands through it directly.

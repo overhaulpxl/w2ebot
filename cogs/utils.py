@@ -220,29 +220,29 @@ def setup(tree, client):
         for i in range(len(options)):
             await msg.add_reaction(emojis[i])
     
-    @tree.command(name="giveaway", description="Buat Giveaway (Khusus Admin)")
-    async def slash_giveaway(interaction: discord.Interaction, hadiah: str, durasi_menit: int):
-        await interaction.response.defer()
-        if not interaction.user.guild_permissions.administrator:
-            await send_embed(interaction, "❌ Kamu bukan Admin!")
-            return
+    if not ECONOMY_PHASE8_ENABLED:
+        @tree.command(name="giveaway", description="Buat Giveaway (Khusus Admin)")
+        async def slash_giveaway(interaction: discord.Interaction, hadiah: str, durasi_menit: int):
+            await interaction.response.defer()
+            if not interaction.user.guild_permissions.administrator:
+                await send_embed(interaction, "❌ Kamu bukan Admin!")
+                return
 
-        if durasi_menit < 1 or durasi_menit > 1440:
-            await send_embed(interaction, "❌ Durasi harus antara 1 dan 1440 menit (24 jam).")
-            return
+            if durasi_menit < 1 or durasi_menit > 1440:
+                await send_embed(interaction, "❌ Durasi harus antara 1 dan 1440 menit (24 jam).")
+                return
 
-        embed = discord.Embed(title="🎉 **GIVEAWAY!** 🎉", description=f"**Hadiah:** {hadiah}\n**Waktu:** {durasi_menit} Menit\n\nReact dengan 🎉 untuk ikutan!", color=discord.Color.purple())
-        embed.set_footer(text=f"Diselenggarakan oleh {interaction.user.display_name}")
+            embed = discord.Embed(title="🎉 **GIVEAWAY!** 🎉", description=f"**Hadiah:** {hadiah}\n**Waktu:** {durasi_menit} Menit\n\nReact dengan 🎉 untuk ikutan!", color=discord.Color.purple())
+            embed.set_footer(text=f"Diselenggarakan oleh {interaction.user.display_name}")
 
-        msg = await interaction.followup.send(embed=embed, wait=True)
-        await msg.add_reaction("🎉")
+            msg = await interaction.followup.send(embed=embed, wait=True)
+            await msg.add_reaction("🎉")
 
-        # Persist ke DB lalu jadwalkan; tahan banting terhadap restart bot.
-        from datetime import timedelta
-        end_at = datetime.utcnow() + timedelta(minutes=durasi_menit)
-        gid = await add_giveaway(interaction.channel.id, msg.id, hadiah, interaction.user.id, end_at)
-        if gid:
-            schedule_giveaway(gid, str(interaction.channel.id), str(msg.id), hadiah, end_at)
+            from datetime import timedelta
+            end_at = datetime.utcnow() + timedelta(minutes=durasi_menit)
+            gid = await add_giveaway(interaction.channel.id, msg.id, hadiah, interaction.user.id, end_at)
+            if gid:
+                schedule_giveaway(gid, str(interaction.channel.id), str(msg.id), hadiah, end_at)
     
     @tree.command(name="birthday", description="Atur tanggal ulang tahun kamu")
     async def slash_birthday(interaction: discord.Interaction, tanggal_bulan: str):

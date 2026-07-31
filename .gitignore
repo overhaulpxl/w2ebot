@@ -1,7 +1,15 @@
 # Secrets and local environment
+/docs/W2E_Bot_PRD.md
 .env
 .env.*
 !.env.example
+!.env.staging.example
+.env.staging
+staging/*.db
+staging/*.db-*
+backups/economy/
+reports/economy/
+.env.staging.local
 .envrc
 
 # Runtime database and generated state
@@ -20,6 +28,15 @@ config.json
 # Runtime logs and backups
 logs/
 backups/
+tests/tmp/
+*.economy-manifest.json
+*.economy-test.db
+economy-phase2-*.json
+*.phase2-economy.db
+economy-phase3-*.json
+*.phase3-economy.db
+reports/rpg-phase3/
+backups/rpg-phase3/
 tmp/
 temp/
 uploads/
@@ -61,6 +78,7 @@ dashboard-example/.next/
 dashboard-example/out/
 dashboard-example/.env
 dashboard-example/.env.*
+staging/phase9a-keys/
 
 # Assets downloaded/generated at runtime
 fonts/
