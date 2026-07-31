@@ -1,4 +1,5 @@
 """Layanan Mining Phase 7 dengan accrual deterministik dan settlement atomik."""
+from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -71,7 +72,6 @@ def mining_allocation(amount):
 def calculate_mining_yield(gross_per_day, rewarded_seconds, average_price,
                            previous_carry=0, pending_units=0):
     """Hitung yield tanpa intermediate SQLite dan simpan carry billionths."""
-from __future__ import annotations
     gross = _safe_int(int(gross_per_day), "grossPerDay", minimum=1)
     seconds = _safe_int(int(rewarded_seconds), "rewardedSeconds", maximum=DAY_SECONDS)
     price = _safe_int(int(average_price), "averagePrice", minimum=1)

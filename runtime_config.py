@@ -1,5 +1,5 @@
-from __future__ import annotations
 """Konfigurasi runtime terpusat dan guard staging yang fail-closed."""
+from __future__ import annotations
 
 from dataclasses import dataclass
 import os

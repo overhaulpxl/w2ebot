@@ -1,5 +1,5 @@
-from __future__ import annotations
 """Layanan authoritative Giveaway V1 dan Activity Score Phase 8."""
+from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone

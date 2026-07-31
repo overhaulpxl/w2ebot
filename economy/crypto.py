@@ -1,5 +1,5 @@
-from __future__ import annotations
 """Atomic ECY Crypto trading and portfolio accounting."""
+from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
