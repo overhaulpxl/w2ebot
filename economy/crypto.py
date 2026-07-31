@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Atomic ECY Crypto trading and portfolio accounting."""
 
 from dataclasses import dataclass

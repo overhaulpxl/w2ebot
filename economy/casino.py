@@ -722,6 +722,7 @@ async def is_casino_authorized(db_path, guild_id, user_id, permission_class):
 
 async def set_casino_paused(db_path, *, guild_id, actor_id, paused, reason):
     """Ubah emergency state Casino hanya melalui izin CASINO_CONTROL."""
+from __future__ import annotations
     if not await is_casino_authorized(db_path, guild_id, actor_id, "CASINO_CONTROL"):
         return EconomyResult(False, "unauthorized", "CASINO_CONTROL diperlukan untuk pause atau resume Casino.")
     try:

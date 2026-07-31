@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Layanan authoritative Giveaway V1 dan Activity Score Phase 8."""
 
 from dataclasses import dataclass

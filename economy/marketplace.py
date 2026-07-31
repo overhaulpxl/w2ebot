@@ -820,6 +820,7 @@ async def browse_listings(db_path, guild_id, *, query=None, seller_id=None, limi
 
 async def get_listing_details(db_path, guild_id, listing_id):
     """Baca listing terminal maupun aktif tanpa membuat state baru."""
+from __future__ import annotations
     async with aiosqlite.connect(db_path) as db:
         await configure_connection(db)
         await require_marketplace_schema(db)
