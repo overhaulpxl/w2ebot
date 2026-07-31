@@ -93,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("Evidence staging awal tidak valid: " + ", ".join(issues))
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(evidence, ensure_ascii=True, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+    output.write_text(json.dumps(evidence, ensure_ascii=True, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print("Evidence staging Phase 9C diinisialisasi; tidak ada koneksi Discord/OAuth yang dilakukan oleh CLI ini.")
     return 0
 

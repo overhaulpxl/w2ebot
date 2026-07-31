@@ -19,7 +19,7 @@ def main(argv=None):
     result = run_mining_simulation(seeds=20, days=90)
     payload = json.dumps(result, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n"
     if args.output:
-        Path(args.output).write_text(payload, encoding="utf-8", newline="\n")
+        Path(args.output).write_text(payload, encoding="utf-8")
     print(json.dumps({"artifactHash": result["artifactHash"], "passed": result["passed"],
                       "summary": result["artifact"]["summary"]}, indent=2, sort_keys=True))
     return 0 if result["passed"] else 1

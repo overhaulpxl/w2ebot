@@ -58,7 +58,6 @@ def _write_env_if_absent(path, database):
         "ECONOMY_PHASE3_ENABLED=true\n"
         "DISCORD_TOKEN=REPLACE_WITH_DEDICATED_STAGING_BOT_TOKEN\n",
         encoding="utf-8",
-        newline="\n",
     )
     return True
 

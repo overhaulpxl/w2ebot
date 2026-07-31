@@ -164,7 +164,7 @@ def main(argv: list[str] | None = None) -> int:
     report = run_local_qa()
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(report, ensure_ascii=True, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+    output.write_text(json.dumps(report, ensure_ascii=True, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps({"passed": report["passed"], "exactTestTotal": report["exactTestTotal"]}, sort_keys=True))
     return 0 if report["passed"] else 1
 
