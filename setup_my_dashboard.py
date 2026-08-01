@@ -28,6 +28,16 @@ def main():
 
     import datetime
     now_str = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    
+    from economy.constants import PHASE9A_BACKEND_SAFETY_MIGRATION_VERSION, PHASE9B_AUTHORITATIVE_NOTIFICATIONS_MIGRATION_VERSION
+    from economy.phase9a_schema import PHASE9A_MIGRATION_NAME, PHASE9A_SCHEMA_CHECKSUM
+    from economy.phase9b_schema import PHASE9B_MIGRATION_NAME, PHASE9B_SCHEMA_CHECKSUM
+    
+    db.execute("INSERT OR REPLACE INTO EconomySchemaMigration (version, name, checksum, status, appliedAt) VALUES (?, ?, ?, 'COMPLETED', ?)", 
+               (PHASE9A_BACKEND_SAFETY_MIGRATION_VERSION, PHASE9A_MIGRATION_NAME, PHASE9A_SCHEMA_CHECKSUM, now_str))
+    db.execute("INSERT OR REPLACE INTO EconomySchemaMigration (version, name, checksum, status, appliedAt) VALUES (?, ?, ?, 'COMPLETED', ?)", 
+               (PHASE9B_AUTHORITATIVE_NOTIFICATIONS_MIGRATION_VERSION, PHASE9B_MIGRATION_NAME, PHASE9B_SCHEMA_CHECKSUM, now_str))
+
     keys = [
         ('phase9a-internal-v1', 'INTERNAL_REQUEST', b'w2e_internal_super_secret_9988776655'),
         ('phase9a-session-v1', 'SESSION_HASH', b'w2e_session_ultra_secure_hash_112233'),
