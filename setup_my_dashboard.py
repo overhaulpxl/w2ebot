@@ -26,8 +26,8 @@ def main():
     db.executescript(PHASE9B_TABLE_SQL)
     for q in PHASE9B_INDEX_SQL: db.execute(q)
 
-    # Insert keys
-    now = int(time.time())
+    import datetime
+    now_str = datetime.datetime.now(datetime.timezone.utc).isoformat()
     keys = [
         ('phase9a-internal-v1', 'INTERNAL_REQUEST', b'w2e_internal_super_secret_9988776655'),
         ('phase9a-session-v1', 'SESSION_HASH', b'w2e_session_ultra_secure_hash_112233'),
@@ -37,8 +37,8 @@ def main():
     for k, p, s in keys:
         fp = hashlib.sha256(s).hexdigest()
         db.execute(
-            "INSERT OR IGNORE INTO DashboardSigningKeyVersion (keyId, purpose, fingerprint, actorId, status, createdAt) VALUES (?, ?, ?, 'SYSTEM', 'ACTIVE', ?)",
-            (k, p, fp, now)
+            "INSERT OR IGNORE INTO DashboardSigningKeyVersion (keyId, purpose, fingerprintSha256, createdById, status, activatedAt) VALUES (?, ?, ?, 'SYSTEM', 'ACTIVE', ?)",
+            (k, p, fp, now_str)
         )
 
     db.commit()
