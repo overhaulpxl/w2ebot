@@ -33,7 +33,8 @@ export async function GET(request: NextRequest) {
     response.cookies.set(STATE_COOKIE, state, options);
     response.cookies.set(PKCE_COOKIE, verifier, options);
     return response;
-  } catch {
+  } catch (e) {
+    console.error("LOGIN ROUTE ERROR:", e);
     return NextResponse.json({ error: "capability_unavailable" }, { status: 503 });
   }
 }
