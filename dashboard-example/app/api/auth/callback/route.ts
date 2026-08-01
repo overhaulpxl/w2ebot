@@ -57,7 +57,8 @@ export async function GET(request: NextRequest) {
     response.cookies.set(STATE_COOKIE, "", { path: "/", maxAge: 0 });
     response.cookies.set(PKCE_COOKIE, "", { path: "/", maxAge: 0 });
     return response;
-  } catch {
+  } catch (e) {
+    console.error("CALLBACK ROUTE ERROR:", e);
     const target = publicUrl.startsWith("https://") ? new URL("/login?error=unauthenticated", publicUrl) : new URL("https://invalid.local/login");
     const response = NextResponse.redirect(target);
     response.cookies.set(STATE_COOKIE, "", { path: "/", maxAge: 0 });
