@@ -33,9 +33,9 @@ def main():
     from economy.phase9a_schema import PHASE9A_MIGRATION_NAME, PHASE9A_SCHEMA_CHECKSUM
     from economy.phase9b_schema import PHASE9B_MIGRATION_NAME, PHASE9B_SCHEMA_CHECKSUM
     
-    db.execute("INSERT OR REPLACE INTO EconomySchemaMigration (version, name, checksum, status, appliedAt) VALUES (?, ?, ?, 'COMPLETED', ?)", 
+    db.execute("INSERT OR REPLACE INTO EconomySchemaMigration (version, name, checksum, status, completedAt) VALUES (?, ?, ?, 'COMPLETED', ?)", 
                (PHASE9A_BACKEND_SAFETY_MIGRATION_VERSION, PHASE9A_MIGRATION_NAME, PHASE9A_SCHEMA_CHECKSUM, now_str))
-    db.execute("INSERT OR REPLACE INTO EconomySchemaMigration (version, name, checksum, status, appliedAt) VALUES (?, ?, ?, 'COMPLETED', ?)", 
+    db.execute("INSERT OR REPLACE INTO EconomySchemaMigration (version, name, checksum, status, completedAt) VALUES (?, ?, ?, 'COMPLETED', ?)", 
                (PHASE9B_DASHBOARD_MIGRATION_VERSION, PHASE9B_MIGRATION_NAME, PHASE9B_SCHEMA_CHECKSUM, now_str))
 
     keys = [
