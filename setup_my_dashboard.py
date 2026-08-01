@@ -21,10 +21,10 @@ def main():
     
     # Apply Schema
     db.executescript(PHASE9A_TABLE_SQL)
-    db.executescript(PHASE9A_INDEX_SQL)
-    db.executescript(PHASE9A_TRIGGER_SQL)
+    for q in PHASE9A_INDEX_SQL: db.execute(q)
+    for q in PHASE9A_TRIGGER_SQL: db.execute(q)
     db.executescript(PHASE9B_TABLE_SQL)
-    db.executescript(PHASE9B_INDEX_SQL)
+    for q in PHASE9B_INDEX_SQL: db.execute(q)
 
     # Insert keys
     now = int(time.time())
