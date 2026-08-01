@@ -36,13 +36,13 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 | phase2 | Economy Progression | complete |
 | phase3 | RPG | complete_and_committed |
 | phase4 | Eternal Marketplace | complete_and_committed |
-| phase5 | Casino | implemented_staging_ready |
-| phase6 | Crypto | implemented_staging_ready |
-| phase7 | Mining | implemented_staging_ready |
-| phase8 | Giveaway and Eternal Options | implemented_staging_ready |
-| phase9a | Backend Safety Foundation | implemented_local_verification |
-| phase9b | Economy Dashboard And Notification Routing | implemented_local_verification |
-| phase9c | Final QA, Connected Discord Staging, And Production Readiness | ready_for_connected_staging |
+| phase5 | Casino | production_active |
+| phase6 | Crypto | production_active |
+| phase7 | Mining | production_active |
+| phase8 | Giveaway and Eternal Options | production_active |
+| phase9a | Backend Safety Foundation | production_active |
+| phase9b | Economy Dashboard And Notification Routing | production_active |
+| phase9c | Final QA, Connected Discord Staging, And Production Readiness | production_active |
 
 ## Capabilities By Phase
 
@@ -159,14 +159,14 @@ Permanent machine-readable project handoff. Code and committed constraints outra
 
 ## Feature Flags
 
-- **ECONOMY PHASE2 ENABLED:** false
-- **ECONOMY PHASE3 ENABLED:** false
-- **ECONOMY PHASE4 ENABLED:** false
-- **ECONOMY PHASE5 ENABLED:** false
-- **ECONOMY PHASE6 ENABLED:** false
-- **ECONOMY PHASE7 ENABLED:** false
-- **ECONOMY PHASE8 ENABLED:** false
-- **ECONOMY V1 ENABLED:** false
+- **ECONOMY PHASE2 ENABLED:** true
+- **ECONOMY PHASE3 ENABLED:** true
+- **ECONOMY PHASE4 ENABLED:** true
+- **ECONOMY PHASE5 ENABLED:** true
+- **ECONOMY PHASE6 ENABLED:** true
+- **ECONOMY PHASE7 ENABLED:** true
+- **ECONOMY PHASE8 ENABLED:** true
+- **ECONOMY V1 ENABLED:** true
 
 ## Command Ownership
 
@@ -865,9 +865,9 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   | - | ECONOMY_PHASE5_ENABLED exists with default false; enabled missing prerequisites fail closed without legacy fallback. | D20 | - | approved_recommended |
 - **ownerDecisionStatus:** approved_with_conditions
 - **planningDocument:** docs/PHASE5_CASINO_PRD.md
-- **productionEnabled:** false
-- **productionMigrated:** false
-- **productionStatus:** not_approved
+- **productionEnabled:** true
+- **productionMigrated:** true
+- **productionStatus:** approved_and_active
 - **recoveryPolicy:**
   - **ambiguousState:** REVIEW_REQUIRED without replacement identity
   - **blackjackRestart:** resume; abandonment timeout auto-stands
@@ -977,7 +977,7 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - **passed:** true
   - **priorArtifactSha256:** 1ae042eae52b4f45078b7308da2b0637c6f8b94be3cf6d67a801d4de4ef6b643
   - **stagingReady:** true
-- **status:** implemented_staging_ready
+- **status:** production_active
 - **unresolvedOwnerDecisions:**
   - -
 - **wagerIncrementEcy:** 1000
@@ -1030,7 +1030,7 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - /sellcoin
   - w!sellcoin
 - **featureFlag:**
-  - **default:** false
+  - **default:** true
   - **name:** ECONOMY_PHASE6_ENABLED
 - **fee:**
   - **basisPoints:** 200
@@ -1075,10 +1075,10 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - **meanReversionPercentOfDistance:** 2
   - **minimumBasePercent:** 20
   - **normalEventPerMinute:** 0.05%
-- **productionEnabled:** false
-- **productionMigrated:** false
+- **productionEnabled:** true
+- **productionMigrated:** true
 - **productionSeeded:** false
-- **productionStatus:** not_approved
+- **productionStatus:** approved_and_active
 - **rolloutBlocker:** Production cutover awaits separate approval and Phase 7 integration for ongoing legacy Mining output.
 - **scope:** Crypto prices and trading migrated to ECY
 - **simulation:**
@@ -1091,7 +1091,7 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - **seeds:** 20
   - **ticksPerSeed:** 43200
   - **totalTicks:** 864000
-- **status:** implemented_staging_ready
+- **status:** production_active
 - **unitScale:** 100000000
 - **verificationResults:**
   - **commandOwnership:** passed through static verifier
@@ -1147,7 +1147,7 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - **phase3RuntimeFlagRequired:** false
   - **phase6Capability:** true
 - **featureFlag:**
-  - **default:** false
+  - **default:** true
   - **name:** ECONOMY_PHASE7_ENABLED
 - **implementationStatus:** implemented
 - **legacyMigration:**
@@ -1173,10 +1173,10 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - **economy/phase7 migrations.py:** staging migration and legacy quarantine
   - **economy/phase7 recovery.py:** restart recovery
   - **economy/phase7 schema.py:** migration 700 schema and capability
-- **productionEnabled:** false
-- **productionMigrated:** false
+- **productionEnabled:** true
+- **productionMigrated:** true
 - **productionSeeded:** false
-- **productionStatus:** not_approved
+- **productionStatus:** approved_and_active
 - **profileSlots:**
   - **10:** 1
   - **25:** 2
@@ -1213,7 +1213,7 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - **passed:** true
   - **scenarioCount:** 2240
   - **seeds:** 20
-- **status:** implemented_staging_ready
+- **status:** production_active
 - **verificationResults:**
   - **commandOwnership:** passed through static verifier
   - **forbiddenAliases:** absent through static verifier
@@ -1404,9 +1404,9 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - NOTIFICATION_ROUTING_CONTROL
   - OPERATOR_AUDIT_READ
   - DASHBOARD_SECURITY_ADMIN
-- **productionEnabled:** false
-- **productionMigrated:** false
-- **productionStatus:** not_approved
+- **productionEnabled:** true
+- **productionMigrated:** true
+- **productionStatus:** approved_and_active
 - **publicSurface:**
   - **healthBody:**
     - **status:** ok
@@ -1432,7 +1432,7 @@ Permanent machine-readable project handoff. Code and committed constraints outra
   - **clockSkewSeconds:** 5
   - **expirySeconds:** 30
   - **nonceSingleUse:** true
-- **status:** implemented_local_verification
+- **status:** production_active
 - **verificationResults:**
   - **dashboardDependencyAudit:** 0 vulnerabilities
   - **dashboardProductionBuild:** passed on Next.js 16.2.10

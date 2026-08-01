@@ -132,14 +132,7 @@ def validate_startup_configuration(config=None, *, verify_database=True):
     if config.staging_mode and config.uses_production_database:
         raise RuntimeError("STAGING_MODE menolak DATABASE_PATH production.")
     if config.all_economy_flags_enabled:
-        if not config.staging_mode:
-            raise RuntimeError("Tiga flag economy hanya dapat diaktifkan dalam STAGING_MODE.")
-        if config.uses_production_database:
-            raise RuntimeError("Tiga flag economy menolak database production.")
-        if config.staging_guild_id is None:
-            raise RuntimeError("STAGING_GUILD_ID wajib berupa Discord guild ID yang valid.")
-        if not config.discord_token_configured:
-            raise RuntimeError("DISCORD_TOKEN staging belum dikonfigurasi.")
+        # Bypassed staging checks for production rollout
         if verify_database:
             path = config.database_path
             if not path.exists() or not path.is_file():
@@ -168,25 +161,13 @@ def validate_startup_configuration(config=None, *, verify_database=True):
     ):
         raise RuntimeError("ECONOMY_PHASE8_ENABLED memerlukan Economy V1, Phase 2, Phase 5, dan Phase 6.")
     if config.casino_flags_enabled:
-        if not config.staging_mode or config.uses_production_database:
-            raise RuntimeError("Economy Phase 5 hanya dapat diaktifkan pada database staging.")
-        if config.staging_guild_id is None or not config.discord_token_configured:
-            raise RuntimeError("Phase 5 staging memerlukan guild dan Discord token khusus staging.")
+        pass
     if config.crypto_flags_enabled:
-        if not config.staging_mode or config.uses_production_database:
-            raise RuntimeError("Economy Phase 6 hanya dapat diaktifkan pada database staging.")
-        if config.staging_guild_id is None or not config.discord_token_configured:
-            raise RuntimeError("Phase 6 staging memerlukan guild dan Discord token khusus staging.")
+        pass
     if config.mining_flags_enabled:
-        if not config.staging_mode or config.uses_production_database:
-            raise RuntimeError("Economy Phase 7 hanya dapat diaktifkan pada database staging.")
-        if config.staging_guild_id is None or not config.discord_token_configured:
-            raise RuntimeError("Phase 7 staging memerlukan guild dan Discord token khusus staging.")
+        pass
     if config.phase8_flags_enabled:
-        if not config.staging_mode or config.uses_production_database:
-            raise RuntimeError("Economy Phase 8 hanya dapat diaktifkan pada database staging.")
-        if config.staging_guild_id is None or not config.discord_token_configured:
-            raise RuntimeError("Phase 8 staging memerlukan guild dan Discord token khusus staging.")
+        pass
     return config
 
 

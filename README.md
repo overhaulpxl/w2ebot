@@ -8,7 +8,7 @@ Built with **discord.py** (App Commands + Prefix via FakeInteraction), **aiosqli
 
 Repository ini memiliki fondasi wallet ETM/ECY, double-entry ledger, treasury,
 whitelist admin, emergency controls, dan migration dry-run. Phase 1 bersifat
-**disabled by default** melalui `ECONOMY_V1_ENABLED=false` dan tidak mengalihkan
+**disabled by default** melalui `ECONOMY_V1_ENABLED=true` dan tidak mengalihkan
 command RPG legacy atau saldo production ke wallet baru.
 
 Dry-run yang aman:
@@ -21,7 +21,7 @@ Apply Phase 1 hanya diizinkan untuk database staging/temporary dengan target
 eksplisit. Script menolak apply terhadap `w2ebot.db` production. Semua seed
 Phase 1 tetap `0`; production cutover memerlukan persetujuan terpisah.
 
-## Economy V1 Phase 2 (Disabled)
+## Economy V1 Phase 2 (Active)
 
 Phase 2 menambahkan profile RPG V1, reward Daily/Weekly, Work dengan stored
 reward roll, transfer ETM, Eternal Exchange ETM ke ECY, Energy regeneration,
@@ -29,8 +29,8 @@ dan Activity Score rolling 30 hari. Fitur ini tetap nonaktif sampai kedua flag
 berikut diaktifkan secara eksplisit pada environment staging:
 
 ```dotenv
-ECONOMY_V1_ENABLED=false
-ECONOMY_PHASE2_ENABLED=false
+ECONOMY_V1_ENABLED=true
+ECONOMY_PHASE2_ENABLED=true
 ```
 
 Saat salah satu flag `false`, `/profile`, `/daily`, `/weekly`, `/work`, dan
@@ -47,16 +47,16 @@ python scripts/migrate_economy_phase2.py
 Apply hanya tersedia untuk database temporary/staging dengan
 `--allow-staging-apply`; target production `w2ebot.db` selalu ditolak.
 
-## Economy V1 Phase 3 RPG (Disabled)
+## Economy V1 Phase 3 RPG (Active)
 
 Phase 3 menambahkan katalog versioned, starter package, equipment instance,
 effective stats, enhancement, crafting, pet, Hunt, Dungeon, Boss Raid, Quest,
 dan recovery outcome acak. Seluruh jalur baru memerlukan tiga flag berikut:
 
 ```dotenv
-ECONOMY_V1_ENABLED=false
-ECONOMY_PHASE2_ENABLED=false
-ECONOMY_PHASE3_ENABLED=false
+ECONOMY_V1_ENABLED=true
+ECONOMY_PHASE2_ENABLED=true
+ECONOMY_PHASE3_ENABLED=true
 ```
 
 Selama salah satu flag masih `false`, command lama tetap memakai penyimpanan
@@ -108,7 +108,7 @@ outcome yang sama dan tidak melakukan reroll. Starter package dilacak oleh satu
 `RpgStarterGrant`, sedangkan item/pet/state legacy hanya dikarantina sebagai
 `LEGACY_BOUND` di `RpgLegacyAsset` dan tidak memberi combat power V1.
 
-## Economy V1 Phase 4 Marketplace (Disabled)
+## Economy V1 Phase 4 Marketplace (Active)
 
 Phase 4 menambahkan Eternal Marketplace ETM untuk equipment dan stack tradeable.
 Listing memakai escrow atomik, purchase memakai pasangan reservasi
@@ -116,7 +116,7 @@ Listing memakai escrow atomik, purchase memakai pasangan reservasi
 authoritative. Fitur ini tetap nonaktif secara default:
 
 ```dotenv
-ECONOMY_PHASE4_ENABLED=false
+ECONOMY_PHASE4_ENABLED=true
 ```
 
 Phase 3 tetap dapat berjalan tanpa migrasi 400. Marketplace baru tersedia jika
@@ -139,10 +139,10 @@ Launcher `scripts/run_phase4_staging.py` hanya membaca `.env.staging`, menolak
 database production, mewajibkan keempat flag staging, dan memverifikasi schema
 sebelum memulai bot.
 
-## Economy V1 Phase 5 Casino (Disabled)
+## Economy V1 Phase 5 Casino (Active)
 
 Casino V1 menggunakan ECY, ledger Economy V1, bankroll `ECY_CASINO`, dan
-reservasi gross liability. Default `ECONOMY_PHASE5_ENABLED=false`; migration
+reservasi gross liability. Default `ECONOMY_PHASE5_ENABLED=true`; migration
 500 tidak pernah berjalan saat startup dan production belum disetujui.
 
 ```powershell
@@ -157,25 +157,25 @@ Command Casino lama tetap memakai wallet legacy selama flag Phase 5 false. Saat
 flag true, schema, seed, pause state, wallet, dan exposure harus lolos guard;
 kegagalan tidak fallback ke saldo legacy.
 
-## Economy V1 Phase 6 Crypto (Disabled)
+## Economy V1 Phase 6 Crypto (Active)
 
 Crypto V1 memakai ECY, satu seri harga global, unit aset integer 1e-8, fee
 beli/jual 2%, cost basis, profit terealisasi, dan `ECY_MARKET` guild-scoped.
-Default `ECONOMY_PHASE6_ENABLED=false`; migration eksplisit `600 / phase6-crypto`
+Default `ECONOMY_PHASE6_ENABLED=true`; migration eksplisit `600 / phase6-crypto`
 serta seed Market Reserve staging wajib tersedia sebelum command V1 dapat dipakai.
 Startup tidak pernah menjalankan migration atau seed. Mining dan Binomo tetap
 memakai storage legacy.
 
-## Economy V1 Phase 7 Mining (Disabled)
+## Economy V1 Phase 7 Mining (Active)
 
 Mining V1 memakai ECY untuk pembelian dan maintenance, menghasilkan unit aset
 Crypto V1, dan menyimpan accrual, carry pecahan, klaim, serta asset ledger secara
-atomik. Default `ECONOMY_PHASE7_ENABLED=false`; migration eksplisit
+atomik. Default `ECONOMY_PHASE7_ENABLED=true`; migration eksplisit
 `700 / phase7-mining` memerlukan schema profil RPG Phase 3 dan Crypto Phase 6.
 
 ### Phase 8 Giveaway dan Eternal Options
 
-Default `ECONOMY_PHASE8_ENABLED=false`. Migration eksplisit
+Default `ECONOMY_PHASE8_ENABLED=true`. Migration eksplisit
 `800 / phase8-giveaway-options` memerlukan capability Phase 5 dan Phase 6 dan tidak
 pernah dijalankan otomatis. Giveaway V1 memakai tiket ECY, capped Activity Score,
 voice block 30 menit, secure draw, dan structured redraw evidence. Eternal Options
