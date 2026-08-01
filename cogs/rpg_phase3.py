@@ -133,7 +133,7 @@ class BossGroup(app_commands.Group):
                 DB_PATH, guild_id=interaction.guild_id, tier=tier.value,
                 start_key=str(interaction.id), authorized=authorized,
             )
-            await _reply(interaction, f"Boss {result['tier']} berstatus **{result['status']}**. Raid ID: `{result['raid_id']}`", ephemeral=True)
+            await _reply(interaction, f"Boss {result['tier']} berstatus **{result['status']}**.\n-# Raid ID: `{result['raid_id']}`", ephemeral=True)
         except (ValueError, PermissionError) as exc:
             await _reply(interaction, str(exc), ephemeral=True)
 
@@ -186,7 +186,7 @@ class PetGroup(app_commands.Group):
             embed.add_field(
                 name=f"{'[AKTIF] ' if row['active'] else ''}{row['name']} ({row['rarity']})",
                 value=(f"Level {row['level']} | XP {row['xp']} | Evolusi {row['evolutionState']}\n"
-                       f"Passive: {passive}\nSkill: {row['skill']}\nID: `{row['petInstanceId']}`"), inline=False,
+                       f"Passive: {passive}\nSkill: {row['skill']}\n-# ID: `{row['petInstanceId']}`"), inline=False,
             )
         if not rows:
             embed.description = "Belum ada pet."

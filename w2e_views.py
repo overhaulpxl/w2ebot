@@ -18,6 +18,11 @@ def _casino_receipt_text(result):
     detail = receipt.get("result", {})
     if game == "SLOT":
         extra = " | ".join(detail.get("reels", []))
+    elif game == "BLACKJACK":
+        hands = receipt.get("playerHands", [])
+        cards = " | ".join(", ".join(hand) for hand in hands) or "-"
+        dealer_cards = ", ".join(receipt.get("dealerCards", [])) or "-"
+        extra = f"Kartu kamu: **{cards}**\nDealer: **{dealer_cards}**\nBlackjack selesai."
     elif game == "COINFLIP":
         extra = f"Hasil: {detail.get('result', '-')}"
     elif game == "RPS":
@@ -29,7 +34,7 @@ def _casino_receipt_text(result):
     elif game == "BOX":
         extra = "Loot Box selesai dibuka."
     else:
-        extra = "Blackjack selesai."
+        extra = "Selesai."
     return f"**{game} Casino V1**\n{extra}\nStake: **{stake:,} ECY**\nPayout: **{payout:,} ECY**"
 
 

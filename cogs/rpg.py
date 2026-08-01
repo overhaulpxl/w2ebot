@@ -98,7 +98,7 @@ def setup(tree, client):
         )
         await send_embed(
             interaction,
-            f"Konfirmasi **{game} Casino V1** dengan stake **{stake:,} ECY**.\n"
+            f"Konfirmasi **{game} Casino** dengan stake **{stake:,} ECY**.\n"
             f"Maksimum efektif saat ini: **{maximum:,} ECY**.\n"
             "Konfirmasi berlaku 90 detik dan belum membuat sesi atau debit.",
             view=view,
@@ -295,7 +295,7 @@ def setup(tree, client):
             if not snapshot["available"]:
                 await send_embed(interaction, "Crypto Phase 6 aktif tetapi migration 600 belum siap.")
                 return
-            embed = discord.Embed(title="W2E Crypto Market V1", color=discord.Color.gold())
+            embed = discord.Embed(title="W2E Crypto Market", color=discord.Color.gold())
             for symbol, data in snapshot["coins"].items():
                 history = data.get("history", [data["price"]])
                 change = data["price"] - (history[-2] if len(history) > 1 else data["price"])
@@ -607,12 +607,12 @@ def setup(tree, client):
                     name=definition.get("name", row["itemId"]),
                     value=(f"{definition.get('rarity', '-')} | {row['slot']} | +{row['enhancementLevel']}\n"
                            f"Binding: {row['bindingStatus']} | Status: {row['status']}\n"
-                           f"ID: `{row['equipmentInstanceId']}`"), inline=False,
+                           f"-# ID: `{row['equipmentInstanceId']}`"), inline=False,
                 )
             for row in data["stacks"]:
                 definition = STACK_ITEMS.get(row["itemId"], (row["itemId"],))
                 embed.add_field(
-                    name=definition[0], value=f"ID: `{row['itemId']}` | Qty: **{row['quantity']}**", inline=False,
+                    name=definition[0], value=f"Qty: **{row['quantity']}**\n-# ID: `{row['itemId']}`", inline=False,
                 )
             if not embed.fields:
                 embed.description = "Inventory kosong untuk kategori ini."
@@ -824,7 +824,7 @@ def setup(tree, client):
         
         embed = discord.Embed(title="🏆 W2E Leaderboard 🏆", color=discord.Color.gold())
         for i, row in enumerate(rows):
-            embed.add_field(name=f"#{i+1} {row[1]}", value=f"Level: {row[3]} | Koin: {row[2]}", inline=False)
+            embed.add_field(name=f"#{i+1} {row[1]}", value=f"Level: {row[3]} | ETM: {row[2]}", inline=False)
         await interaction.followup.send(embed=embed)
 
     @tree.command(name="leaderboard", description="Lihat RPG level leaderboard")
@@ -1169,7 +1169,7 @@ def setup(tree, client):
                 color=discord.Color.green(),
             )
             if not data["holdings"]:
-                embed.description = "Portfolio Crypto V1 kamu kosong."
+                embed.description = "Portfolio Crypto kamu kosong."
             for holding in data["holdings"]:
                 embed.add_field(
                     name=holding["symbol"],
@@ -1384,7 +1384,7 @@ def setup(tree, client):
             definitions = {1: "rig_basic", 2: "rig_advanced", 3: "rig_elite", 4: "rig_eternal"}
             definition = definitions.get(tier)
             if not definition:
-                await send_embed(interaction, "Tier Mining V1 harus 1, 2, 3, atau 4.")
+                await send_embed(interaction, "Tier Mining harus 1, 2, 3, atau 4.")
                 return
             readiness = await mining_readiness(DB_PATH, interaction.guild_id, interaction.user.id)
             if not readiness.get("ready"):
@@ -1444,7 +1444,7 @@ def setup(tree, client):
             from economy.mining import list_rigs
             rows = await list_rigs(DB_PATH, interaction.guild_id, interaction.user.id)
             if not rows:
-                await send_embed(interaction, "Kamu belum memiliki rig Mining V1.")
+                await send_embed(interaction, "Kamu belum memiliki rig Mining.")
                 return
             await send_embed(interaction, "\n".join(
                 f"`{row[0]}` | {row[1]} | {row[2]} | {row[3]}" for row in rows

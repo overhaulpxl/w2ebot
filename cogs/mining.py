@@ -67,7 +67,7 @@ async def _confirm(interaction, description, callback):
 
 def _format_rigs(rows):
     if not rows:
-        return "Belum ada rig Mining V1."
+        return "Belum ada rig Mining."
     return "\n".join(
         f"`{row[0]}` | {row[1]} | {row[2]} | {row[3]} | maintenance: {row[4] or '-'}"
         for row in rows
@@ -77,7 +77,7 @@ def _format_rigs(rows):
 def setup(tree, client):
     group = app_commands.Group(name="mining", description="Mining Crypto berbasis ECY")
 
-    @group.command(name="status", description="Lihat kesiapan Mining V1")
+    @group.command(name="status", description="Lihat kesiapan Mining")
     async def status(interaction: discord.Interaction):
         state = await mining_readiness(DB_PATH, interaction.guild_id, interaction.user.id)
         await send_embed(interaction, f"Status Mining: **{state['code']}**")
@@ -88,7 +88,7 @@ def setup(tree, client):
                  for key, (name, price, gross, maintenance) in MINING_RIG_CATALOG.items()]
         await send_embed(interaction, "\n".join(lines))
 
-    @group.command(name="buy", description="Beli rig Mining V1")
+    @group.command(name="buy", description="Beli rig Mining")
     async def buy(interaction: discord.Interaction, rig: str, target: str = "ETHR"):
         if not phase7_enabled():
             await send_embed(interaction, "Mining Phase 7 belum diaktifkan.")

@@ -448,6 +448,8 @@ async def settle_session(db_path, *, session_id, result_override=None, recovery_
     if game == "BLACKJACK":
         receipt["entryTransactionId"] = state.get("entryTransactionId")
         receipt["debitedStakeEcy"] = int(state.get("debitedStakeEcy", base_stake))
+        receipt["playerHands"] = [hand["cards"] for hand in state["hands"]]
+        receipt["dealerCards"] = result.get("dealer", state.get("dealer", []))
         deltas = []
     else:
         deltas = [

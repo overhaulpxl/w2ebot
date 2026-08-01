@@ -1,4 +1,4 @@
-"""Adapter Discord Phase 8 Giveaway V1 dan Eternal Options."""
+"""Adapter Discord Phase 8 Giveaway dan Eternal Options."""
 
 from datetime import datetime, timezone
 import asyncio
@@ -126,7 +126,7 @@ class GiveawayClaimView(discord.ui.View):
                        custom_id="phase8:giveaway:claim")
     async def claim(self, interaction, button):
         if not phase8_enabled():
-            await interaction.response.send_message("Giveaway V1 tidak aktif.", ephemeral=True)
+            await interaction.response.send_message("Giveaway tidak aktif.", ephemeral=True)
             return
         async with aiosqlite.connect(DB_PATH) as db:
             await configure_connection(db)
@@ -230,7 +230,7 @@ def setup(tree, client):
     giveaway = app_commands.Group(name="giveaway", description="Giveaway ECY Phase 8")
     options = app_commands.Group(name="eternal-options", description="Eternal Options ECY")
 
-    @giveaway.command(name="create", description="Buat Giveaway V1")
+    @giveaway.command(name="create", description="Buat Giveaway")
     async def giveaway_create(interaction: discord.Interaction, prize: str, duration_minutes: int):
         if not _is_admin(interaction):
             await send_embed(interaction, "Khusus Administrator.")
@@ -244,7 +244,7 @@ def setup(tree, client):
             await send_embed(interaction, result.message)
             return
         view = GiveawayClaimView()
-        await send_embed(interaction, f"Giveaway **{prize}** aktif. ID: `{result.entity_id}`", view=view)
+        await send_embed(interaction, f"Giveaway **{prize}** aktif.\n-# ID: `{result.entity_id}`", view=view)
         try:
             message = await interaction.original_response()
             await set_giveaway_message(DB_PATH, result.entity_id, message.id)
@@ -358,7 +358,7 @@ def setup(tree, client):
             await send_embed(interaction, "Khusus Administrator.")
             return
         rows = await list_giveaways(DB_PATH, interaction.guild_id)
-        text = "\n".join(f"`{row[0]}` | {row[1]} | {row[2]} | {row[3]}" for row in rows) or "Belum ada Giveaway V1."
+        text = "\n".join(f"`{row[0]}` | {row[1]} | {row[2]} | {row[3]}" for row in rows) or "Belum ada Giveaway."
         await send_embed(interaction, text)
 
     @giveaway.command(name="list", description="Daftar Giveaway")

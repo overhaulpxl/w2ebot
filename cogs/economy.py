@@ -69,7 +69,7 @@ from economy.notification_delivery import (
 logger = logging.getLogger(__name__)
 
 
-STAGING_MESSAGE = "Economy V1 Phase 1 belum diaktifkan. Tidak ada saldo production yang diubah."
+STAGING_MESSAGE = "Economy Phase 1 belum diaktifkan. Tidak ada saldo production yang diubah."
 
 
 async def _deliver_phase5_notifications(client, *, limit=100):
@@ -369,7 +369,7 @@ class EconomyConfirmationView(discord.ui.View):
 
 
 def setup(tree, client):
-    economy_group = app_commands.Group(name="economy", description="Fondasi Economy V1")
+    economy_group = app_commands.Group(name="economy", description="Fondasi Economy")
     whitelist_group = app_commands.Group(name="whitelist", description="Whitelist mutasi ekonomi")
     casino_auth_group = app_commands.Group(name="casino-auth", description="Otorisasi least-privilege Casino")
     crypto_auth_group = app_commands.Group(name="crypto-auth", description="Otorisasi least-privilege Crypto")
@@ -555,7 +555,7 @@ def setup(tree, client):
             return
         await _reply(interaction, f"Fitur `{feature}` berhasil dilanjutkan.")
 
-    @economy_group.command(name="status", description="Lihat status dan supply Economy V1")
+    @economy_group.command(name="status", description="Lihat status dan supply Economy")
     async def status(interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         if not await _can_control(interaction):
@@ -565,7 +565,7 @@ def setup(tree, client):
         states = await feature_states(DB_PATH, interaction.guild_id)
         state_text = ", ".join(f"{row[0]}={'pause' if row[1] else 'aktif'}" for row in states)
         lines = [
-            f"Economy V1 enabled: **{'Ya' if ECONOMY_V1_ENABLED else 'Tidak'}**",
+            f"Economy enabled: **{'Ya' if ECONOMY_V1_ENABLED else 'Tidak'}**",
             f"Economy Phase 2 enabled: **{'Ya' if ECONOMY_PHASE2_ENABLED else 'Tidak'}**",
             f"Economy Phase 3 enabled: **{'Ya' if ECONOMY_PHASE3_ENABLED else 'Tidak'}**",
             f"Economy Phase 4 enabled: **{'Ya' if ECONOMY_PHASE4_ENABLED else 'Tidak'}**",
