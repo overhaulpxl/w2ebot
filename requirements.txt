@@ -9,4 +9,5 @@ spotipy
 PyNaCl
 python-dotenv
 davey
-aiosqlite
+asyncpg
+psycopg2-binary
