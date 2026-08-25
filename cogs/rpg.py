@@ -160,11 +160,10 @@ def setup(tree, client):
     register_prefix_command_handler("rank", rpg_rank_prefix_dispatcher)
 
     async def _rpg_level_leaderboard_embed(guild):
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute(
+        async with _pool.acquire() as db:
+            rows = await db.fetch(
                 "SELECT id, xp, level FROM DiscordStat ORDER BY level DESC, xp DESC LIMIT 10"
-            ) as cursor:
-                rows = await cursor.fetchall()
+            )
         embed = discord.Embed(
             title="🏆 RPG Level Leaderboard",
             description="Top users ranked by level and experience." if rows else "No RPG level data yet.\nStart chatting or using RPG features to appear on the leaderboard.",
@@ -818,9 +817,8 @@ def setup(tree, client):
     @tree.command(name="top", description="Lihat peringkat member terkaya dan tertinggi")
     async def slash_top(interaction: discord.Interaction):
         await interaction.response.defer()
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT id, displayName, coins, level FROM DiscordStat ORDER BY level DESC, coins DESC LIMIT 10") as cursor:
-                rows = await cursor.fetchall()
+        async with _pool.acquire() as db:
+            rows = await db.fetch("SELECT id, displayName, coins, level FROM DiscordStat ORDER BY level DESC, coins DESC LIMIT 10")
         
         embed = discord.Embed(title="🏆 W2E Leaderboard 🏆", color=discord.Color.gold())
         for i, row in enumerate(rows):

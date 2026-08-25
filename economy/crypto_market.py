@@ -5,7 +5,6 @@ import json
 import secrets
 import uuid
 
-import aiosqlite
 
 from .constants import (
     CRYPTO_ASSETS, CRYPTO_MAJOR_EVENT_PER_100000, CRYPTO_MEAN_REVERSION_BPS,
@@ -99,7 +98,7 @@ def plan_tick(states, rng=None):
 
 
 async def _states(db):
-    async with db.execute(
+    existing = await db.fetchrow(
         "SELECT symbol,currentPriceEcy,lastTickId,version,updatedAt FROM CryptoMarketState ORDER BY symbol"
     ) as cursor:
         rows = await cursor.fetchall()
@@ -109,16 +108,15 @@ async def _states(db):
 
 async def reserve_market_tick(db_path, *, scheduled_at=None, rng=None):
     scheduled = minute_key(scheduled_at)
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
-        await db.execute("BEGIN IMMEDIATE")
+    async with _pool.acquire() as db:
+        
+        async with db.transaction():
         if not await phase6_capability(db):
             await db.rollback()
             raise RuntimeError("Schema Crypto Phase 6 belum siap.")
-        async with db.execute(
-            "SELECT tickId,outcomeJson,status FROM CryptoMarketTick WHERE scheduledAt=?", (scheduled,),
-        ) as cursor:
-            existing = await cursor.fetchone()
+        rows = await db.fetch(
+            "SELECT tickId,outcomeJson,status FROM CryptoMarketTick WHERE scheduledAt=$1", (scheduled,),
+        )
         if existing:
             await db.rollback()
             return existing[0], json.loads(existing[1]), existing[2], True
@@ -129,7 +127,7 @@ async def reserve_market_tick(db_path, *, scheduled_at=None, rng=None):
         outcome = plan_tick(states, rng=rng)
         tick_id = str(uuid.uuid4())
         await db.execute(
-            "INSERT INTO CryptoMarketTick (tickId,scheduledAt,outcomeJson,status,createdAt) VALUES (?,?,?,'RESERVED',?)",
+            "INSERT INTO CryptoMarketTick (tickId,scheduledAt,outcomeJson,status,createdAt) VALUES ($1,$2,$3,'RESERVED',$4)",
             (tick_id, scheduled, json.dumps(outcome, sort_keys=True, separators=(",", ":")), utc_now()),
         )
         await db.commit()
@@ -138,19 +136,18 @@ async def reserve_market_tick(db_path, *, scheduled_at=None, rng=None):
 
 async def _create_news(db, *, tick_id, symbol, current_price, occurred_at):
     cutoff = (datetime.fromisoformat(occurred_at) - timedelta(minutes=30)).isoformat()
-    async with db.execute(
-        "SELECT currentPriceEcy,occurredAt FROM CryptoPriceHistory WHERE symbol=? AND occurredAt<=? "
+    previous = await db.fetchrow(
+        "SELECT currentPriceEcy,occurredAt FROM CryptoPriceHistory WHERE symbol=$1 AND occurredAt<=$2 "
         "ORDER BY occurredAt DESC LIMIT 1", (symbol, cutoff),
-    ) as cursor:
-        previous = await cursor.fetchone()
+    )
     if not previous or int(previous[0]) <= 0:
         return None
     change_bps = _signed_divide((current_price - int(previous[0])) * 10_000, int(previous[0]))
     absolute = abs(change_bps)
     if absolute < 1_000:
         return None
-    async with db.execute(
-        "SELECT 1 FROM CryptoNewsEvent WHERE symbol=? AND occurredAt>? LIMIT 1", (symbol, cutoff),
+    row = await db.fetchrow(
+        "SELECT 1 FROM CryptoNewsEvent WHERE symbol=$1 AND occurredAt>$2 LIMIT 1", (symbol, cutoff),
     ) as cursor:
         if await cursor.fetchone():
             return None
@@ -160,7 +157,7 @@ async def _create_news(db, *, tick_id, symbol, current_price, occurred_at):
     await db.execute(
         "INSERT INTO CryptoNewsEvent "
         "(newsId,eventKey,symbol,previousPriceEcy,currentPriceEcy,changeBps,newsType,comparisonStartedAt,occurredAt) "
-        "VALUES (?,?,?,?,?,?,?,?,?)",
+        "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
         (news_id, event_key, symbol, int(previous[0]), current_price, change_bps,
          news_type, previous[1], occurred_at),
     )
@@ -170,20 +167,19 @@ async def _create_news(db, *, tick_id, symbol, current_price, occurred_at):
         guilds = [str(row[0]) for row in await cursor.fetchall()]
     for guild_id in guilds:
         await db.execute(
-            "INSERT INTO CryptoNewsOutbox (outboxId,newsId,guildId,status,createdAt) VALUES (?, ?, ?, 'PENDING', ?)",
+            "INSERT INTO CryptoNewsOutbox (outboxId,newsId,guildId,status,createdAt) VALUES ($1, $2, $3, 'PENDING', $4)",
             (str(uuid.uuid4()), news_id, guild_id, occurred_at),
         )
     return news_id
 
 
 async def commit_market_tick(db_path, tick_id):
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
-        await db.execute("BEGIN IMMEDIATE")
+    async with _pool.acquire() as db:
+        
+        async with db.transaction():
         async with db.execute(
-            "SELECT outcomeJson,status,scheduledAt,resultJson FROM CryptoMarketTick WHERE tickId=?", (str(tick_id),),
-        ) as cursor:
-            row = await cursor.fetchone()
+            "SELECT outcomeJson,status,scheduledAt,resultJson FROM CryptoMarketTick WHERE tickId=$1", (str(tick_id),),
+        )
         if not row:
             await db.rollback()
             raise ValueError("Tick Crypto tidak ditemukan.")
@@ -198,8 +194,8 @@ async def commit_market_tick(db_path, tick_id):
         news_ids = []
         for symbol, planned in sorted(outcome["assets"].items()):
             cursor = await db.execute(
-                "UPDATE CryptoMarketState SET currentPriceEcy=?,lastTickId=?,version=version+1,updatedAt=? "
-                "WHERE symbol=? AND currentPriceEcy=? AND version=?",
+                "UPDATE CryptoMarketState SET currentPriceEcy=$1,lastTickId=$2,version=version+1,updatedAt=$3 "
+                "WHERE symbol=$1 AND currentPriceEcy=$2 AND version=$3",
                 (planned["currentPriceEcy"], str(tick_id), occurred_at, symbol,
                  planned["previousPriceEcy"], planned["expectedVersion"]),
             )
@@ -209,7 +205,7 @@ async def commit_market_tick(db_path, tick_id):
             await db.execute(
                 "INSERT INTO CryptoPriceHistory "
                 "(historyId,tickId,symbol,previousPriceEcy,currentPriceEcy,movementBps,movementType,occurredAt) "
-                "VALUES (?,?,?,?,?,?,?,?)",
+                "VALUES ($4,$5,$6,$7,$8,$9,$10,$11)",
                 (str(uuid.uuid4()), str(tick_id), symbol, planned["previousPriceEcy"],
                  planned["currentPriceEcy"], planned["movementBps"], planned["movementType"], occurred_at),
             )
@@ -224,7 +220,7 @@ async def commit_market_tick(db_path, tick_id):
                   "newsIds": news_ids}
         result_json = json.dumps(result, sort_keys=True, separators=(",", ":"))
         cursor = await db.execute(
-            "UPDATE CryptoMarketTick SET status='COMMITTED',resultJson=?,committedAt=? "
+            "UPDATE CryptoMarketTick SET status='COMMITTED',resultJson=$1,committedAt=$2 "
             "WHERE tickId=? AND status IN ('RESERVED','REVIEW_REQUIRED')",
             (result_json, utc_now(), str(tick_id)),
         )
@@ -240,8 +236,8 @@ async def run_market_tick(db_path, *, scheduled_at=None, rng=None):
         db_path, scheduled_at=scheduled_at, rng=rng,
     )
     if status == "COMMITTED":
-        async with aiosqlite.connect(db_path) as db:
-            async with db.execute("SELECT resultJson FROM CryptoMarketTick WHERE tickId=?", (tick_id,)) as cursor:
+        async with _pool.acquire() as db:
+            async with db.execute("SELECT resultJson FROM CryptoMarketTick WHERE tickId=$1", tick_id) as cursor:
                 result = json.loads((await cursor.fetchone())[0])
         return result, True
     result, committed_replay = await commit_market_tick(db_path, tick_id)
@@ -249,19 +245,18 @@ async def run_market_tick(db_path, *, scheduled_at=None, rng=None):
 
 
 async def market_snapshot(db_path, *, history_limit=10):
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         if not await phase6_capability(db):
             return {"available": False, "coins": {}}
         async with db.execute(
             "SELECT a.symbol,a.name,s.currentPriceEcy,a.basePriceEcy,a.maximumNormalChangeBps,a.volatilityLevel,s.updatedAt "
             "FROM CryptoAssetDefinition a JOIN CryptoMarketState s ON s.symbol=a.symbol ORDER BY a.symbol"
-        ) as cursor:
-            rows = await cursor.fetchall()
+        )
         coins = {}
         for symbol, name, price, base, bps, level, updated in rows:
             async with db.execute(
-                "SELECT currentPriceEcy FROM CryptoPriceHistory WHERE symbol=? ORDER BY occurredAt DESC LIMIT ?",
+                "SELECT currentPriceEcy FROM CryptoPriceHistory WHERE symbol=$1 ORDER BY occurredAt DESC LIMIT $2",
                 (symbol, int(history_limit)),
             ) as cursor:
                 history = [int(row[0]) for row in reversed(await cursor.fetchall())]

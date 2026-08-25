@@ -1190,7 +1190,7 @@ def _attachment_is_valid_payment_image(attachment):
 
 def _redact_payment_text(value):
     text = str(value or "")
-    text = re.sub(r"\b(?:\d[\s-]?){5,}\d\b", "[nomor disembunyikan]", text)
+    text = re.sub(r"\b($1:\d[\s-]$2){5,}\d\b", "[nomor disembunyikan]", text)
     text = re.sub(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b", "[email disembunyikan]", text)
     return text
 
@@ -3764,18 +3764,17 @@ async def _resolve_deal_for_command(
         if not deal:
             return None, "Deal ID tidak ditemukan."
     else:
-        async with aiosqlite.connect(DB_PATH) as db:
-            placeholders = ",".join("?" for _ in DEAL_ACTIVE_STATUSES)
-            async with db.execute(
+        async with _pool.acquire() as db:
+            placeholders = ",".join("$1" for _ in DEAL_ACTIVE_STATUSES)
+            rows = await db.fetch(
                 f"""
                 SELECT {DEAL_SELECT}
                 FROM Deal
-                WHERE guildId=? AND ticketChannelId=? AND status IN ({placeholders})
+                WHERE guildId=$1 AND ticketChannelId=$2 AND status IN ({placeholders})
                 ORDER BY id DESC
                 """,
                 (str(guild.id), str(interaction.channel.id), *DEAL_ACTIVE_STATUSES),
-            ) as cursor:
-                rows = await cursor.fetchall()
+            )
         deals = [_deal_row_to_dict(row) for row in rows]
         if not deals:
             return None, "Tidak ada deal aktif di channel ini."
@@ -7576,18 +7575,17 @@ async def _recover_active_deal_messages(guild):
         counts["missing"] += 1
         return counts
     deals = await list_active_deals(guild.id)
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(
+    async with _pool.acquire() as db:
+        rows = await db.fetch(
             f"""
             SELECT {DEAL_SELECT}
             FROM Deal
-            WHERE guildId=? AND status=?
+            WHERE guildId=$1 AND status=$2
               AND vouchProgressMessageId IS NOT NULL AND vouchProgressMessageId!=''
             ORDER BY updatedAt DESC, id DESC
             """,
             (str(guild.id), DEAL_STATUS_COMPLETED),
-        ) as cursor:
-            rows = await cursor.fetchall()
+        )
     for row in rows:
         try:
             deal = _deal_row_to_dict(row)
@@ -7726,18 +7724,17 @@ async def _recover_scam_review_messages(guild):
     if not guild:
         counts["missing"] += 1
         return counts
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(
+    async with _pool.acquire() as db:
+        rows = await db.fetch(
             f"""
             SELECT {SCAM_REPORT_SELECT}
             FROM scammerReports
-            WHERE guildId=? AND reviewChannelId IS NOT NULL AND reviewChannelId!=''
+            WHERE guildId=$1 AND reviewChannelId IS NOT NULL AND reviewChannelId!=''
               AND reviewMessageId IS NOT NULL AND reviewMessageId!=''
             ORDER BY updatedAt DESC, id DESC
             """,
             (str(guild.id),),
-        ) as cursor:
-            rows = await cursor.fetchall()
+        )
     for row in rows:
         try:
             report = _scam_report_row_to_dict(row)
@@ -8360,7 +8357,7 @@ def setup(tree, client):
 
     async def _prefix_member(guild, token):
         token = str(token or "").strip()
-        match = re.fullmatch(r"<@!?([0-9]+)>", token)
+        match = re.fullmatch(r"<@!$1([0-9]+)>", token)
         raw_id = match.group(1) if match else token
         try:
             user_id = int(raw_id)

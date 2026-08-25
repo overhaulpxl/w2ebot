@@ -1,6 +1,5 @@
 """Recovery Phase 3 yang memakai outcome persisted dan tidak membuat randomness baru."""
 
-import aiosqlite
 
 from .adventures import settle_dungeon, settle_hunt
 from .bosses import commit_boss_attack, settle_boss
@@ -16,15 +15,15 @@ from .quests import claim_quest
 async def inspect_phase3_recovery(db_path):
     counts = {"reserved": 0, "awaiting_funds": 0, "review_required": 0,
               "boss_awaiting_funds": 0}
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
-        async with db.execute(
+    async with _pool.acquire() as db:
+        
+        raw = await db.fetchrow(
             "SELECT status,COUNT(*) FROM RpgOperation "
             "WHERE status IN ('RESERVED','AWAITING_FUNDS','REVIEW_REQUIRED') GROUP BY status"
         ) as cursor:
             for status, count in await cursor.fetchall():
                 counts[status.lower()] = int(count)
-        async with db.execute(
+        operations = await db.fetch(
             "SELECT COUNT(*) FROM RpgBossRaid WHERE status='AWAITING_FUNDS'"
         ) as cursor:
             counts["boss_awaiting_funds"] = int((await cursor.fetchone())[0])
@@ -35,22 +34,19 @@ async def recover_phase3_operations(db_path):
     """Coba settlement ulang tanpa mengubah outcome atau mengganti reservation."""
     result = {"committed": 0, "review": 0, "failed": 0, "boss_settled": 0,
               "starter_repaired": 0}
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         async with db.execute(
             "SELECT operationId,guildId,userId,operationType,status FROM RpgOperation "
             "WHERE status IN ('RESERVED','AWAITING_FUNDS','REVIEW_REQUIRED') "
             "ORDER BY createdAt,operationId"
-        ) as cursor:
-            operations = await cursor.fetchall()
-        async with db.execute(
+        )
+        starter_rows = await db.fetch(
             "SELECT guildId,userId FROM RpgStarterGrant WHERE status IN ('PENDING','REVIEW_REQUIRED')"
-        ) as cursor:
-            starter_rows = await cursor.fetchall()
-        async with db.execute(
+        )
+        boss_rows = await db.fetch(
             "SELECT guildId,raidId FROM RpgBossRaid WHERE status='AWAITING_FUNDS'"
-        ) as cursor:
-            boss_rows = await cursor.fetchall()
+        )
 
     handlers = {
         "ENHANCEMENT": lambda row: settle_enhancement(
@@ -102,12 +98,11 @@ async def recover_phase3_operations(db_path):
 
 
 async def _recover_quest_claim(db_path, row):
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         async with db.execute(
-            "SELECT outcomeJson FROM RpgOperation WHERE operationId=?", (row[0],),
-        ) as cursor:
-            raw = await cursor.fetchone()
+            "SELECT outcomeJson FROM RpgOperation WHERE operationId=$1", (row[0],),
+        )
     if not raw:
         raise ValueError("Operation quest tidak ditemukan.")
     import json

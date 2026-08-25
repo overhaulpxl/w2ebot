@@ -1,10 +1,10 @@
+from core import _pool
 """Schema eksplisit Casino V1 Phase 5; tidak dijalankan saat startup."""
 
 import hashlib
 import re
 import sqlite3
 
-import aiosqlite
 
 from .constants import ECONOMY_PHASE5_MIGRATION_VERSION
 
@@ -294,7 +294,7 @@ REQUIRED_PHASE5_COLUMNS = {
 
 def phase5_capability_sync(connection):
     marker = connection.execute(
-        "SELECT checksum FROM EconomySchemaMigration WHERE version=? AND status='COMPLETED'",
+        "SELECT checksum FROM EconomySchemaMigration WHERE version=$1 AND status='COMPLETED'",
         (ECONOMY_PHASE5_MIGRATION_VERSION,),
     ).fetchone()
     if not marker or marker[0] != PHASE5_SCHEMA_CHECKSUM:
@@ -315,11 +315,10 @@ def phase5_capability_sync(connection):
 
 async def phase5_capability(db):
     try:
-        async with db.execute(
-            "SELECT checksum FROM EconomySchemaMigration WHERE version=? AND status='COMPLETED'",
+        marker = await db.fetchrow(
+            "SELECT checksum FROM EconomySchemaMigration WHERE version=$1 AND status='COMPLETED'",
             (ECONOMY_PHASE5_MIGRATION_VERSION,),
-        ) as cursor:
-            marker = await cursor.fetchone()
+        )
         if not marker or marker[0] != PHASE5_SCHEMA_CHECKSUM:
             return False
         async with db.execute(

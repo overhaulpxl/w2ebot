@@ -4,7 +4,6 @@ import json
 import secrets
 import uuid
 
-import aiosqlite
 
 from .activity import append_activity_event
 from .catalog import DUNGEON_DROPS, DUNGEONS, EQUIPMENT, HUNT_DROPS, HUNTS, RPG_PHASE3_CATALOG_VERSION, roll_drops
@@ -23,8 +22,8 @@ def _random_between(bounds):
 
 
 async def _profile_preflight(db, guild_id, user_id):
-    async with db.execute(
-        "SELECT level,energy,activePetInstanceId FROM RpgProfile WHERE guildId=? AND userId=?",
+    fund = await db.fetchrow(
+        "SELECT level,energy,activePetInstanceId FROM RpgProfile WHERE guildId=$1 AND userId=$2",
         (str(guild_id), str(user_id)),
     ) as cursor:
         return await cursor.fetchone()
@@ -35,8 +34,8 @@ async def reserve_hunt(db_path, *, guild_id, user_id, area_id, now=None):
         raise ValueError("Area Hunt tidak valid.")
     await materialize_energy(db_path, guild_id, user_id, now=now)
     definition = HUNTS[area_id]
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         profile = await _profile_preflight(db, guild_id, user_id)
         if not profile or int(profile[0]) < definition[1]:
             raise ValueError("Level belum memenuhi syarat Hunt.")
@@ -55,10 +54,10 @@ async def reserve_hunt(db_path, *, guild_id, user_id, area_id, now=None):
         outcome=outcome, now=now,
     )
     if not replayed:
-        async with aiosqlite.connect(db_path) as db:
-            await configure_connection(db)
+        async with _pool.acquire() as db:
+            
             await db.execute(
-                "INSERT INTO RpgHuntRun (operationId,areaId,playerXp,activePetInstanceId) VALUES (?,?,?,?)",
+                "INSERT INTO RpgHuntRun (operationId,areaId,playerXp,activePetInstanceId) VALUES ($1,$2,$3,$4)",
                 (operation_id, area_id, xp, profile[2]),
             )
             await db.commit()
@@ -74,16 +73,15 @@ async def reserve_dungeon(db_path, *, guild_id, user_id, dungeon_id, use_ticket=
     if dungeon_id not in DUNGEONS:
         raise ValueError("Dungeon tidak valid.")
     definition = DUNGEONS[dungeon_id]
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         profile = await _profile_preflight(db, guild_id, user_id)
         if not profile or int(profile[0]) < definition[1]:
             raise ValueError("Level belum memenuhi syarat Dungeon.")
         async with db.execute(
-            "SELECT balance FROM EconomySystemAccount WHERE guildId=? AND accountCode='ETM_BOSS_DUNGEON'",
+            "SELECT balance FROM EconomySystemAccount WHERE guildId=$1 AND accountCode='ETM_BOSS_DUNGEON'",
             (str(guild_id),),
-        ) as cursor:
-            fund = await cursor.fetchone()
+        )
         reward = _random_between(definition[3])
         if not fund or int(fund[0]) < reward:
             raise ValueError("Fund Boss dan Dungeon belum mencukupi.")
@@ -94,11 +92,10 @@ async def reserve_dungeon(db_path, *, guild_id, user_id, dungeon_id, use_ticket=
             ) < 1:
                 raise ValueError("Dungeon Ticket tidak tersedia.")
         else:
-            async with db.execute(
-                "SELECT etmBalance FROM EconomyWallet WHERE guildId=? AND userId=?",
+            wallet = await db.fetchrow(
+                "SELECT etmBalance FROM EconomyWallet WHERE guildId=$1 AND userId=$2",
                 (str(guild_id), str(user_id)),
-            ) as cursor:
-                wallet = await cursor.fetchone()
+            )
             if not wallet or int(wallet[0]) < definition[2]:
                 raise ValueError("Saldo ETM tidak mencukupi.")
     xp = _random_between(definition[4])
@@ -115,10 +112,10 @@ async def reserve_dungeon(db_path, *, guild_id, user_id, dungeon_id, use_ticket=
         outcome=outcome, now=now,
     )
     if not replayed:
-        async with aiosqlite.connect(db_path) as db:
-            await configure_connection(db)
+        async with _pool.acquire() as db:
+            
             await db.execute(
-                "INSERT INTO RpgDungeonRun (operationId,dungeonId,playerXp,activePetInstanceId,entryMethod) VALUES (?,?,?,?,?)",
+                "INSERT INTO RpgDungeonRun (operationId,dungeonId,playerXp,activePetInstanceId,entryMethod) VALUES ($1,$2,$3,$4,$5)",
                 (operation_id, dungeon_id, xp, profile[2], outcome["entry_method"]),
             )
             await db.commit()
@@ -131,13 +128,12 @@ async def settle_dungeon(db_path, *, guild_id, user_id, operation_id):
 
 
 async def _settle_adventure(db_path, *, guild_id, user_id, operation_id, kind):
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
-        async with db.execute(
-            "SELECT outcomeJson,status FROM RpgOperation WHERE operationId=? AND guildId=? AND userId=? AND operationType=?",
+    async with _pool.acquire() as db:
+        
+        operation = await db.fetchrow(
+            "SELECT outcomeJson,status FROM RpgOperation WHERE operationId=$1 AND guildId=$2 AND userId=$3 AND operationType=$4",
             (str(operation_id), str(guild_id), str(user_id), kind),
-        ) as cursor:
-            operation = await cursor.fetchone()
+        )
     if not operation:
         return EconomyResult(False, "not_found", "Operation tidak ditemukan.")
     outcome = json.loads(operation[0])
@@ -151,18 +147,16 @@ async def _settle_adventure(db_path, *, guild_id, user_id, operation_id, kind):
                   AccountDelta("USER", str(user_id), "ETM", reward - entry, str(user_id)))
 
     async def extension(db, context):
-        async with db.execute(
-            "SELECT status,outcomeJson FROM RpgOperation WHERE operationId=?",
+        latest = await db.fetchrow(
+            "SELECT status,outcomeJson FROM RpgOperation WHERE operationId=$1",
             (str(operation_id),),
-        ) as cursor:
-            latest = await cursor.fetchone()
+        )
         if not latest or latest[0] != "RESERVED":
             raise EconomyMutationError("stale", "Operation sudah diproses.")
-        async with db.execute(
-            "SELECT level,xp,energy FROM RpgProfile WHERE guildId=? AND userId=?",
+        profile = await db.fetchrow(
+            "SELECT level,xp,energy FROM RpgProfile WHERE guildId=$1 AND userId=$2",
             (str(guild_id), str(user_id)),
-        ) as cursor:
-            profile = await cursor.fetchone()
+        )
         if not profile:
             raise EconomyMutationError("not_found", "Profile RPG tidak ditemukan.")
         energy_cost = int(outcome.get("energy", 0))
@@ -170,9 +164,9 @@ async def _settle_adventure(db_path, *, guild_id, user_id, operation_id, kind):
             raise EconomyMutationError("insufficient_energy", "Energy tidak mencukupi.")
         level, xp, discarded = apply_player_xp(profile[0], profile[1], int(outcome["xp"]))
         await db.execute(
-            "UPDATE RpgProfile SET level=?,xp=?,energyUpdatedAt=CASE WHEN energy=100 THEN ? ELSE energyUpdatedAt END,"
-            "energy=energy-?,version=version+1,updatedAt=? "
-            "WHERE guildId=? AND userId=? AND energy>=?",
+            "UPDATE RpgProfile SET level=$1,xp=$2,energyUpdatedAt=CASE WHEN energy=100 THEN $3 ELSE energyUpdatedAt END,"
+            "energy=energy-$1,version=version+1,updatedAt=$2 "
+            "WHERE guildId=$3 AND userId=$4 AND energy>=$5",
             (level, xp, context.now, energy_cost, context.now, str(guild_id), str(user_id), energy_cost),
         )
         if kind == "DUNGEON" and outcome["entry_method"] == "TICKET":
@@ -197,7 +191,7 @@ async def _settle_adventure(db_path, *, guild_id, user_id, operation_id, kind):
             await db.execute(
                 "INSERT INTO RpgEquipmentInstance "
                 "(equipmentInstanceId,guildId,ownerId,itemId,catalogVersion,slot,enhancementLevel,pityBps,bindingStatus,status,acquiredSource,createdAt,updatedAt) "
-                "VALUES (?,?,?,?,?,?,0,0,'BOUND_ON_EQUIP','OWNED',?,?,?)",
+                "VALUES ($6,$7,$8,$9,$10,$11,0,0,'BOUND_ON_EQUIP','OWNED',$1,$2,$3)",
                 (str(outcome["equipment_instance_id"]), str(guild_id), str(user_id), definition["item_id"],
                  outcome["catalog_version"], definition["slot"], kind, context.now, context.now),
             )
@@ -218,7 +212,7 @@ async def _settle_adventure(db_path, *, guild_id, user_id, operation_id, kind):
         result = {"etm": reward, "xp": outcome["xp"], "xp_discarded_at_cap": discarded,
                   "drops": drops}
         await db.execute(
-            "UPDATE RpgOperation SET status='COMMITTED',reservationKey=NULL,resultJson=?,transactionId=?,updatedAt=?,settledAt=? "
+            "UPDATE RpgOperation SET status='COMMITTED',reservationKey=NULL,resultJson=$1,transactionId=$2,updatedAt=$3,settledAt=$4 "
             "WHERE operationId=? AND status='RESERVED'",
             (json.dumps(result, sort_keys=True), context.transaction_id, context.now, context.now, operation_id),
         )
@@ -233,8 +227,8 @@ async def _settle_adventure(db_path, *, guild_id, user_id, operation_id, kind):
         success_code=f"{kind.lower()}_settled", success_message=f"{kind.title()} berhasil diselesaikan.",
     )
     if result.code == "pet_snapshot_invalid":
-        async with aiosqlite.connect(db_path) as db:
-            await configure_connection(db)
+        async with _pool.acquire() as db:
+            
             await db.execute(
                 "UPDATE RpgOperation SET status='REVIEW_REQUIRED',lastErrorCode='pet_snapshot_invalid',"
                 "recoveryReviewJson=?,updatedAt=? "

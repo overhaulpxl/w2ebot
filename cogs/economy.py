@@ -3,10 +3,9 @@ import discord
 import logging
 import uuid
 import json
-import aiosqlite
 from discord import app_commands
 
-from core import ALLOWED_SERVER_ID, DB_PATH, get_announce_channel, register_ready_startup_task
+from core import ALLOWED_SERVER_ID,  get_announce_channel, register_ready_startup_task
 from economy.amounts import AmountParseError, format_economy_amount, parse_economy_amount
 from economy.constants import (
     CURRENCIES,
@@ -170,15 +169,12 @@ async def _deliver_phase6_news(client, *, limit=100):
 
 async def _deliver_phase9b_notifications(client, *, limit=100):
     lease_owner = f"phase9b-discord:{uuid.uuid4()}"
-    async with aiosqlite.connect(DB_PATH) as db:
-        await configure_connection(db)
-        await db.execute("BEGIN IMMEDIATE")
-        if not await phase9b_capability(db):
-            await db.rollback()
-            return {"scanned": 0, "delivered": 0, "failed": 0, "reviewRequired": 0}
-        await reserve_crypto_news_outbox(db, limit=limit)
-        rows = await claim_deliveries(db, lease_owner=lease_owner, limit=limit)
-        await db.commit()
+    async with _pool.acquire() as db:
+        async with db.transaction():
+            if not await phase9b_capability(db):
+                return {"scanned": 0, "delivered": 0, "failed": 0, "reviewRequired": 0}
+            await reserve_crypto_news_outbox(db, limit=limit)
+            rows = await claim_deliveries(db, lease_owner=lease_owner, limit=limit)
 
     delivered = failed = review = 0
     for row in rows:
@@ -226,19 +222,17 @@ async def _deliver_phase9b_notifications(client, *, limit=100):
         except Exception:
             logger.exception("Phase 9B delivery worker failed delivery=%s", row.get("deliveryId"))
             outcome, failure_code = "REVIEW_REQUIRED", "unexpected_delivery_state"
-        async with aiosqlite.connect(DB_PATH) as db:
-            await configure_connection(db); await db.execute("BEGIN IMMEDIATE")
-            try:
-                await finalize_delivery(
-                    db, delivery_id=row["deliveryId"], lease_owner=lease_owner, outcome=outcome,
-                    message_id=message_id, failure_code=failure_code, marker_inspected=marker_inspected,
-                )
-                await db.commit()
-            except Exception:
-                await db.rollback()
-                logger.exception("Phase 9B finalization failed delivery=%s", row.get("deliveryId"))
-                review += 1
-                continue
+        async with _pool.acquire() as db:
+            async with db.transaction():
+                try:
+                    await finalize_delivery(
+                        db, delivery_id=row["deliveryId"], lease_owner=lease_owner, outcome=outcome,
+                        message_id=message_id, failure_code=failure_code, marker_inspected=marker_inspected,
+                    )
+                except Exception:
+                    logger.exception("Phase 9B finalization failed delivery=%s", row.get("deliveryId"))
+                    review += 1
+                    continue
         if outcome == "SENT": delivered += 1
         elif outcome == "FAILED": failed += 1
         else: review += 1
@@ -393,18 +387,17 @@ def setup(tree, client):
 
     async def _active_member_count(interaction):
         from datetime import datetime, timedelta, timezone
-        import aiosqlite
         eligible_members = {str(member.id) for member in interaction.guild.members if not member.bot}
         cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute(
-                "SELECT DISTINCT userId FROM EconomyActivityEvent WHERE guildId=? AND occurredAt>=? "
+        async with _pool.acquire() as db:
+            rows = await db.fetch(
+                "SELECT DISTINCT userId FROM EconomyActivityEvent WHERE guildId=$1 AND occurredAt>=$2 "
                 "AND transactionId IS NOT NULL AND eventType IN "
                 "('DAILY_CLAIM','WEEKLY_CLAIM','WORK_SUCCESS','HUNT_COMPLETED','DUNGEON_COMPLETED',"
                 "'BOSS_ATTACK','BOSS_PARTICIPATION','DAILY_QUEST_COMPLETED','WEEKLY_QUEST_COMPLETED')",
-                (str(interaction.guild_id), cutoff),
-            ) as cursor:
-                active = {str(row[0]) for row in await cursor.fetchall()}
+                str(interaction.guild_id), cutoff
+            )
+            active = {str(row['userid']) for row in rows}
         return len(active & eligible_members)
 
     async def _stage(interaction, action, target, currency, amount, reason, account_code=None):
@@ -1018,8 +1011,8 @@ def setup(tree, client):
             await asyncio.sleep(30)
 
     async def _start_phase9b_delivery_worker():
-        async with aiosqlite.connect(DB_PATH) as db:
-            await configure_connection(db)
+        async with _pool.acquire() as db:
+            
             if not await phase9b_capability(db):
                 return
         existing = getattr(client, "_phase9b_delivery_worker", None)

@@ -9,7 +9,6 @@ import json
 import secrets
 import uuid
 
-import aiosqlite
 
 from .constants import GIVEAWAY_ACTIVITY_MINIMUM, GIVEAWAY_CLAIM_SECONDS, GIVEAWAY_TICKET_ECY
 from .database import configure_connection, ensure_system_accounts
@@ -67,8 +66,8 @@ async def capped_activity_score(db, guild_id, user_id, *, as_of=None):
     upper = _dt(as_of)
     lower = upper - timedelta(days=30)
     params = (str(guild_id), str(user_id), lower.isoformat(), upper.isoformat())
-    async with db.execute(
-        "SELECT eventType,eventKey,occurredAt FROM EconomyActivityEvent WHERE guildId=? AND userId=? "
+    existing = await db.fetchrow(
+        "SELECT eventType,eventKey,occurredAt FROM EconomyActivityEvent WHERE guildId=$1 AND userId=$2 "
         "AND occurredAt>=? AND occurredAt<? ORDER BY occurredAt,eventId", params,
     ) as cursor:
         events = await cursor.fetchall()
@@ -119,7 +118,7 @@ async def _feature_ready(db, guild_id):
     if not await phase8_capability(db):
         raise EconomyMutationError("schema_unavailable", "Schema Phase 8 belum siap.")
     async with db.execute(
-        "SELECT paused FROM EconomyFeatureState WHERE guildId=? AND feature IN ('economy','giveaway') AND paused=1 LIMIT 1",
+        "SELECT paused FROM EconomyFeatureState WHERE guildId=$1 AND feature IN ('economy','giveaway') AND paused=1 LIMIT 1",
         (str(guild_id),),
     ) as cursor:
         if await cursor.fetchone():
@@ -136,35 +135,34 @@ async def create_giveaway(db_path, *, guild_id, channel_id, host_id, request_id,
     giveaway_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"w2e:giveaway:{guild_id}:{request_id}"))
     started = _dt(now)
     try:
-        async with aiosqlite.connect(db_path) as db:
-            await configure_connection(db)
-            await db.execute("BEGIN IMMEDIATE")
+        async with _pool.acquire() as db:
+            
+            async with db.transaction():
             await _feature_ready(db, guild_id)
-            async with db.execute("SELECT giveawayId,status FROM GiveawayV1 WHERE guildId=? AND requestId=?",
-                                  (str(guild_id), str(request_id))) as cursor:
-                existing = await cursor.fetchone()
+            async with db.execute("SELECT giveawayId,status FROM GiveawayV1 WHERE guildId=$1 AND requestId=$2",
+                                  (str(guild_id), str(request_id)))
             if existing:
                 await db.rollback()
                 return Phase8Result(True, "already_created", "Giveaway ini sudah dibuat.", existing[0], replayed=True)
-            async with db.execute(
-                "SELECT COUNT(*) FROM GiveawayV1 WHERE guildId=? AND status IN ('ACTIVE','DRAW_PENDING','AWAITING_CLAIM','REVIEW_REQUIRED')",
+            existing = await db.fetchrow(
+                "SELECT COUNT(*) FROM GiveawayV1 WHERE guildId=$1 AND status IN ('ACTIVE','DRAW_PENDING','AWAITING_CLAIM','REVIEW_REQUIRED')",
                 (str(guild_id),),
             ) as cursor:
                 if int((await cursor.fetchone())[0]) >= 3:
                     raise EconomyMutationError("guild_limit", "Maksimum tiga Giveaway aktif per guild.")
             await db.execute(
                 "INSERT INTO GiveawayV1 (giveawayId,requestId,guildId,channelId,hostId,prize,status,startsAt,endsAt,createdAt,updatedAt) "
-                "VALUES (?,?,?,?,?,?,'ACTIVE',?,?,?,?)",
+                "VALUES ($1,$2,$3,$4,$5,$6,'ACTIVE',$1,$2,$3,$4)",
                 (giveaway_id, str(request_id), str(guild_id), str(channel_id), str(host_id), prize,
                  started.isoformat(), (started + timedelta(minutes=int(duration_minutes))).isoformat(),
                  started.isoformat(), started.isoformat()),
             )
             await db.execute(
-                "INSERT INTO GiveawayEscrow (giveawayId,guildId,paidTickets,amountEcy,status,updatedAt) VALUES (?,?,0,0,'OPEN',?)",
+                "INSERT INTO GiveawayEscrow (giveawayId,guildId,paidTickets,amountEcy,status,updatedAt) VALUES ($1,$2,0,0,'OPEN',$3)",
                 (giveaway_id, str(guild_id), started.isoformat()),
             )
             await db.execute(
-                "INSERT INTO Phase8Audit (auditId,guildId,actorId,actionType,entityType,entityId,receiptJson,createdAt) VALUES (?,?,?,?,?,?,?,?)",
+                "INSERT INTO Phase8Audit (auditId,guildId,actorId,actionType,entityType,entityId,receiptJson,createdAt) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
                 (str(uuid.uuid4()), str(guild_id), str(host_id), "CREATE", "GIVEAWAY", giveaway_id,
                  _json({"giveawayId": giveaway_id, "prize": prize}), started.isoformat()),
             )
@@ -176,10 +174,10 @@ async def create_giveaway(db_path, *, guild_id, channel_id, host_id, request_id,
 
 
 async def set_giveaway_message(db_path, giveaway_id, message_id):
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         await db.execute(
-            "UPDATE GiveawayV1 SET messageId=?,version=version+1,updatedAt=? WHERE giveawayId=? AND messageId IS NULL",
+            "UPDATE GiveawayV1 SET messageId=$1,version=version+1,updatedAt=$2 WHERE giveawayId=$3 AND messageId IS NULL",
             (str(message_id), _iso(), str(giveaway_id)),
         )
         await db.commit()
@@ -194,29 +192,27 @@ async def enter_giveaway(db_path, *, guild_id, user_id, giveaway_id, request_id,
     ticket_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"w2e:giveaway-ticket:{giveaway_id}:{user_id}"))
     operation_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"w2e:phase8-op:{guild_id}:{request_id}"))
     try:
-        async with aiosqlite.connect(db_path) as db:
-            await configure_connection(db)
-            await db.execute("BEGIN IMMEDIATE")
+        async with _pool.acquire() as db:
+            
+            async with db.transaction():
             await _feature_ready(db, guild_id)
             async with db.execute(
-                "SELECT t.ticketId,t.entryTransactionId FROM GiveawayTicket t WHERE t.giveawayId=? AND t.userId=?",
+                "SELECT t.ticketId,t.entryTransactionId FROM GiveawayTicket t WHERE t.giveawayId=$1 AND t.userId=$2",
                 (str(giveaway_id), str(user_id)),
-            ) as cursor:
-                existing = await cursor.fetchone()
+            )
             if existing:
                 await db.rollback()
                 return Phase8Result(True, "already_entered", "Kamu sudah memiliki tiket Giveaway ini.",
                                     existing[0], existing[1], True)
-            async with db.execute(
-                "SELECT status,startsAt,endsAt FROM GiveawayV1 WHERE giveawayId=? AND guildId=?",
+            giveaway = await db.fetchrow(
+                "SELECT status,startsAt,endsAt FROM GiveawayV1 WHERE giveawayId=$1 AND guildId=$2",
                 (str(giveaway_id), str(guild_id)),
-            ) as cursor:
-                giveaway = await cursor.fetchone()
+            )
             if not giveaway or giveaway[0] != "ACTIVE" or not (_dt(giveaway[1]) <= _dt(now_iso) < _dt(giveaway[2])):
                 raise EconomyMutationError("not_active", "Giveaway tidak aktif.")
             await db.execute(
                 "INSERT INTO EconomyTransaction (transactionId,guildId,idempotencyKey,operation,source,referenceId,actorId,reasonCode,reasonText,metadataJson,status,createdAt) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,'PENDING',?)",
+                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'PENDING',$1)",
                 (transaction_id, str(guild_id), f"phase8:giveaway-entry:{request_id}", "GIVEAWAY_ENTRY",
                  "phase8", str(giveaway_id), str(user_id), "TICKET", "Tiket Giveaway V1", "{}", now_iso),
             )
@@ -231,32 +227,32 @@ async def enter_giveaway(db_path, *, guild_id, user_id, giveaway_id, request_id,
                        "transactionId": transaction_id, "balances": balances}
             await db.execute(
                 "INSERT INTO GiveawayTicket (ticketId,giveawayId,guildId,userId,amountEcy,eligibilityEvidenceJson,evidenceHash,status,entryTransactionId,createdAt,updatedAt) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "VALUES ($2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
                 (ticket_id, str(giveaway_id), str(guild_id), str(user_id), GIVEAWAY_TICKET_ECY,
                  _json(evidence), evidence["evidenceHash"], "PAID", transaction_id, now_iso, now_iso),
             )
             await db.execute(
                 "INSERT INTO GiveawayEligibilityEvidence (evidenceId,giveawayId,userId,stage,drawSequence,eligible,evidenceJson,evidenceHash,observedAt) "
-                "VALUES (?,?,?,?,?,?,?,?,?)",
+                "VALUES ($13,$14,$15,$16,$17,$18,$19,$20,$21)",
                 (str(uuid.uuid5(uuid.NAMESPACE_URL, f"w2e:giveaway-evidence:{giveaway_id}:{user_id}:ENTRY:0")),
                  str(giveaway_id), str(user_id), "ENTRY", 0, int(bool(evidence.get("eligible"))),
                  _json(evidence), evidence["evidenceHash"], now_iso),
             )
             cursor = await db.execute(
-                "UPDATE GiveawayEscrow SET paidTickets=paidTickets+1,amountEcy=amountEcy+10000,version=version+1,updatedAt=? "
-                "WHERE giveawayId=? AND status='OPEN'", (now_iso, str(giveaway_id)),
+                "UPDATE GiveawayEscrow SET paidTickets=paidTickets+1,amountEcy=amountEcy+10000,version=version+1,updatedAt=$1 "
+                "WHERE giveawayId=$22 AND status='OPEN'", (now_iso, str(giveaway_id)),
             )
             if cursor.rowcount != 1:
                 raise EconomyMutationError("stale", "Escrow Giveaway berubah.")
             await db.execute(
                 "INSERT INTO Phase8Operation (operationId,requestId,guildId,userId,operationType,entityId,reservationKey,outcomeJson,resultJson,transactionId,status,createdAt,settledAt) "
-                "VALUES (?,?,?,?,?,?,NULL,?,?,?,?,?,?)",
+                "VALUES ($1,$2,$3,$4,$5,$6,NULL,$7,$8,$9,$10,$11,$12)",
                 (operation_id, str(request_id), str(guild_id), str(user_id), "GIVEAWAY_ENTER", str(giveaway_id),
                  _json({"evidenceHash": evidence["evidenceHash"], "amountEcy": GIVEAWAY_TICKET_ECY}),
                  _json(receipt), transaction_id, "COMMITTED", now_iso, now_iso),
             )
             await db.execute(
-                "UPDATE EconomyTransaction SET metadataJson=?,status='COMMITTED',committedAt=? WHERE transactionId=?",
+                "UPDATE EconomyTransaction SET metadataJson=$1,status='COMMITTED',committedAt=$2 WHERE transactionId=$3",
                 (_json({"result_code": "entered", "result_message": "Tiket Giveaway berhasil dibeli.",
                         "receipt": receipt, "balances": balances}), now_iso, transaction_id),
             )
@@ -277,12 +273,9 @@ async def enter_giveaway(db_path, *, guild_id, user_id, giveaway_id, request_id,
 
 
 async def _allocation(db, giveaway_id, guild_id, now_iso):
-    async with db.execute("SELECT amountEcy,status FROM GiveawayEscrow WHERE giveawayId=?", (str(giveaway_id),)) as cursor:
-        escrow = await cursor.fetchone()
+    escrow = await db.fetchrow("SELECT amountEcy,status FROM GiveawayEscrow WHERE giveawayId=$1", str(giveaway_id))
     if not escrow or escrow[1] == "ALLOCATED":
-        async with db.execute("SELECT receiptJson,transactionId FROM GiveawayFundAllocation WHERE giveawayId=?",
-                              (str(giveaway_id),)) as cursor:
-            existing = await cursor.fetchone()
+        existing = await db.fetchrow("SELECT receiptJson,transactionId FROM GiveawayFundAllocation WHERE giveawayId=$1", str(giveaway_id))
         return json.loads(existing[0]) if existing else {"totalEcy": 0}, existing[1] if existing else None
     total = int(escrow[0])
     reserve, burn = total // 10, total // 10
@@ -292,7 +285,7 @@ async def _allocation(db, giveaway_id, guild_id, now_iso):
         transaction_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"w2e:giveaway-allocation:{giveaway_id}"))
         await db.execute(
             "INSERT INTO EconomyTransaction (transactionId,guildId,idempotencyKey,operation,source,referenceId,reasonCode,reasonText,metadataJson,status,createdAt) "
-            "VALUES (?,?,?,?,?,?,?,?,?,'PENDING',?)",
+            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'PENDING',$1)",
             (transaction_id, str(guild_id), f"phase8:giveaway-allocation:{giveaway_id}", "GIVEAWAY_ALLOCATION",
              "phase8", str(giveaway_id), "COMPLETION", "Alokasi dana Giveaway", "{}", now_iso),
         )
@@ -306,15 +299,15 @@ async def _allocation(db, giveaway_id, guild_id, now_iso):
     receipt = {"giveawayId": str(giveaway_id), "totalEcy": total, "retainedEcy": retained,
                "reserveEcy": reserve, "burnEcy": burn, "transactionId": transaction_id}
     await db.execute(
-        "INSERT INTO GiveawayFundAllocation (allocationId,giveawayId,totalEcy,retainedEcy,reserveEcy,burnEcy,transactionId,receiptJson,createdAt) VALUES (?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO GiveawayFundAllocation (allocationId,giveawayId,totalEcy,retainedEcy,reserveEcy,burnEcy,transactionId,receiptJson,createdAt) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
         (str(uuid.uuid4()), str(giveaway_id), total, retained, reserve, burn, transaction_id, _json(receipt), now_iso),
     )
-    await db.execute("UPDATE GiveawayTicket SET status='ALLOCATED',updatedAt=? WHERE giveawayId=? AND status='PAID'",
+    await db.execute("UPDATE GiveawayTicket SET status='ALLOCATED',updatedAt=$1 WHERE giveawayId=$2 AND status='PAID'",
                      (now_iso, str(giveaway_id)))
-    await db.execute("UPDATE GiveawayEscrow SET status='ALLOCATED',version=version+1,updatedAt=? WHERE giveawayId=?",
+    await db.execute("UPDATE GiveawayEscrow SET status='ALLOCATED',version=version+1,updatedAt=$1 WHERE giveawayId=$2",
                      (now_iso, str(giveaway_id)))
     if transaction_id:
-        await db.execute("UPDATE EconomyTransaction SET metadataJson=?,status='COMMITTED',committedAt=? WHERE transactionId=?",
+        await db.execute("UPDATE EconomyTransaction SET metadataJson=$1,status='COMMITTED',committedAt=$2 WHERE transactionId=$3",
                          (_json({"result_code": "allocated", "receipt": receipt}), now_iso, transaction_id))
     return receipt, transaction_id
 
@@ -324,21 +317,18 @@ async def draw_giveaway(db_path, *, guild_id, giveaway_id, request_id, eligible_
     random_source = random_source or secrets
     now_dt, now_iso = _dt(now), _iso(now)
     try:
-        async with aiosqlite.connect(db_path) as db:
-            await configure_connection(db)
-            await db.execute("BEGIN IMMEDIATE")
+        async with _pool.acquire() as db:
+            
+            async with db.transaction():
             if not await phase8_capability(db):
                 raise EconomyMutationError("schema_unavailable", "Schema Phase 8 belum siap.")
-            async with db.execute(
-                "SELECT status,drawSequence FROM GiveawayV1 WHERE giveawayId=? AND guildId=?",
+            giveaway = await db.fetchrow(
+                "SELECT status,drawSequence FROM GiveawayV1 WHERE giveawayId=$1 AND guildId=$2",
                 (str(giveaway_id), str(guild_id)),
-            ) as cursor:
-                giveaway = await cursor.fetchone()
+            )
             if not giveaway:
                 raise EconomyMutationError("not_found", "Giveaway tidak ditemukan.")
-            async with db.execute("SELECT drawId,winnerId,receiptJson FROM GiveawayDraw WHERE requestId=?",
-                                  (str(request_id),)) as cursor:
-                replay = await cursor.fetchone()
+            replay = await db.fetchrow("SELECT drawId,winnerId,receiptJson FROM GiveawayDraw WHERE requestId=$1", str(request_id))
             if replay:
                 await db.rollback()
                 return Phase8Result(True, "draw_replayed", "Hasil draw sudah tersedia.", replay[0],
@@ -346,10 +336,10 @@ async def draw_giveaway(db_path, *, guild_id, giveaway_id, request_id, eligible_
             if giveaway[0] not in {"ACTIVE", "DRAW_PENDING"}:
                 raise EconomyMutationError("invalid_status", "Giveaway sudah memiliki hasil authoritative.")
             paid = {row[0] for row in await (await db.execute(
-                "SELECT userId FROM GiveawayTicket WHERE giveawayId=? AND status='PAID'", (str(giveaway_id),)
+                "SELECT userId FROM GiveawayTicket WHERE giveawayId=$1 AND status='PAID'", (str(giveaway_id),)
             )).fetchall()}
             excluded = {row[0] for row in await (await db.execute(
-                "SELECT userId FROM GiveawayWinner WHERE giveawayId=?", (str(giveaway_id),)
+                "SELECT userId FROM GiveawayWinner WHERE giveawayId=$1", (str(giveaway_id),)
             )).fetchall()}
             candidates = sorted(paid - excluded, key=lambda value: int(value))
             evidence = {user_id: participant_evidence.get(user_id, {"eligible": False}) for user_id in candidates}
@@ -366,14 +356,14 @@ async def draw_giveaway(db_path, *, guild_id, giveaway_id, request_id, eligible_
                        "poolHash": _hash(pool), "winnerId": winner_user_id,
                        "claimDeadline": claim_deadline, "allocation": allocation}
             await db.execute(
-                "INSERT INTO GiveawayDraw (drawId,giveawayId,sequence,requestId,participantEvidenceJson,poolJson,poolHash,randomIndex,winnerId,noEligibleParticipants,receiptJson,createdAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO GiveawayDraw (drawId,giveawayId,sequence,requestId,participantEvidenceJson,poolJson,poolHash,randomIndex,winnerId,noEligibleParticipants,receiptJson,createdAt) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
                 (draw_id, str(giveaway_id), sequence, str(request_id), _json(evidence), _json(pool),
                  receipt["poolHash"], index, winner_user_id, int(not pool), _json(receipt), now_iso),
             )
             for participant_id, snapshot in evidence.items():
                 evidence_hash = snapshot.get("evidenceHash") or _hash(snapshot)
                 await db.execute(
-                    "INSERT INTO GiveawayEligibilityEvidence (evidenceId,giveawayId,userId,stage,drawSequence,eligible,evidenceJson,evidenceHash,observedAt) VALUES (?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO GiveawayEligibilityEvidence (evidenceId,giveawayId,userId,stage,drawSequence,eligible,evidenceJson,evidenceHash,observedAt) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
                     (str(uuid.uuid5(uuid.NAMESPACE_URL, f"w2e:giveaway-evidence:{giveaway_id}:{participant_id}:DRAW:{sequence}")),
                      str(giveaway_id), participant_id, "DRAW", sequence,
                      int(bool(snapshot.get("eligible"))), _json(snapshot), evidence_hash, now_iso),
@@ -382,16 +372,16 @@ async def draw_giveaway(db_path, *, guild_id, giveaway_id, request_id, eligible_
             if winner_user_id:
                 winner_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"w2e:giveaway-winner:{giveaway_id}:{sequence}"))
                 await db.execute(
-                    "INSERT INTO GiveawayWinner (winnerId,giveawayId,drawId,userId,sequence,status,eligibilityEvidenceJson,claimDeadline,createdAt,updatedAt) VALUES (?,?,?,?,?,'AWAITING_CLAIM',?,?,?,?)",
+                    "INSERT INTO GiveawayWinner (winnerId,giveawayId,drawId,userId,sequence,status,eligibilityEvidenceJson,claimDeadline,createdAt,updatedAt) VALUES ($1,$2,$3,$4,$5,'AWAITING_CLAIM',$6,$7,$8,$9)",
                     (winner_id, str(giveaway_id), draw_id, winner_user_id, sequence,
                      _json(evidence[winner_user_id]), claim_deadline, now_iso, now_iso),
                 )
             await db.execute(
-                "UPDATE GiveawayV1 SET status=?,currentWinnerId=?,claimDeadline=?,drawSequence=?,version=version+1,updatedAt=? WHERE giveawayId=?",
+                "UPDATE GiveawayV1 SET status=$1,currentWinnerId=$2,claimDeadline=$3,drawSequence=$4,version=version+1,updatedAt=$5 WHERE giveawayId=$6",
                 (status, winner_user_id, claim_deadline, sequence, now_iso, str(giveaway_id)),
             )
             await db.execute(
-                "INSERT INTO Phase8NotificationOutbox (outboxId,eventKey,guildId,entityType,entityId,payloadJson,status,createdAt) VALUES (?,?,?,?,?,?,'PENDING',?)",
+                "INSERT INTO Phase8NotificationOutbox (outboxId,eventKey,guildId,entityType,entityId,payloadJson,status,createdAt) VALUES ($1,$2,$3,$4,$5,$6,'PENDING',$7)",
                 (str(uuid.uuid4()), f"giveaway-draw:{draw_id}", str(guild_id), "GIVEAWAY_DRAW", draw_id,
                  _json(receipt), now_iso),
             )
@@ -406,18 +396,16 @@ async def draw_giveaway(db_path, *, guild_id, giveaway_id, request_id, eligible_
 async def claim_giveaway(db_path, *, giveaway_id, user_id, now=None):
     now_iso = _iso(now)
     try:
-        async with aiosqlite.connect(db_path) as db:
-            await configure_connection(db)
-            await db.execute("BEGIN IMMEDIATE")
-            async with db.execute(
-                "SELECT winnerId,status,claimDeadline FROM GiveawayWinner WHERE giveawayId=? AND userId=? ORDER BY sequence DESC LIMIT 1",
+        async with _pool.acquire() as db:
+            
+            async with db.transaction():
+            winner = await db.fetchrow(
+                "SELECT winnerId,status,claimDeadline FROM GiveawayWinner WHERE giveawayId=$1 AND userId=$2 ORDER BY sequence DESC LIMIT 1",
                 (str(giveaway_id), str(user_id)),
-            ) as cursor:
-                winner = await cursor.fetchone()
+            )
             if not winner:
                 raise EconomyMutationError("not_winner", "Kamu bukan pemenang Giveaway ini.")
-            async with db.execute("SELECT receiptJson FROM GiveawayClaim WHERE winnerId=?", (winner[0],)) as cursor:
-                existing = await cursor.fetchone()
+            existing = await db.fetchrow("SELECT receiptJson FROM GiveawayClaim WHERE winnerId=$1", winner[0])
             if existing:
                 await db.rollback()
                 return Phase8Result(True, "already_claimed", "Kemenangan sudah diakui.", winner[0],
@@ -427,12 +415,12 @@ async def claim_giveaway(db_path, *, giveaway_id, user_id, now=None):
             receipt = {"giveawayId": str(giveaway_id), "winnerId": winner[0], "userId": str(user_id),
                        "acknowledgedAt": now_iso}
             await db.execute(
-                "INSERT INTO GiveawayClaim (claimId,giveawayId,winnerId,userId,status,receiptJson,claimedAt) VALUES (?,?,?,?, 'ACKNOWLEDGED',?,?)",
+                "INSERT INTO GiveawayClaim (claimId,giveawayId,winnerId,userId,status,receiptJson,claimedAt) VALUES ($1,$2,$3,$4, 'ACKNOWLEDGED',$5,$6)",
                 (str(uuid.uuid4()), str(giveaway_id), winner[0], str(user_id), _json(receipt), now_iso),
             )
-            await db.execute("UPDATE GiveawayWinner SET status='CLAIMED',updatedAt=? WHERE winnerId=?",
+            await db.execute("UPDATE GiveawayWinner SET status='CLAIMED',updatedAt=$1 WHERE winnerId=$2",
                              (now_iso, winner[0]))
-            await db.execute("UPDATE GiveawayV1 SET status='COMPLETED',version=version+1,updatedAt=? WHERE giveawayId=?",
+            await db.execute("UPDATE GiveawayV1 SET status='COMPLETED',version=version+1,updatedAt=$1 WHERE giveawayId=$2",
                              (now_iso, str(giveaway_id)))
             await db.commit()
         return Phase8Result(True, "claimed", "Kemenangan Giveaway berhasil diakui.", winner[0], receipt=receipt)
@@ -447,14 +435,13 @@ async def cancel_giveaway(db_path, *, guild_id, giveaway_id, actor_id, request_i
         return Phase8Result(False, "invalid_reason", "Alasan pembatalan wajib 1-300 karakter.")
     now_iso = _iso(now)
     try:
-        async with aiosqlite.connect(db_path) as db:
-            await configure_connection(db)
-            await db.execute("BEGIN IMMEDIATE")
+        async with _pool.acquire() as db:
+            
+            async with db.transaction():
             if not await phase8_capability(db):
                 raise EconomyMutationError("schema_unavailable", "Schema Phase 8 belum siap.")
-            async with db.execute("SELECT status FROM GiveawayV1 WHERE giveawayId=? AND guildId=?",
-                                  (str(giveaway_id), str(guild_id))) as cursor:
-                row = await cursor.fetchone()
+            row = await db.fetchrow("SELECT status FROM GiveawayV1 WHERE giveawayId=$1 AND guildId=$2",
+                                  (str(giveaway_id), str(guild_id)))
             if not row:
                 raise EconomyMutationError("not_found", "Giveaway tidak ditemukan.")
             if row[0] == "CANCELLED":
@@ -463,14 +450,14 @@ async def cancel_giveaway(db_path, *, guild_id, giveaway_id, actor_id, request_i
             if row[0] not in {"ACTIVE", "DRAW_PENDING"}:
                 raise EconomyMutationError("invalid_status", "Giveaway tidak dapat dibatalkan pada status ini.")
             tickets = await (await db.execute(
-                "SELECT ticketId,userId,amountEcy FROM GiveawayTicket WHERE giveawayId=? AND status='PAID' ORDER BY userId",
+                "SELECT ticketId,userId,amountEcy FROM GiveawayTicket WHERE giveawayId=$1 AND status='PAID' ORDER BY userId",
                 (str(giveaway_id),),
             )).fetchall()
             for ticket_id, user_id, amount in tickets:
                 transaction_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"w2e:giveaway-refund:{ticket_id}"))
                 await db.execute(
                     "INSERT INTO EconomyTransaction (transactionId,guildId,idempotencyKey,operation,source,referenceId,actorId,reasonCode,reasonText,metadataJson,status,createdAt) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,'PENDING',?)",
+                    "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'PENDING',$1)",
                     (transaction_id, str(guild_id), f"phase8:giveaway-refund:{ticket_id}", "GIVEAWAY_REFUND",
                      "phase8", ticket_id, str(actor_id), "CANCELLED", reason, "{}", now_iso),
                 )
@@ -483,23 +470,23 @@ async def cancel_giveaway(db_path, *, guild_id, giveaway_id, actor_id, request_i
                 receipt = {"ticketId": ticket_id, "userId": user_id, "amountEcy": int(amount),
                            "transactionId": transaction_id, "balances": balances}
                 await db.execute(
-                    "INSERT INTO GiveawayRefund (refundId,giveawayId,ticketId,userId,amountEcy,transactionId,receiptJson,createdAt) VALUES (?,?,?,?,?,?,?,?)",
+                    "INSERT INTO GiveawayRefund (refundId,giveawayId,ticketId,userId,amountEcy,transactionId,receiptJson,createdAt) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
                     (str(uuid.uuid4()), str(giveaway_id), ticket_id, user_id, int(amount), transaction_id,
                      _json(receipt), now_iso),
                 )
-                await db.execute("UPDATE GiveawayTicket SET status='REFUNDED',refundTransactionId=?,updatedAt=? WHERE ticketId=?",
+                await db.execute("UPDATE GiveawayTicket SET status='REFUNDED',refundTransactionId=$1,updatedAt=$2 WHERE ticketId=$3",
                                  (transaction_id, now_iso, ticket_id))
-                await db.execute("UPDATE EconomyTransaction SET metadataJson=?,status='COMMITTED',committedAt=? WHERE transactionId=?",
+                await db.execute("UPDATE EconomyTransaction SET metadataJson=$1,status='COMMITTED',committedAt=$2 WHERE transactionId=$3",
                                  (_json({"result_code": "refunded", "receipt": receipt, "balances": balances}),
                                   now_iso, transaction_id))
-            await db.execute("UPDATE GiveawayEscrow SET status='REFUNDED',version=version+1,updatedAt=? WHERE giveawayId=?",
+            await db.execute("UPDATE GiveawayEscrow SET status='REFUNDED',version=version+1,updatedAt=$1 WHERE giveawayId=$2",
                              (now_iso, str(giveaway_id)))
-            await db.execute("UPDATE GiveawayV1 SET status='CANCELLED',version=version+1,updatedAt=? WHERE giveawayId=?",
+            await db.execute("UPDATE GiveawayV1 SET status='CANCELLED',version=version+1,updatedAt=$1 WHERE giveawayId=$2",
                              (now_iso, str(giveaway_id)))
             audit = {"giveawayId": str(giveaway_id), "refundCount": len(tickets), "reason": reason,
                      "requestId": str(request_id)}
             await db.execute(
-                "INSERT INTO Phase8Audit (auditId,guildId,actorId,actionType,entityType,entityId,receiptJson,createdAt) VALUES (?,?,?,?,?,?,?,?)",
+                "INSERT INTO Phase8Audit (auditId,guildId,actorId,actionType,entityType,entityId,receiptJson,createdAt) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
                 (str(uuid.uuid4()), str(guild_id), str(actor_id), "CANCEL", "GIVEAWAY", str(giveaway_id),
                  _json(audit), now_iso),
             )
@@ -531,16 +518,15 @@ async def record_winner_review(db_path, *, guild_id, giveaway_id, reviewer_id, r
     if not str(evidence_reference or "").strip():
         return Phase8Result(False, "evidence_required", "Referensi bukti wajib diisi.")
     now_iso = _iso(now)
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
-        await db.execute("BEGIN IMMEDIATE")
-        async with db.execute(
+    async with _pool.acquire() as db:
+        
+        async with db.transaction():
+        row = await db.fetchrow(
             "SELECT w.winnerId FROM GiveawayV1 g JOIN GiveawayWinner w "
             "ON w.giveawayId=g.giveawayId AND w.userId=g.currentWinnerId AND w.status='AWAITING_CLAIM' "
-            "WHERE g.giveawayId=? AND g.guildId=?",
+            "WHERE g.giveawayId=$1 AND g.guildId=$2",
             (str(giveaway_id), str(guild_id)),
-        ) as cursor:
-            row = await cursor.fetchone()
+        )
         if not row or not row[0]:
             await db.rollback()
             return Phase8Result(False, "no_winner", "Giveaway tidak memiliki pemenang aktif.")
@@ -552,7 +538,7 @@ async def record_winner_review(db_path, *, guild_id, giveaway_id, reviewer_id, r
         receipt = {"reviewId": review_id, "giveawayId": str(giveaway_id), "winnerId": row[0],
                    "reasonCode": reason_code, "evidenceHash": evidence_hash, "reviewerId": str(reviewer_id)}
         await db.execute(
-            "INSERT INTO GiveawayWinnerReview (reviewId,giveawayId,winnerId,reasonCode,evidenceType,evidenceReference,evidenceHash,reviewerId,reviewedAt,priorWinnerStateJson,sanitizedMetadataJson,auditReceiptJson) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO GiveawayWinnerReview (reviewId,giveawayId,winnerId,reasonCode,evidenceType,evidenceReference,evidenceHash,reviewerId,reviewedAt,priorWinnerStateJson,sanitizedMetadataJson,auditReceiptJson) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
             (review_id, str(giveaway_id), row[0], reason_code, evidence_type, str(evidence_reference),
              evidence_hash, str(reviewer_id), now_iso, _json(prior_winner_state), _json(metadata), _json(receipt)),
         )
@@ -566,32 +552,30 @@ async def redraw_giveaway(db_path, *, guild_id, giveaway_id, reviewer_id, review
     random_source = random_source or secrets
     now_iso = _iso(now)
     try:
-        async with aiosqlite.connect(db_path) as db:
-            await configure_connection(db)
-            await db.execute("BEGIN IMMEDIATE")
-            async with db.execute(
+        async with _pool.acquire() as db:
+            
+            async with db.transaction():
+            review = await db.fetchrow(
                 "SELECT r.winnerId,r.reasonCode,r.consumed,w.userId,g.drawSequence,g.status "
                 "FROM GiveawayWinnerReview r JOIN GiveawayWinner w ON w.winnerId=r.winnerId "
                 "JOIN GiveawayV1 g ON g.giveawayId=r.giveawayId "
-                "WHERE r.reviewId=? AND r.giveawayId=? AND g.guildId=? "
+                "WHERE r.reviewId=$3 AND r.giveawayId=$4 AND g.guildId=$5 "
                 "AND g.currentWinnerId=w.userId AND w.status='AWAITING_CLAIM'",
                 (str(review_id), str(giveaway_id), str(guild_id)),
-            ) as cursor:
-                review = await cursor.fetchone()
+            )
             if not review or int(review[2]):
                 raise EconomyMutationError("invalid_review", "Bukti redraw tidak valid atau sudah dipakai.")
             if review[5] != "AWAITING_CLAIM":
                 raise EconomyMutationError("invalid_status", "Giveaway tidak menunggu klaim.")
             if review[1] == "CLAIM_EXPIRED":
-                async with db.execute("SELECT claimDeadline FROM GiveawayWinner WHERE winnerId=?", (review[0],)) as cursor:
-                    deadline = await cursor.fetchone()
+                deadline = await db.fetchrow("SELECT claimDeadline FROM GiveawayWinner WHERE winnerId=$1", review[0])
                 if not deadline or _dt(now_iso) < _dt(deadline[0]):
                     raise EconomyMutationError("claim_not_expired", "Deadline klaim belum berakhir.")
             paid = {row[0] for row in await (await db.execute(
-                "SELECT userId FROM GiveawayTicket WHERE giveawayId=? AND status='ALLOCATED'", (str(giveaway_id),)
+                "SELECT userId FROM GiveawayTicket WHERE giveawayId=$1 AND status='ALLOCATED'", (str(giveaway_id),)
             )).fetchall()}
             excluded = {row[0] for row in await (await db.execute(
-                "SELECT userId FROM GiveawayWinner WHERE giveawayId=?", (str(giveaway_id),)
+                "SELECT userId FROM GiveawayWinner WHERE giveawayId=$1", (str(giveaway_id),)
             )).fetchall()}
             candidates = sorted(paid - excluded, key=lambda value: int(value))
             evidence = {uid: participant_evidence.get(uid, {"eligible": False}) for uid in candidates}
@@ -605,19 +589,19 @@ async def redraw_giveaway(db_path, *, guild_id, giveaway_id, reviewer_id, review
             receipt = {"drawId": draw_id, "giveawayId": str(giveaway_id), "sequence": sequence,
                        "redrawReviewId": str(review_id), "poolHash": _hash(pool), "winnerId": new_user,
                        "claimDeadline": claim_deadline}
-            await db.execute("UPDATE GiveawayWinnerReview SET consumed=1,consumedAt=? WHERE reviewId=? AND consumed=0",
+            await db.execute("UPDATE GiveawayWinnerReview SET consumed=1,consumedAt=$1 WHERE reviewId=$2 AND consumed=0",
                              (now_iso, str(review_id)))
-            await db.execute("UPDATE GiveawayWinner SET status='INVALIDATED',updatedAt=? WHERE winnerId=?",
+            await db.execute("UPDATE GiveawayWinner SET status='INVALIDATED',updatedAt=$1 WHERE winnerId=$2",
                              (now_iso, review[0]))
             await db.execute(
-                "INSERT INTO GiveawayDraw (drawId,giveawayId,sequence,requestId,participantEvidenceJson,poolJson,poolHash,randomIndex,winnerId,noEligibleParticipants,receiptJson,createdAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO GiveawayDraw (drawId,giveawayId,sequence,requestId,participantEvidenceJson,poolJson,poolHash,randomIndex,winnerId,noEligibleParticipants,receiptJson,createdAt) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
                 (draw_id, str(giveaway_id), sequence, str(request_id), _json(evidence), _json(pool),
                  receipt["poolHash"], index, new_user, int(not pool), _json(receipt), now_iso),
             )
             for participant_id, snapshot in evidence.items():
                 evidence_hash = snapshot.get("evidenceHash") or _hash(snapshot)
                 await db.execute(
-                    "INSERT INTO GiveawayEligibilityEvidence (evidenceId,giveawayId,userId,stage,drawSequence,eligible,evidenceJson,evidenceHash,observedAt) VALUES (?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO GiveawayEligibilityEvidence (evidenceId,giveawayId,userId,stage,drawSequence,eligible,evidenceJson,evidenceHash,observedAt) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
                     (str(uuid.uuid5(uuid.NAMESPACE_URL, f"w2e:giveaway-evidence:{giveaway_id}:{participant_id}:REDRAW:{sequence}")),
                      str(giveaway_id), participant_id, "REDRAW", sequence,
                      int(bool(snapshot.get("eligible"))), _json(snapshot), evidence_hash, now_iso),
@@ -626,16 +610,16 @@ async def redraw_giveaway(db_path, *, guild_id, giveaway_id, reviewer_id, review
             if new_user:
                 winner_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"w2e:giveaway-winner:{giveaway_id}:{sequence}"))
                 await db.execute(
-                    "INSERT INTO GiveawayWinner (winnerId,giveawayId,drawId,userId,sequence,status,eligibilityEvidenceJson,claimDeadline,createdAt,updatedAt) VALUES (?,?,?,?,?,'AWAITING_CLAIM',?,?,?,?)",
+                    "INSERT INTO GiveawayWinner (winnerId,giveawayId,drawId,userId,sequence,status,eligibilityEvidenceJson,claimDeadline,createdAt,updatedAt) VALUES ($1,$2,$3,$4,$5,'AWAITING_CLAIM',$6,$7,$8,$9)",
                     (winner_id, str(giveaway_id), draw_id, new_user, sequence, _json(evidence[new_user]),
                      claim_deadline, now_iso, now_iso),
                 )
             await db.execute(
-                "UPDATE GiveawayV1 SET status=?,currentWinnerId=?,claimDeadline=?,drawSequence=?,version=version+1,updatedAt=? WHERE giveawayId=?",
+                "UPDATE GiveawayV1 SET status=$1,currentWinnerId=$2,claimDeadline=$3,drawSequence=$4,version=version+1,updatedAt=$5 WHERE giveawayId=$6",
                 (status, new_user, claim_deadline, sequence, now_iso, str(giveaway_id)),
             )
             await db.execute(
-                "INSERT INTO Phase8Audit (auditId,guildId,actorId,actionType,entityType,entityId,receiptJson,createdAt) VALUES (?,?,?,?,?,?,?,?)",
+                "INSERT INTO Phase8Audit (auditId,guildId,actorId,actionType,entityType,entityId,receiptJson,createdAt) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
                 (str(uuid.uuid4()), str(guild_id), str(reviewer_id), "REDRAW", "GIVEAWAY", str(giveaway_id),
                  _json(receipt), now_iso),
             )
@@ -649,12 +633,12 @@ async def redraw_giveaway(db_path, *, guild_id, giveaway_id, reviewer_id, review
 
 async def list_giveaways(db_path, guild_id, *, limit=25):
     try:
-        async with aiosqlite.connect(db_path) as db:
-            await configure_connection(db)
+        async with _pool.acquire() as db:
+            
             if not await phase8_capability(db):
                 return []
             async with db.execute(
-                "SELECT giveawayId,prize,status,endsAt,currentWinnerId FROM GiveawayV1 WHERE guildId=? ORDER BY createdAt DESC LIMIT ?",
+                "SELECT giveawayId,prize,status,endsAt,currentWinnerId FROM GiveawayV1 WHERE guildId=$1 ORDER BY createdAt DESC LIMIT $2",
                 (str(guild_id), max(1, min(int(limit), 100))),
             ) as cursor:
                 return await cursor.fetchall()

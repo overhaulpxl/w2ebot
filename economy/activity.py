@@ -1,7 +1,6 @@
 from datetime import timedelta
 import uuid
 
-import aiosqlite
 
 from .database import configure_connection
 from .time_policy import utc_datetime, utc_iso
@@ -43,8 +42,8 @@ async def rolling_activity_score(db_path, guild_id, user_id, *, now=None):
     upper = utc_datetime(now)
     lower = upper - timedelta(days=ACTIVITY_WINDOW_DAYS)
     try:
-        async with aiosqlite.connect(db_path) as db:
-            await configure_connection(db)
+        async with _pool.acquire() as db:
+            
             async with db.execute(
                 "SELECT COALESCE(SUM(points),0) FROM EconomyActivityEvent "
                 "WHERE guildId=? AND userId=? AND occurredAt>=? AND occurredAt<=?",

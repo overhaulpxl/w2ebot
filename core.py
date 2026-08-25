@@ -1620,7 +1620,6 @@ async def crypto_mining_loop():
             summary_str = ", ".join(f"{s}={n}" for s, n in mined_summary.items())
             logging.info(f"[MINING] {miner_count} penambang: {summary_str}")
 
-@client.event
 _pool = None
 
 async def init_db_pool():

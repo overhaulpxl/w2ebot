@@ -2,7 +2,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 
-import aiosqlite
 
 from .activity import rolling_activity_score
 from .constants import (
@@ -65,8 +64,8 @@ def calculate_power_score(*, attack, defense, max_hp, crit_bps):
 
 async def ensure_profile(db_path, guild_id, user_id, *, now=None):
     timestamp = utc_iso(now)
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         await db.execute(
             "INSERT OR IGNORE INTO RpgProfile "
             "(guildId,userId,level,xp,maxHp,currentHp,attack,defense,critBps,energy,energyUpdatedAt,version,createdAt,updatedAt) "
@@ -77,24 +76,23 @@ async def ensure_profile(db_path, guild_id, user_id, *, now=None):
                 timestamp, timestamp, timestamp,
             ),
         )
-        await db.commit()
+        # await db.commit() (managed by asyncpg/pool)
 
 
 async def materialize_energy(db_path, guild_id, user_id, *, now=None):
     current_time = utc_datetime(now)
     await ensure_profile(db_path, guild_id, user_id, now=current_time)
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
-        await db.execute("BEGIN IMMEDIATE")
+    async with _pool.acquire() as db:
+        
+        async with db.transaction():
         try:
-            async with db.execute(
-                "SELECT energy,energyUpdatedAt,version FROM RpgProfile WHERE guildId=? AND userId=?",
+            row = await db.fetchrow(
+                "SELECT energy,energyUpdatedAt,version FROM RpgProfile WHERE guildId=$1 AND userId=$2",
                 (str(guild_id), str(user_id)),
-            ) as cursor:
-                row = await cursor.fetchone()
+            )
             energy, updated_raw, version = int(row[0]), row[1], int(row[2])
             if energy >= RPG_MAX_ENERGY:
-                await db.rollback()
+                # await db.rollback()
                 return RPG_MAX_ENERGY
             try:
                 updated = utc_datetime(updated_raw)
@@ -103,23 +101,23 @@ async def materialize_energy(db_path, guild_id, user_id, *, now=None):
             elapsed = max(0, int((current_time - updated).total_seconds()))
             ticks = elapsed // RPG_ENERGY_REGEN_SECONDS
             if ticks <= 0:
-                await db.rollback()
+                # await db.rollback()
                 return energy
             gained = min(ticks, RPG_MAX_ENERGY - energy)
             next_energy = energy + gained
             next_updated = utc_iso(updated + timedelta(seconds=gained * RPG_ENERGY_REGEN_SECONDS))
             cursor = await db.execute(
-                "UPDATE RpgProfile SET energy=?,energyUpdatedAt=?,version=version+1,updatedAt=? "
+                "UPDATE RpgProfile SET energy=$1,energyUpdatedAt=$2,version=version+1,updatedAt=$3 "
                 "WHERE guildId=? AND userId=? AND version=?",
                 (next_energy, next_updated, utc_iso(current_time), str(guild_id), str(user_id), version),
             )
             if cursor.rowcount != 1:
-                await db.rollback()
+                # await db.rollback()
                 return await materialize_energy(db_path, guild_id, user_id, now=current_time)
-            await db.commit()
+            # await db.commit() (managed by asyncpg/pool)
             return next_energy
         except Exception:
-            await db.rollback()
+            # await db.rollback()
             raise
 
 
@@ -127,20 +125,18 @@ async def get_profile_snapshot(db_path, guild_id, user_id, *, now=None, create=T
     if create:
         await ensure_profile(db_path, guild_id, user_id, now=now)
         await materialize_energy(db_path, guild_id, user_id, now=now)
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
-        async with db.execute(
+    async with _pool.acquire() as db:
+        
+        row = await db.fetchrow(
             "SELECT level,xp,maxHp,currentHp,attack,defense,critBps,energy,energyUpdatedAt,"
             "activeWeaponInstanceId,activeArmorInstanceId,activeAccessoryInstanceId,activePetInstanceId "
-            "FROM RpgProfile WHERE guildId=? AND userId=?",
+            "FROM RpgProfile WHERE guildId=$1 AND userId=$2",
             (str(guild_id), str(user_id)),
-        ) as cursor:
-            row = await cursor.fetchone()
-        async with db.execute(
-            "SELECT etmBalance,ecyBalance FROM EconomyWallet WHERE guildId=? AND userId=?",
+        )
+        wallet = await db.fetchrow(
+            "SELECT etmBalance,ecyBalance FROM EconomyWallet WHERE guildId=$1 AND userId=$2",
             (str(guild_id), str(user_id)),
-        ) as cursor:
-            wallet = await cursor.fetchone()
+        )
     if not row:
         return None
     level, xp, max_hp, current_hp, attack, defense, crit_bps, energy, energy_updated_at, *instances = row

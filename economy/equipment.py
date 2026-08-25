@@ -4,7 +4,6 @@ import json
 import uuid
 from dataclasses import dataclass
 
-import aiosqlite
 
 from .catalog import ENHANCEMENT_BONUS_BPS, EQUIPMENT, PETS, SETS
 from .constants import RPG_MAX_CRIT_BPS, RPG_PHASE3_CATALOG_VERSION
@@ -30,13 +29,13 @@ class EffectiveStats:
 
 async def assert_equipment_not_in_marketplace_escrow(db, guild_id, equipment_instance_id):
     """Fail closed terhadap escrow aktif tanpa mewajibkan schema Phase 4 untuk Phase 3."""
-    async with db.execute(
+    profile = await db.fetchrow(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='MarketplaceEscrow'"
     ) as cursor:
         if not await cursor.fetchone():
             return
-    async with db.execute(
-        "SELECT 1 FROM MarketplaceEscrow WHERE guildId=? AND equipmentInstanceId=? "
+    starter_equipment = await db.fetch(
+        "SELECT 1 FROM MarketplaceEscrow WHERE guildId=$1 AND equipmentInstanceId=$2 "
         "AND status IN ('HELD','PARTIAL','REVIEW_REQUIRED') LIMIT 1",
         (str(guild_id), str(equipment_instance_id)),
     ) as cursor:
@@ -104,42 +103,38 @@ def starter_effective_stats():
 async def initialize_phase3_profile(db_path, guild_id, user_id, *, now=None):
     timestamp = utc_iso(now)
     stats = starter_effective_stats()
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
-        await db.execute("BEGIN IMMEDIATE")
+    async with _pool.acquire() as db:
+        
+        async with db.transaction():
         try:
             guild_key = str(guild_id)
             user_key = str(user_id)
             async with db.execute(
                 "SELECT starterPackClaimed,starterPackClaimedAt FROM RpgProfile "
-                "WHERE guildId=? AND userId=?",
+                "WHERE guildId=$1 AND userId=$2",
                 (guild_key, user_key),
-            ) as cursor:
-                profile = await cursor.fetchone()
-            async with db.execute(
+            )
+            grant = await db.fetchrow(
                 "SELECT grantId,status,weaponInstanceId,armorInstanceId,accessoryInstanceId,"
-                "petInstanceId FROM RpgStarterGrant WHERE guildId=? AND userId=?",
+                "petInstanceId FROM RpgStarterGrant WHERE guildId=$1 AND userId=$2",
                 (guild_key, user_key),
-            ) as cursor:
-                grant = await cursor.fetchone()
+            )
             await db.execute(
                 "INSERT OR IGNORE INTO RpgProfile "
                 "(guildId,userId,level,xp,maxHp,currentHp,attack,defense,critBps,energy,energyUpdatedAt,version,createdAt,updatedAt) "
-                "VALUES (?,?,1,0,1000,?,50,25,500,100,?,0,?,?)",
+                "VALUES ($3,$4,1,0,1000,$5,50,25,500,100,$6,0,$7,$8)",
                 (guild_key, user_key, stats.max_hp, timestamp, timestamp, timestamp),
             )
-            async with db.execute(
+            profile = await db.fetchrow(
                 "SELECT equipmentInstanceId,itemId,slot FROM RpgEquipmentInstance "
-                "WHERE guildId=? AND ownerId=? AND acquiredSource='STARTER' ORDER BY equipmentInstanceId",
+                "WHERE guildId=$9 AND ownerId=$10 AND acquiredSource='STARTER' ORDER BY equipmentInstanceId",
                 (guild_key, user_key),
-            ) as cursor:
-                starter_equipment = await cursor.fetchall()
-            async with db.execute(
+            )
+            starter_pets = await db.fetch(
                 "SELECT petInstanceId,petId FROM RpgPetInstance "
-                "WHERE guildId=? AND ownerId=? AND acquiredSource='STARTER' ORDER BY petInstanceId",
+                "WHERE guildId=$1 AND ownerId=$2 AND acquiredSource='STARTER' ORDER BY petInstanceId",
                 (guild_key, user_key),
-            ) as cursor:
-                starter_pets = await cursor.fetchall()
+            )
 
             expected_items = set(STARTER_ITEMS)
             existing_items = {row[1] for row in starter_equipment}
@@ -172,7 +167,7 @@ async def initialize_phase3_profile(db_path, guild_id, user_id, *, now=None):
                 await db.execute(
                     "INSERT INTO RpgStarterGrant "
                     "(grantId,guildId,userId,status,recoveryReviewJson,createdAt,updatedAt) "
-                    "VALUES (?,?,?,'REVIEW_REQUIRED',?,?,?) "
+                    "VALUES ($1,$2,$3,'REVIEW_REQUIRED',$1,$2,$3) "
                     "ON CONFLICT(guildId,userId) DO UPDATE SET status='REVIEW_REQUIRED',"
                     "recoveryReviewJson=excluded.recoveryReviewJson,updatedAt=excluded.updatedAt",
                     (grant_id, guild_key, user_key, review, timestamp, timestamp),
@@ -180,7 +175,7 @@ async def initialize_phase3_profile(db_path, guild_id, user_id, *, now=None):
                 await db.execute(
                     "INSERT OR IGNORE INTO RpgRecoveryReview "
                     "(reviewId,grantId,guildId,userId,reviewCode,metadataJson,createdAt) "
-                    "VALUES (?,?,?,?,?,'{}',?)",
+                    "VALUES ($1,$2,$3,$4,$5,'{}',$1)",
                     (str(uuid.uuid4()), grant_id, guild_key, user_key,
                      "STARTER_CHILDREN_CONFLICT", timestamp),
                 )
@@ -201,7 +196,7 @@ async def initialize_phase3_profile(db_path, guild_id, user_id, *, now=None):
                     await db.execute(
                         "INSERT INTO RpgEquipmentInstance "
                         "(equipmentInstanceId,guildId,ownerId,itemId,catalogVersion,slot,enhancementLevel,pityBps,bindingStatus,status,acquiredSource,createdAt,updatedAt) "
-                        "VALUES (?,?,?,?,?,?,0,0,'STARTER_BOUND','OWNED','STARTER',?,?)",
+                        "VALUES ($2,$3,$4,$5,$6,$7,0,0,'STARTER_BOUND','OWNED','STARTER',$1,$2)",
                         (instance_id, guild_key, user_key, item_id,
                          RPG_PHASE3_CATALOG_VERSION, EQUIPMENT[item_id]["slot"], timestamp, timestamp),
                     )
@@ -209,7 +204,7 @@ async def initialize_phase3_profile(db_path, guild_id, user_id, *, now=None):
                 await db.execute(
                     "INSERT INTO RpgPetInstance "
                     "(petInstanceId,guildId,ownerId,petId,catalogVersion,rarity,level,xp,evolutionState,status,acquiredSource,createdAt,updatedAt) "
-                    "VALUES (?,?,?,?,?,'COMMON',1,0,'BASE','OWNED','STARTER',?,?)",
+                    "VALUES ($3,$4,$5,$6,$7,'COMMON',1,0,'BASE','OWNED','STARTER',$1,$2)",
                     (pet_instance_id, guild_key, user_key, STARTER_PET,
                      RPG_PHASE3_CATALOG_VERSION, timestamp, timestamp),
                 )
@@ -218,7 +213,7 @@ async def initialize_phase3_profile(db_path, guild_id, user_id, *, now=None):
                 "INSERT INTO RpgStarterGrant "
                 "(grantId,guildId,userId,status,weaponInstanceId,armorInstanceId,accessoryInstanceId,"
                 "petInstanceId,createdAt,updatedAt,committedAt) "
-                "VALUES (?,?,?,'COMMITTED',?,?,?,?,?,?,?) "
+                "VALUES ($3,$4,$5,'COMMITTED',$1,$2,$3,$4,$5,$6,$7) "
                 "ON CONFLICT(guildId,userId) DO UPDATE SET status='COMMITTED',"
                 "weaponInstanceId=excluded.weaponInstanceId,armorInstanceId=excluded.armorInstanceId,"
                 "accessoryInstanceId=excluded.accessoryInstanceId,petInstanceId=excluded.petInstanceId,"
@@ -227,10 +222,10 @@ async def initialize_phase3_profile(db_path, guild_id, user_id, *, now=None):
                  instance_ids["ACCESSORY"], pet_instance_id, timestamp, timestamp, timestamp),
             )
             await db.execute(
-                "UPDATE RpgProfile SET currentHp=?,activeWeaponInstanceId=?,activeArmorInstanceId=?,"
-                "activeAccessoryInstanceId=?,activePetInstanceId=?,starterPackClaimed=1,"
-                "starterPackClaimedAt=COALESCE(starterPackClaimedAt,?),version=version+1,updatedAt=? "
-                "WHERE guildId=? AND userId=?",
+                "UPDATE RpgProfile SET currentHp=$1,activeWeaponInstanceId=$2,activeArmorInstanceId=$3,"
+                "activeAccessoryInstanceId=$1,activePetInstanceId=$2,starterPackClaimed=1,"
+                "starterPackClaimedAt=COALESCE(starterPackClaimedAt,$3),version=version+1,updatedAt=$4 "
+                "WHERE guildId=$5 AND userId=$6",
                 (stats.max_hp, instance_ids["WEAPON"], instance_ids["ARMOR"],
                  instance_ids["ACCESSORY"], pet_instance_id, timestamp, timestamp,
                  guild_key, user_key),
@@ -246,10 +241,9 @@ async def _effective_stats_in_db(db, guild_id, user_id, *, context=None):
     db.row_factory = aiosqlite.Row
     async with db.execute(
         "SELECT maxHp,attack,defense,critBps,activeWeaponInstanceId,activeArmorInstanceId,"
-        "activeAccessoryInstanceId,activePetInstanceId,currentHp FROM RpgProfile WHERE guildId=? AND userId=?",
+        "activeAccessoryInstanceId,activePetInstanceId,currentHp FROM RpgProfile WHERE guildId=$1 AND userId=$2",
         (str(guild_id), str(user_id)),
-    ) as cursor:
-        profile = await cursor.fetchone()
+    )
     if not profile:
         return None, None
     active_ids = [profile[4], profile[5], profile[6]]
@@ -257,20 +251,18 @@ async def _effective_stats_in_db(db, guild_id, user_id, *, context=None):
     for instance_id in active_ids:
         if not instance_id:
             continue
-        async with db.execute(
-            "SELECT itemId,enhancementLevel FROM RpgEquipmentInstance WHERE equipmentInstanceId=? AND guildId=? AND ownerId=? AND status='OWNED'",
+        row = await db.fetchrow(
+            "SELECT itemId,enhancementLevel FROM RpgEquipmentInstance WHERE equipmentInstanceId=$1 AND guildId=$2 AND ownerId=$3 AND status='OWNED'",
             (instance_id, str(guild_id), str(user_id)),
-        ) as cursor:
-            row = await cursor.fetchone()
+        )
         if row and row["itemId"] in EQUIPMENT:
             equipped.append({"definition": EQUIPMENT[row["itemId"]], "enhancement_level": row["enhancementLevel"]})
     pet_id = None
     if profile[7]:
-        async with db.execute(
-            "SELECT petId,level FROM RpgPetInstance WHERE petInstanceId=? AND guildId=? AND ownerId=? AND status='OWNED'",
+        pet = await db.fetchrow(
+            "SELECT petId,level FROM RpgPetInstance WHERE petInstanceId=$1 AND guildId=$2 AND ownerId=$3 AND status='OWNED'",
             (profile[7], str(guild_id), str(user_id)),
-        ) as cursor:
-            pet = await cursor.fetchone()
+        )
         pet_id = pet[0] if pet else None
         pet_level = int(pet[1]) if pet else 1
     else:
@@ -284,20 +276,19 @@ async def _effective_stats_in_db(db, guild_id, user_id, *, context=None):
 
 
 async def get_effective_stats(db_path, guild_id, user_id, *, context=None):
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         stats, _ = await _effective_stats_in_db(db, guild_id, user_id, context=context)
         return stats
 
 
 async def get_active_loadout(db_path, guild_id, user_id):
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
-        async with db.execute(
+    async with _pool.acquire() as db:
+        
+        profile = await db.fetchrow(
             "SELECT activeWeaponInstanceId,activeArmorInstanceId,activeAccessoryInstanceId,activePetInstanceId "
-            "FROM RpgProfile WHERE guildId=? AND userId=?", (str(guild_id), str(user_id)),
-        ) as cursor:
-            profile = await cursor.fetchone()
+            "FROM RpgProfile WHERE guildId=$1 AND userId=$2", (str(guild_id), str(user_id)),
+        )
         if not profile:
             return {}
         result = {}
@@ -305,19 +296,17 @@ async def get_active_loadout(db_path, guild_id, user_id):
             if not instance_id:
                 result[slot] = None
                 continue
-            async with db.execute(
-                "SELECT itemId,enhancementLevel FROM RpgEquipmentInstance WHERE equipmentInstanceId=?",
+            row = await db.fetchrow(
+                "SELECT itemId,enhancementLevel FROM RpgEquipmentInstance WHERE equipmentInstanceId=$1",
                 (instance_id,),
-            ) as cursor:
-                row = await cursor.fetchone()
+            )
             definition = EQUIPMENT.get(row[0], {}) if row else {}
             result[slot] = {"instance_id": instance_id, "name": definition.get("name", row[0] if row else "Unknown"),
                             "enhancement_level": int(row[1]) if row else 0}
         if profile[3]:
-            async with db.execute(
-                "SELECT petId FROM RpgPetInstance WHERE petInstanceId=?", (profile[3],),
-            ) as cursor:
-                pet = await cursor.fetchone()
+            pet = await db.fetchrow(
+                "SELECT petId FROM RpgPetInstance WHERE petInstanceId=$1", (profile[3],),
+            )
             result["pet"] = {"instance_id": profile[3], "name": PETS.get(pet[0], (pet[0],))[0]} if pet else None
         else:
             result["pet"] = None
@@ -326,23 +315,21 @@ async def get_active_loadout(db_path, guild_id, user_id):
 
 async def equip_instance(db_path, guild_id, user_id, equipment_instance_id, *, now=None):
     timestamp = utc_iso(now)
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         db.row_factory = aiosqlite.Row
-        await db.execute("BEGIN IMMEDIATE")
+        async with db.transaction():
         try:
             await assert_equipment_not_in_marketplace_escrow(db, guild_id, equipment_instance_id)
-            async with db.execute(
+            item = await db.fetchrow(
                 "SELECT itemId,slot,bindingStatus,status FROM RpgEquipmentInstance "
-                "WHERE equipmentInstanceId=? AND guildId=? AND ownerId=?",
+                "WHERE equipmentInstanceId=$1 AND guildId=$2 AND ownerId=$3",
                 (str(equipment_instance_id), str(guild_id), str(user_id)),
-            ) as cursor:
-                item = await cursor.fetchone()
-            async with db.execute(
-                "SELECT level FROM RpgProfile WHERE guildId=? AND userId=?",
+            )
+            profile = await db.fetchrow(
+                "SELECT level FROM RpgProfile WHERE guildId=$1 AND userId=$2",
                 (str(guild_id), str(user_id)),
-            ) as cursor:
-                profile = await cursor.fetchone()
+            )
             if not item or item["status"] != "OWNED" or not profile:
                 raise ValueError("Equipment tidak ditemukan.")
             definition = EQUIPMENT.get(item["itemId"])
@@ -350,19 +337,19 @@ async def equip_instance(db_path, guild_id, user_id, equipment_instance_id, *, n
                 raise ValueError("Level belum memenuhi syarat equipment.")
             column = {"WEAPON": "activeWeaponInstanceId", "ARMOR": "activeArmorInstanceId", "ACCESSORY": "activeAccessoryInstanceId"}[item["slot"]]
             await db.execute(
-                f"UPDATE RpgProfile SET {column}=?,version=version+1,updatedAt=? WHERE guildId=? AND userId=?",
+                f"UPDATE RpgProfile SET {column}=$1,version=version+1,updatedAt=$2 WHERE guildId=$3 AND userId=$4",
                 (str(equipment_instance_id), timestamp, str(guild_id), str(user_id)),
             )
             if item["bindingStatus"] == "BOUND_ON_EQUIP":
                 await db.execute(
-                    "UPDATE RpgEquipmentInstance SET bindingStatus='ACCOUNT_BOUND',updatedAt=? "
+                    "UPDATE RpgEquipmentInstance SET bindingStatus='ACCOUNT_BOUND',updatedAt=$1 "
                     "WHERE equipmentInstanceId=? AND status='OWNED'",
                     (timestamp, str(equipment_instance_id)),
                 )
             stats, latest = await _effective_stats_in_db(db, guild_id, user_id)
             if int(latest[8]) > stats.max_hp:
                 await db.execute(
-                    "UPDATE RpgProfile SET currentHp=?,version=version+1,updatedAt=? WHERE guildId=? AND userId=?",
+                    "UPDATE RpgProfile SET currentHp=$1,version=version+1,updatedAt=$2 WHERE guildId=$3 AND userId=$4",
                     (stats.max_hp, timestamp, str(guild_id), str(user_id)),
                 )
             await db.commit()

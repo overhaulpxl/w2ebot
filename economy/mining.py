@@ -8,7 +8,6 @@ import hashlib
 import json
 import uuid
 
-import aiosqlite
 
 from .constants import (
     ASSET_UNIT_SCALE, CRYPTO_ASSETS, ECONOMY_MAX_AMOUNT, MINING_AUTH_CLASSES,
@@ -110,8 +109,8 @@ def slot_limit(level):
 
 
 async def _profile_locked(db, guild_id, user_id):
-    async with db.execute(
-        "SELECT level FROM RpgProfile WHERE guildId=? AND userId=?",
+    row = await db.fetchrow(
+        "SELECT level FROM RpgProfile WHERE guildId=$1 AND userId=$2",
         (str(guild_id), str(user_id)),
     ) as cursor:
         rows = await cursor.fetchall()
@@ -126,25 +125,24 @@ async def _profile_locked(db, guild_id, user_id):
 async def _readiness_locked(db, guild_id):
     if not await phase7_capability(db):
         raise EconomyMutationError("schema_unavailable", "Schema Mining Phase 7 belum siap.")
-    async with db.execute(
-        "SELECT 1 FROM EconomyFeatureState WHERE guildId=? AND feature IN ('economy','mining') AND paused=1 LIMIT 1",
+    rows = await db.fetch(
+        "SELECT 1 FROM EconomyFeatureState WHERE guildId=$1 AND feature IN ('economy','mining') AND paused=1 LIMIT 1",
         (str(guild_id),),
     ) as cursor:
         if await cursor.fetchone():
             raise EconomyMutationError("paused", "Mining sedang dijeda.")
     async with db.execute(
-        "SELECT currency FROM EconomySystemAccount WHERE guildId=? AND accountCode='ECY_MINING'",
+        "SELECT currency FROM EconomySystemAccount WHERE guildId=$1 AND accountCode='ECY_MINING'",
         (str(guild_id),),
-    ) as cursor:
-        row = await cursor.fetchone()
+    )
     if not row or row[0] != "ECY":
         raise EconomyMutationError("mining_account_missing", "Akun ECY_MINING belum tersedia.")
 
 
 async def mining_readiness(db_path, guild_id, user_id=None):
     try:
-        async with aiosqlite.connect(db_path) as db:
-            await configure_connection(db)
+        async with _pool.acquire() as db:
+            
             await _readiness_locked(db, guild_id)
             level = await _profile_locked(db, guild_id, user_id) if user_id is not None else None
             return {"ready": True, "code": "ready", "level": level,
@@ -154,8 +152,8 @@ async def mining_readiness(db_path, guild_id, user_id=None):
 
 
 async def _operation_by_request(db, guild_id, request_id):
-    async with db.execute(
-        "SELECT operationId,status,resultJson,outcomeJson FROM MiningOperation WHERE guildId=? AND requestId=?",
+    conflict = await db.fetchrow(
+        "SELECT operationId,status,resultJson,outcomeJson FROM MiningOperation WHERE guildId=$1 AND requestId=$2",
         (str(guild_id), str(request_id)),
     ) as cursor:
         return await cursor.fetchone()
@@ -176,9 +174,9 @@ async def _reserve(db_path, *, guild_id, user_id, request_id, operation_type,
     operation_id = str(uuid.uuid4())
     now = utc_now()
     try:
-        async with aiosqlite.connect(db_path) as db:
-            await configure_connection(db)
-            await db.execute("BEGIN IMMEDIATE")
+        async with _pool.acquire() as db:
+            
+            async with db.transaction():
             await _readiness_locked(db, guild_id)
             await _profile_locked(db, guild_id, user_id)
             existing = await _operation_by_request(db, guild_id, request_id)
@@ -195,16 +193,15 @@ async def _reserve(db_path, *, guild_id, user_id, request_id, operation_type,
                 await db.execute(
                     "INSERT INTO MiningOperation "
                     "(operationId,requestId,guildId,userId,operationType,rigInstanceId,reservationKey,outcomeJson,resultJson,transactionId,status,retryCount,lastAttemptedAt,createdAt) "
-                    "VALUES (?,?,?,?,?,?,?,?,NULL,?,'RESERVED',0,?,?)",
+                    "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULL,$9,'RESERVED',0,$1,$2)",
                     (operation_id, str(request_id), str(guild_id), str(user_id), operation_type,
                      rig_instance_id, reservation_key, _canonical_json(outcome), transaction_id, now, now),
                 )
             except aiosqlite.IntegrityError:
                 async with db.execute(
-                    "SELECT operationId,status,resultJson FROM MiningOperation WHERE reservationKey=? AND status IN ('RESERVED','REVIEW_REQUIRED')",
+                    "SELECT operationId,status,resultJson FROM MiningOperation WHERE reservationKey=$1 AND status IN ('RESERVED','REVIEW_REQUIRED')",
                     (reservation_key,),
-                ) as cursor:
-                    conflict = await cursor.fetchone()
+                )
                 await db.rollback()
                 return MiningResult(False, "operation_pending", "Operasi Mining untuk resource ini masih diproses."), conflict[0] if conflict else None
             await db.commit()
@@ -216,18 +213,17 @@ async def _reserve(db_path, *, guild_id, user_id, request_id, operation_type,
 async def _void_operation(db, operation_id, code, message, now):
     receipt = {"operationId": operation_id, "voidReasonCode": code}
     await db.execute(
-        "UPDATE MiningOperation SET status='VOID',reservationKey=NULL,resultJson=?,lastErrorCode=?,lastAttemptedAt=?,settledAt=? WHERE operationId=? AND status='RESERVED'",
+        "UPDATE MiningOperation SET status='VOID',reservationKey=NULL,resultJson=$1,lastErrorCode=$2,lastAttemptedAt=$3,settledAt=$4 WHERE operationId=$5 AND status='RESERVED'",
         (_canonical_json(receipt), code, now, now, operation_id),
     )
     return MiningResult(False, code, message, receipt)
 
 
 async def _load_operation_locked(db, operation_id):
-    async with db.execute(
-        "SELECT operationId,requestId,guildId,userId,operationType,rigInstanceId,outcomeJson,resultJson,transactionId,status FROM MiningOperation WHERE operationId=?",
+    row = await db.fetchrow(
+        "SELECT operationId,requestId,guildId,userId,operationType,rigInstanceId,outcomeJson,resultJson,transactionId,status FROM MiningOperation WHERE operationId=$1",
         (operation_id,),
-    ) as cursor:
-        row = await cursor.fetchone()
+    )
     if not row:
         raise EconomyMutationError("operation_missing", "Operasi Mining tidak ditemukan.")
     return row
@@ -236,13 +232,12 @@ async def _load_operation_locked(db, operation_id):
 async def _price_reference_locked(db, symbol, observed_at):
     end = _as_datetime(observed_at)
     start = end - timedelta(days=7)
-    async with db.execute(
+    catalog = await db.fetchrow(
         "SELECT h.historyId,h.currentPriceEcy,h.occurredAt FROM CryptoPriceHistory h "
         "JOIN CryptoMarketTick t ON t.tickId=h.tickId AND t.status='COMMITTED' "
-        "WHERE h.symbol=? AND h.occurredAt>? AND h.occurredAt<=? ORDER BY h.occurredAt,h.historyId",
+        "WHERE h.symbol=$1 AND h.occurredAt>$2 AND h.occurredAt<=$3 ORDER BY h.occurredAt,h.historyId",
         (symbol, start.isoformat(), end.isoformat()),
-    ) as cursor:
-        rows = await cursor.fetchall()
+    )
     if not rows:
         raise EconomyMutationError("price_history_missing", "Riwayat harga tujuh hari belum tersedia.")
     price_sum = sum(int(row[1]) for row in rows)
@@ -267,18 +262,16 @@ async def _accrue_locked(db, *, operation_id, rig, observed_at):
     eligible = max(0, int((eligible_end - previous).total_seconds())) if status == "ACTIVE" else 0
     rewarded = min(eligible, DAY_SECONDS)
     discarded = max(0, elapsed - rewarded)
-    async with db.execute(
-        "SELECT grossEquivalentPerDay FROM MiningRigCatalog WHERE rigDefinitionId=?",
+    assets = await db.fetch(
+        "SELECT grossEquivalentPerDay FROM MiningRigCatalog WHERE rigDefinitionId=$1",
         (definition_id,),
-    ) as cursor:
-        catalog = await cursor.fetchone()
+    )
     if not catalog:
         raise EconomyMutationError("catalog_missing", "Definisi rig Mining tidak tersedia.")
-    async with db.execute(
-        "SELECT pendingUnits,fractionalBillionths,version FROM MiningPendingAsset WHERE rigInstanceId=? AND symbol=?",
+    pending_row = await db.fetchrow(
+        "SELECT pendingUnits,fractionalBillionths,version FROM MiningPendingAsset WHERE rigInstanceId=$1 AND symbol=$2",
         (rig_id, symbol),
-    ) as cursor:
-        pending_row = await cursor.fetchone()
+    )
     pending, carry, pending_version = (int(pending_row[0]), int(pending_row[1]), int(pending_row[2])) if pending_row else (0, 0, None)
     reference = await _price_reference_locked(db, symbol, observed_at) if rewarded else {
         "windowStart": None, "windowEnd": None, "sampleCount": 0, "priceSum": 0,
@@ -290,8 +283,8 @@ async def _accrue_locked(db, *, operation_id, rig, observed_at):
     }
     if pending_row:
         cursor = await db.execute(
-            "UPDATE MiningPendingAsset SET pendingUnits=?,fractionalBillionths=?,version=version+1,updatedAt=? "
-            "WHERE rigInstanceId=? AND symbol=? AND version=?",
+            "UPDATE MiningPendingAsset SET pendingUnits=$1,fractionalBillionths=$2,version=version+1,updatedAt=$3 "
+            "WHERE rigInstanceId=$4 AND symbol=$5 AND version=$6",
             (calculation["pendingUnitsAfter"], calculation["resultingCarry"], observed_at,
              rig_id, symbol, pending_version),
         )
@@ -299,12 +292,12 @@ async def _accrue_locked(db, *, operation_id, rig, observed_at):
             raise EconomyMutationError("stale", "Pending Mining berubah saat accrual.")
     else:
         await db.execute(
-            "INSERT INTO MiningPendingAsset (rigInstanceId,symbol,pendingUnits,fractionalBillionths,version,updatedAt) VALUES (?,?,?,?,0,?)",
+            "INSERT INTO MiningPendingAsset (rigInstanceId,symbol,pendingUnits,fractionalBillionths,version,updatedAt) VALUES ($1,$2,$3,$4,0,$5)",
             (rig_id, symbol, calculation["pendingUnitsAfter"], calculation["resultingCarry"], observed_at),
         )
     new_status = "MAINTENANCE_DUE" if paid_through and observed >= paid_end else status
     cursor = await db.execute(
-        "UPDATE MiningRigInstance SET status=?,accruedThrough=?,version=version+1,updatedAt=? WHERE rigInstanceId=? AND version=?",
+        "UPDATE MiningRigInstance SET status=$1,accruedThrough=$2,version=version+1,updatedAt=$3 WHERE rigInstanceId=$4 AND version=$5",
         (new_status, observed_at, observed_at, rig_id, rig_version),
     )
     if cursor.rowcount != 1:
@@ -313,7 +306,7 @@ async def _accrue_locked(db, *, operation_id, rig, observed_at):
     await db.execute(
         "INSERT INTO MiningAccrualCheckpoint "
         "(checkpointId,operationId,rigInstanceId,symbol,observedAt,previousAccruedThrough,rewardedSeconds,discardedSeconds,windowStart,windowEnd,sampleCount,priceSum,averagePriceEcy,latestHistoryId,priceReferenceHash,numeratorText,denominatorText,calculationHash,creditedUnits,previousCarry,resultingCarry,createdAt) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "VALUES ($7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)",
         (checkpoint_id, operation_id, rig_id, symbol, observed_at, accrued_through, rewarded, discarded,
          reference["windowStart"], reference["windowEnd"], reference["sampleCount"], reference["priceSum"],
          reference["averagePriceEcy"], reference["latestHistoryId"], reference["priceReferenceHash"],
@@ -411,9 +404,9 @@ async def claim_rig(db_path, *, guild_id, user_id, request_id, rig_instance_id,
 async def settle_operation(db_path, operation_id, *, recovery=False, _failure_stage=None):
     now_attempt = utc_now()
     try:
-        async with aiosqlite.connect(db_path) as db:
-            await configure_connection(db)
-            await db.execute("BEGIN IMMEDIATE")
+        async with _pool.acquire() as db:
+            
+            async with db.transaction():
             row = await _load_operation_locked(db, operation_id)
             replay = _replay((row[0], row[9], row[7], row[6]))
             if replay:
@@ -427,15 +420,14 @@ async def settle_operation(db_path, operation_id, *, recovery=False, _failure_st
             level = await _profile_locked(db, guild_id, user_id)
             outcome = json.loads(row[6])
             observed_at = outcome["observedAt"]
-            async with db.execute(
+            rig = await db.fetchrow(
                 "SELECT rigInstanceId,rigDefinitionId,targetSymbol,status,paidThrough,accruedThrough,version "
-                "FROM MiningRigInstance WHERE rigInstanceId=? AND guildId=? AND userId=?",
+                "FROM MiningRigInstance WHERE rigInstanceId=$1 AND guildId=$2 AND userId=$3",
                 (row[5] or outcome.get("rigInstanceId"), guild_id, user_id),
-            ) as cursor:
-                rig = await cursor.fetchone()
+            )
             if operation_type == "PURCHASE":
-                async with db.execute(
-                    "SELECT COUNT(*) FROM MiningRigInstance WHERE guildId=? AND userId=? AND status IN ('ACTIVE','MAINTENANCE_DUE','REVIEW_REQUIRED')",
+                holding = await db.fetchrow(
+                    "SELECT COUNT(*) FROM MiningRigInstance WHERE guildId=$1 AND userId=$2 AND status IN ('ACTIVE','MAINTENANCE_DUE','REVIEW_REQUIRED')",
                     (guild_id, user_id),
                 ) as cursor:
                     count = int((await cursor.fetchone())[0])
@@ -449,7 +441,7 @@ async def settle_operation(db_path, operation_id, *, recovery=False, _failure_st
                 await db.execute(
                     "INSERT INTO EconomyTransaction "
                     "(transactionId,guildId,idempotencyKey,operation,source,referenceId,actorId,reasonCode,reasonText,metadataJson,status,createdAt) "
-                    "VALUES (?,?,?,?,?,?,?,NULL,?,'{}','PENDING',?)",
+                    "VALUES ($1,$2,$3,$4,$5,$6,$7,NULL,$8,'{}','PENDING',$1)",
                     (outcome["transactionId"], guild_id, f"phase7-mining-purchase:{row[1]}",
                      "MINING_PURCHASE", "MINING", outcome["purchaseId"], user_id,
                      "Pembelian rig Mining Phase 7", observed_at),
@@ -457,7 +449,7 @@ async def settle_operation(db_path, operation_id, *, recovery=False, _failure_st
                 await db.execute(
                     "INSERT INTO MiningRigInstance "
                     "(rigInstanceId,guildId,userId,rigDefinitionId,catalogVersion,targetSymbol,status,durabilityBps,paidThrough,accruedThrough,version,createdAt,updatedAt) "
-                    "VALUES (?,?,?,?,?,?,'MAINTENANCE_DUE',10000,NULL,?,0,?,?)",
+                    "VALUES ($2,$3,$4,$5,$6,$7,'MAINTENANCE_DUE',10000,NULL,$1,0,$2,$3)",
                     (outcome["rigInstanceId"], guild_id, user_id, definition, PHASE7_CATALOG_VERSION,
                      outcome["targetSymbol"], observed_at, observed_at, observed_at),
                 )
@@ -470,7 +462,7 @@ async def settle_operation(db_path, operation_id, *, recovery=False, _failure_st
                             AccountDelta("SYSTEM", "ECY_BURN", "ECY", burn)),
                 )
                 await db.execute(
-                    "INSERT INTO MiningPurchase (purchaseId,operationId,rigInstanceId,priceEcy,miningEcy,reserveEcy,burnEcy,transactionId,createdAt) VALUES (?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO MiningPurchase (purchaseId,operationId,rigInstanceId,priceEcy,miningEcy,reserveEcy,burnEcy,transactionId,createdAt) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
                     (outcome["purchaseId"], operation_id, outcome["rigInstanceId"], price, mining, reserve, burn,
                      outcome["transactionId"], observed_at),
                 )
@@ -491,13 +483,13 @@ async def settle_operation(db_path, operation_id, *, recovery=False, _failure_st
                     if outcome["targetSymbol"] == rig[2]:
                         raise EconomyMutationError("same_target", "Target Mining sudah aktif.")
                     cursor = await db.execute(
-                        "UPDATE MiningRigInstance SET targetSymbol=?,version=version+1,updatedAt=? WHERE rigInstanceId=? AND version=?",
+                        "UPDATE MiningRigInstance SET targetSymbol=$1,version=version+1,updatedAt=$2 WHERE rigInstanceId=$3 AND version=$4",
                         (outcome["targetSymbol"], observed_at, rig[0], rig[6] + 1),
                     )
                     if cursor.rowcount != 1:
                         raise EconomyMutationError("stale", "Rig berubah saat target diperbarui.")
                     await db.execute(
-                        "INSERT INTO MiningTargetChange (changeId,operationId,rigInstanceId,previousSymbol,targetSymbol,changedAt) VALUES (?,?,?,?,?,?)",
+                        "INSERT INTO MiningTargetChange (changeId,operationId,rigInstanceId,previousSymbol,targetSymbol,changedAt) VALUES ($1,$2,$3,$4,$5,$6)",
                         (outcome["changeId"], operation_id, rig[0], rig[2], outcome["targetSymbol"], observed_at),
                     )
                     receipt = {"operationId": operation_id, "rigInstanceId": rig[0], "previousSymbol": rig[2],
@@ -506,7 +498,7 @@ async def settle_operation(db_path, operation_id, *, recovery=False, _failure_st
                     if rig[4] and _as_datetime(rig[4]) > _as_datetime(observed_at):
                         raise EconomyMutationError("maintenance_active", "Periode maintenance masih aktif dan tidak dapat diprepay.")
                     async with db.execute(
-                        "SELECT maintenancePriceEcy FROM MiningRigCatalog WHERE rigDefinitionId=?", (rig[1],),
+                        "SELECT maintenancePriceEcy FROM MiningRigCatalog WHERE rigDefinitionId=$1", (rig[1],),
                     ) as cursor:
                         price = int((await cursor.fetchone())[0])
                     mining, reserve, burn = mining_allocation(price)
@@ -514,7 +506,7 @@ async def settle_operation(db_path, operation_id, *, recovery=False, _failure_st
                     await db.execute(
                         "INSERT INTO EconomyTransaction "
                         "(transactionId,guildId,idempotencyKey,operation,source,referenceId,actorId,reasonCode,reasonText,metadataJson,status,createdAt) "
-                        "VALUES (?,?,?,?,?,?,?,NULL,?,'{}','PENDING',?)",
+                        "VALUES ($4,$5,$6,$7,$8,$9,$10,NULL,$11,'{}','PENDING',$1)",
                         (outcome["transactionId"], guild_id, f"phase7-mining-maintenance:{row[1]}",
                          "MINING_MAINTENANCE", "MINING", outcome["paymentId"], user_id,
                          "Maintenance rig Mining Phase 7", observed_at),
@@ -528,14 +520,14 @@ async def settle_operation(db_path, operation_id, *, recovery=False, _failure_st
                                 AccountDelta("SYSTEM", "ECY_BURN", "ECY", burn)),
                     )
                     cursor = await db.execute(
-                        "UPDATE MiningRigInstance SET status='ACTIVE',paidThrough=?,version=version+1,updatedAt=? WHERE rigInstanceId=? AND version=?",
+                        "UPDATE MiningRigInstance SET status='ACTIVE',paidThrough=$1,version=version+1,updatedAt=$2 WHERE rigInstanceId=$3 AND version=$4",
                         (period_end, observed_at, rig[0], rig[6] + 1),
                     )
                     if cursor.rowcount != 1:
                         raise EconomyMutationError("stale", "Rig berubah saat maintenance.")
                     await db.execute(
                         "INSERT INTO MiningMaintenancePayment "
-                        "(paymentId,operationId,rigInstanceId,periodStart,periodEnd,priceEcy,miningEcy,reserveEcy,burnEcy,transactionId,createdAt) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        "(paymentId,operationId,rigInstanceId,periodStart,periodEnd,priceEcy,miningEcy,reserveEcy,burnEcy,transactionId,createdAt) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
                         (outcome["paymentId"], operation_id, rig[0], observed_at, period_end, price,
                          mining, reserve, burn, outcome["transactionId"], observed_at),
                     )
@@ -544,24 +536,22 @@ async def settle_operation(db_path, operation_id, *, recovery=False, _failure_st
                                "checkpoint": checkpoint}
                 elif operation_type == "CLAIM":
                     async with db.execute(
-                        "SELECT symbol,pendingUnits,version FROM MiningPendingAsset WHERE rigInstanceId=? AND pendingUnits>0 ORDER BY symbol",
+                        "SELECT symbol,pendingUnits,version FROM MiningPendingAsset WHERE rigInstanceId=$1 AND pendingUnits>0 ORDER BY symbol",
                         (rig[0],),
-                    ) as cursor:
-                        assets = await cursor.fetchall()
+                    )
                     if not assets:
                         raise EconomyMutationError("nothing_to_claim", "Belum ada hasil Mining untuk diklaim.")
                     claim_assets = []
                     for symbol, units, pending_version in assets:
                         units = _safe_int(int(units), "claimedUnits", minimum=1)
-                        async with db.execute(
-                            "SELECT units,totalCostBasisEcy,realizedProfitEcy,status,version FROM CryptoHolding WHERE guildId=? AND userId=? AND symbol=?",
+                        pending = await db.fetch(
+                            "SELECT units,totalCostBasisEcy,realizedProfitEcy,status,version FROM CryptoHolding WHERE guildId=$1 AND userId=$2 AND symbol=$3",
                             (guild_id, user_id, symbol),
-                        ) as cursor:
-                            holding = await cursor.fetchone()
+                        )
                         before_holding = int(holding[0]) if holding else 0
                         after_holding = _safe_int(before_holding + units, "holdingAfter")
                         cursor = await db.execute(
-                            "UPDATE MiningPendingAsset SET pendingUnits=0,version=version+1,updatedAt=? WHERE rigInstanceId=? AND symbol=? AND version=? AND pendingUnits=?",
+                            "UPDATE MiningPendingAsset SET pendingUnits=0,version=version+1,updatedAt=$1 WHERE rigInstanceId=$2 AND symbol=$3 AND version=$4 AND pendingUnits=$5",
                             (observed_at, rig[0], symbol, pending_version, units),
                         )
                         if cursor.rowcount != 1:
@@ -570,7 +560,7 @@ async def settle_operation(db_path, operation_id, *, recovery=False, _failure_st
                             if holding[3] != "ACTIVE":
                                 raise EconomyMutationError("holding_review_required", "Holding Crypto memerlukan review.")
                             cursor = await db.execute(
-                                "UPDATE CryptoHolding SET units=?,version=version+1,updatedAt=? WHERE guildId=? AND userId=? AND symbol=? AND version=?",
+                                "UPDATE CryptoHolding SET units=$1,version=version+1,updatedAt=$2 WHERE guildId=$3 AND userId=$4 AND symbol=$5 AND version=$6",
                                 (after_holding, observed_at, guild_id, user_id, symbol, holding[4]),
                             )
                             if cursor.rowcount != 1:
@@ -578,7 +568,7 @@ async def settle_operation(db_path, operation_id, *, recovery=False, _failure_st
                         else:
                             await db.execute(
                                 "INSERT INTO CryptoHolding (guildId,userId,symbol,units,totalCostBasisEcy,realizedProfitEcy,status,version,createdAt,updatedAt) "
-                                "VALUES (?,?,?,?,0,0,'ACTIVE',0,?,?)",
+                                "VALUES ($12,$13,$14,$15,0,0,'ACTIVE',0,$1,$2)",
                                 (guild_id, user_id, symbol, after_holding, observed_at, observed_at),
                             )
                         claim_assets.append({"symbol": symbol, "units": units, "pendingBefore": units,
@@ -590,23 +580,23 @@ async def settle_operation(db_path, operation_id, *, recovery=False, _failure_st
                     receipt_json = _canonical_json(receipt)
                     await db.execute(
                         "INSERT INTO MiningClaim (claimId,operationId,requestId,guildId,userId,rigInstanceId,outcomeJson,receiptJson,status,createdAt,settledAt) "
-                        "VALUES (?,?,?,?,?,?,?,?, 'COMMITTED',?,?)",
+                        "VALUES ($3,$4,$5,$6,$7,$8,$9,$10, 'COMMITTED',$1,$2)",
                         (outcome["claimId"], operation_id, row[1], guild_id, user_id, rig[0], row[6], receipt_json,
                          observed_at, observed_at),
                     )
                     for item in claim_assets:
                         await db.execute(
-                            "INSERT INTO MiningClaimAsset (claimId,symbol,units,pendingBefore,pendingAfter,holdingBefore,holdingAfter) VALUES (?,?,?,?,?,?,?)",
+                            "INSERT INTO MiningClaimAsset (claimId,symbol,units,pendingBefore,pendingAfter,holdingBefore,holdingAfter) VALUES ($1,$2,$3,$4,$5,$6,$7)",
                             (outcome["claimId"], item["symbol"], item["units"], item["pendingBefore"], 0,
                              item["holdingBefore"], item["holdingAfter"]),
                         )
                         await db.executemany(
-                            "INSERT INTO MiningAssetLedger (entryId,claimId,operationId,symbol,accountType,accountId,unitsDelta,createdAt) VALUES (?,?,?,?,?,?,?,?)",
+                            "INSERT INTO MiningAssetLedger (entryId,claimId,operationId,symbol,accountType,accountId,unitsDelta,createdAt) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
                             ((str(uuid.uuid4()), outcome["claimId"], operation_id, item["symbol"], "RIG_PENDING", rig[0], -item["units"], observed_at),
                              (str(uuid.uuid4()), outcome["claimId"], operation_id, item["symbol"], "USER_HOLDING", f"{guild_id}:{user_id}", item["units"], observed_at)),
                         )
-                    async with db.execute(
-                        "SELECT symbol,SUM(unitsDelta) FROM MiningAssetLedger WHERE claimId=? GROUP BY symbol",
+                    rig = await db.fetchrow(
+                        "SELECT symbol,SUM(unitsDelta) FROM MiningAssetLedger WHERE claimId=$1 GROUP BY symbol",
                         (outcome["claimId"],),
                     ) as cursor:
                         if any(int(total) != 0 for _, total in await cursor.fetchall()):
@@ -616,16 +606,16 @@ async def settle_operation(db_path, operation_id, *, recovery=False, _failure_st
             receipt_json = _canonical_json(receipt)
             if operation_type in ("PURCHASE", "MAINTENANCE"):
                 await db.execute(
-                    "UPDATE EconomyTransaction SET metadataJson=?,status='COMMITTED',committedAt=? WHERE transactionId=? AND status='PENDING'",
+                    "UPDATE EconomyTransaction SET metadataJson=$1,status='COMMITTED',committedAt=$2 WHERE transactionId=$3 AND status='PENDING'",
                     (_canonical_json({"result_code": "success", "result_message": "Operasi Mining berhasil.", "receipt": receipt}),
                      observed_at, outcome["transactionId"]),
                 )
             await db.execute(
-                "INSERT INTO MiningNotificationOutbox (outboxId,operationId,guildId,userId,eventType,payloadJson,status,createdAt) VALUES (?,?,?,?,?,?,'PENDING',?)",
+                "INSERT INTO MiningNotificationOutbox (outboxId,operationId,guildId,userId,eventType,payloadJson,status,createdAt) VALUES ($1,$2,$3,$4,$5,$6,'PENDING',$7)",
                 (str(uuid.uuid4()), operation_id, guild_id, user_id, operation_type, receipt_json, observed_at),
             )
             cursor = await db.execute(
-                "UPDATE MiningOperation SET status='COMMITTED',reservationKey=NULL,resultJson=?,lastAttemptedAt=?,settledAt=? WHERE operationId=? AND status IN ('RESERVED','REVIEW_REQUIRED')",
+                "UPDATE MiningOperation SET status='COMMITTED',reservationKey=NULL,resultJson=$1,lastAttemptedAt=$2,settledAt=$3 WHERE operationId=$4 AND status IN ('RESERVED','REVIEW_REQUIRED')",
                 (receipt_json, now_attempt, observed_at, operation_id),
             )
             if cursor.rowcount != 1:
@@ -635,9 +625,9 @@ async def settle_operation(db_path, operation_id, *, recovery=False, _failure_st
     except (EconomyMutationError, OverflowError) as exc:
         code = getattr(exc, "code", "integer_overflow")
         try:
-            async with aiosqlite.connect(db_path) as db:
-                await configure_connection(db)
-                await db.execute("BEGIN IMMEDIATE")
+            async with _pool.acquire() as db:
+                
+                async with db.transaction():
                 row = await _load_operation_locked(db, operation_id)
                 if row[9] == "RESERVED":
                     result = await _void_operation(db, operation_id, code, str(exc), utc_now())
@@ -649,11 +639,11 @@ async def settle_operation(db_path, operation_id, *, recovery=False, _failure_st
         return MiningResult(False, code, str(exc))
     except Exception as exc:
         try:
-            async with aiosqlite.connect(db_path) as db:
-                await configure_connection(db)
-                await db.execute("BEGIN IMMEDIATE")
+            async with _pool.acquire() as db:
+                
+                async with db.transaction():
                 await db.execute(
-                    "UPDATE MiningOperation SET status='REVIEW_REQUIRED',retryCount=retryCount+1,lastErrorCode='settlement_error',lastAttemptedAt=?,reviewMetadataJson=? WHERE operationId=? AND status='RESERVED'",
+                    "UPDATE MiningOperation SET status='REVIEW_REQUIRED',retryCount=retryCount+1,lastErrorCode='settlement_error',lastAttemptedAt=$1,reviewMetadataJson=$2 WHERE operationId=$3 AND status='RESERVED'",
                     (utc_now(), _canonical_json({"errorType": type(exc).__name__}), operation_id),
                 )
                 await db.commit()
@@ -664,8 +654,8 @@ async def settle_operation(db_path, operation_id, *, recovery=False, _failure_st
 
 async def list_rigs(db_path, guild_id, user_id):
     try:
-        async with aiosqlite.connect(db_path) as db:
-            await configure_connection(db)
+        async with _pool.acquire() as db:
+            
             if not await phase7_capability(db):
                 return []
             async with db.execute(
@@ -680,8 +670,8 @@ async def list_rigs(db_path, guild_id, user_id):
 
 
 async def rig_details(db_path, guild_id, user_id, rig_instance_id):
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         if not await phase7_capability(db):
             return None
         async with db.execute(
@@ -689,21 +679,19 @@ async def rig_details(db_path, guild_id, user_id, rig_instance_id):
             "FROM MiningRigInstance r JOIN MiningRigCatalog c ON c.rigDefinitionId=r.rigDefinitionId "
             "WHERE r.rigInstanceId=? AND r.guildId=? AND r.userId=?",
             (str(rig_instance_id), str(guild_id), str(user_id)),
-        ) as cursor:
-            rig = await cursor.fetchone()
+        )
         if not rig:
             return None
-        async with db.execute(
-            "SELECT symbol,pendingUnits,fractionalBillionths FROM MiningPendingAsset WHERE rigInstanceId=? ORDER BY symbol",
+        row = await db.fetchrow(
+            "SELECT symbol,pendingUnits,fractionalBillionths FROM MiningPendingAsset WHERE rigInstanceId=$1 ORDER BY symbol",
             (str(rig_instance_id),),
-        ) as cursor:
-            pending = await cursor.fetchall()
+        )
         return {"rig": rig, "pending": pending}
 
 
 async def mining_history(db_path, guild_id, user_id, limit=20):
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         if not await phase7_capability(db):
             return []
         async with db.execute(
@@ -719,13 +707,12 @@ async def is_mining_authorized(db_path, guild_id, user_id, permission_class):
     if permission not in MINING_AUTH_CLASSES:
         return False
     try:
-        async with aiosqlite.connect(db_path) as db:
-            await configure_connection(db)
+        async with _pool.acquire() as db:
+            
             async with db.execute(
-                "SELECT enabled FROM MiningAuthorization WHERE guildId=? AND userId=? AND permissionClass=?",
+                "SELECT enabled FROM MiningAuthorization WHERE guildId=$1 AND userId=$2 AND permissionClass=$3",
                 (str(guild_id), str(user_id), permission),
-            ) as cursor:
-                row = await cursor.fetchone()
+            )
         return bool(row and row[0])
     except aiosqlite.Error:
         return False
@@ -740,20 +727,20 @@ async def set_mining_authorization(db_path, *, guild_id, user_id, permission_cla
     if not cleaned:
         raise ValueError("Alasan otorisasi wajib diisi.")
     now = utc_now()
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
-        await db.execute("BEGIN IMMEDIATE")
+    async with _pool.acquire() as db:
+        
+        async with db.transaction():
         if not await phase7_capability(db):
             await db.rollback()
             raise ValueError("Schema Mining Phase 7 belum siap.")
         await db.execute(
             "INSERT INTO MiningAuthorization (guildId,userId,permissionClass,enabled,grantedById,reason,version,createdAt,updatedAt) "
-            "VALUES (?,?,?,?,?,?,0,?,?) ON CONFLICT(guildId,userId,permissionClass) DO UPDATE SET "
+            "VALUES ($1,$2,$3,$4,$5,$6,0,$7,$8) ON CONFLICT(guildId,userId,permissionClass) DO UPDATE SET "
             "enabled=excluded.enabled,grantedById=excluded.grantedById,reason=excluded.reason,version=MiningAuthorization.version+1,updatedAt=excluded.updatedAt",
             (str(guild_id), str(user_id), permission, int(bool(enabled)), str(actor_id), cleaned, now, now),
         )
         await db.execute(
-            "INSERT INTO MiningAuthorizationAudit (auditId,guildId,actorId,subjectId,permissionClass,enabled,reason,createdAt) VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT INTO MiningAuthorizationAudit (auditId,guildId,actorId,subjectId,permissionClass,enabled,reason,createdAt) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
             (str(uuid.uuid4()), str(guild_id), str(actor_id), str(user_id), permission, int(bool(enabled)), cleaned, now),
         )
         await db.commit()
@@ -761,10 +748,10 @@ async def set_mining_authorization(db_path, *, guild_id, user_id, permission_cla
 
 async def list_mining_authorizations(db_path, guild_id):
     try:
-        async with aiosqlite.connect(db_path) as db:
-            await configure_connection(db)
+        async with _pool.acquire() as db:
+            
             async with db.execute(
-                "SELECT userId,permissionClass,enabled,reason,updatedAt FROM MiningAuthorization WHERE guildId=? ORDER BY userId,permissionClass",
+                "SELECT userId,permissionClass,enabled,reason,updatedAt FROM MiningAuthorization WHERE guildId=$1 ORDER BY userId,permissionClass",
                 (str(guild_id),),
             ) as cursor:
                 return await cursor.fetchall()

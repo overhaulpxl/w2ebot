@@ -6,7 +6,6 @@ import json
 import secrets
 import uuid
 
-import aiosqlite
 import discord
 from discord import app_commands
 
@@ -46,13 +45,12 @@ def _is_admin(interaction):
 
 async def _blacklisted(guild_id, user_id):
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            await configure_connection(db)
-            async with db.execute(
-                "SELECT status FROM trustModerationStatus WHERE guildId=? AND userId=?",
+        async with _pool.acquire() as db:
+            
+            row = await db.fetchrow(
+                "SELECT status FROM trustModerationStatus WHERE guildId=$1 AND userId=$2",
                 (str(guild_id), str(user_id)),
-            ) as cursor:
-                row = await cursor.fetchone()
+            )
             return bool(row and str(row[0]).lower() == "blacklisted")
     except aiosqlite.Error:
         return True
@@ -63,8 +61,8 @@ async def _member_evidence(guild, member, *, now=None):
         return {"eligible": False, "evidenceHash": "missing"}
     created = getattr(member, "created_at", None) or datetime.now(timezone.utc)
     joined = getattr(member, "joined_at", None) or datetime.now(timezone.utc)
-    async with aiosqlite.connect(DB_PATH) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         return await build_eligibility_evidence(
             db, guild_id=guild.id, user_id=member.id, account_created_at=created,
             guild_joined_at=joined, present=guild.get_member(member.id) is not None,
@@ -73,11 +71,9 @@ async def _member_evidence(guild, member, *, now=None):
 
 
 async def _eligible_pool(guild, giveaway_id):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await configure_connection(db)
-        async with db.execute("SELECT userId FROM GiveawayTicket WHERE giveawayId=? AND status IN ('PAID','ALLOCATED')",
-                              (str(giveaway_id),)) as cursor:
-            user_ids = [row[0] for row in await cursor.fetchall()]
+    async with _pool.acquire() as db:
+        rows = await db.fetch("SELECT userId FROM GiveawayTicket WHERE giveawayId=$1 AND status IN ('PAID','ALLOCATED')", str(giveaway_id))
+        user_ids = [row['userid'] for row in rows]
     evidence = {}
     for user_id in user_ids:
         member = guild.get_member(int(user_id))
@@ -128,17 +124,15 @@ class GiveawayClaimView(discord.ui.View):
         if not phase8_enabled():
             await interaction.response.send_message("Giveaway tidak aktif.", ephemeral=True)
             return
-        async with aiosqlite.connect(DB_PATH) as db:
-            await configure_connection(db)
-            async with db.execute(
-                "SELECT giveawayId FROM GiveawayV1 WHERE guildId=? AND messageId=? AND status='AWAITING_CLAIM'",
-                (str(interaction.guild_id), str(interaction.message.id)),
-            ) as cursor:
-                row = await cursor.fetchone()
+        async with _pool.acquire() as db:
+            row = await db.fetchrow(
+                "SELECT giveawayId FROM GiveawayV1 WHERE guildId=$1 AND messageId=$2 AND status='AWAITING_CLAIM'",
+                str(interaction.guild_id), str(interaction.message.id)
+            )
         if not row:
             await interaction.response.send_message("Giveaway tidak lagi menunggu klaim.", ephemeral=True)
             return
-        result = await claim_giveaway(DB_PATH, giveaway_id=row[0], user_id=interaction.user.id)
+        result = await claim_giveaway(DB_PATH, giveaway_id=row['giveawayid'], user_id=interaction.user.id)
         await interaction.response.send_message(result.message, ephemeral=True)
 
 
@@ -174,13 +168,12 @@ async def _deliver_phase8_outbox(client, *, limit=100):
             if row["entityType"] == "GIVEAWAY_DRAW":
                 guild = client.get_guild(int(row["guildId"]))
                 giveaway_id = payload.get("giveawayId")
-                async with aiosqlite.connect(DB_PATH) as db:
-                    await configure_connection(db)
-                    async with db.execute(
-                        "SELECT channelId FROM GiveawayV1 WHERE giveawayId=? AND guildId=?",
+                async with _pool.acquire() as db:
+                    
+                    channel_row = await db.fetchrow(
+                        "SELECT channelId FROM GiveawayV1 WHERE giveawayId=$1 AND guildId=$2",
                         (str(giveaway_id), str(row["guildId"])),
-                    ) as cursor:
-                        channel_row = await cursor.fetchone()
+                    )
                 channel = guild.get_channel(int(channel_row[0])) if guild and channel_row else None
                 if channel is None:
                     raise ValueError("giveaway_channel_missing")
@@ -308,14 +301,13 @@ def setup(tree, client):
             except (ValueError, IndexError, AttributeError, discord.HTTPException):
                 await send_embed(interaction, "Referensi bukti Discord tidak dapat diverifikasi.")
                 return
-        async with aiosqlite.connect(DB_PATH) as db:
-            await configure_connection(db)
-            async with db.execute(
+        async with _pool.acquire() as db:
+            
+            prior = await db.fetchrow(
                 "SELECT w.winnerId,w.userId,w.status,w.claimDeadline,w.eligibilityEvidenceJson FROM GiveawayV1 g "
                 "JOIN GiveawayWinner w ON w.giveawayId=g.giveawayId AND w.userId=g.currentWinnerId "
-                "WHERE g.giveawayId=?", (giveaway_id,),
-            ) as cursor:
-                prior = await cursor.fetchone()
+                "WHERE g.giveawayId=$1", (giveaway_id,),
+            )
         if not prior:
             await send_embed(interaction, "Pemenang aktif tidak ditemukan.")
             return
@@ -428,8 +420,8 @@ def setup(tree, client):
     async def symbol_autocomplete(interaction, current):
         if not phase8_enabled() or not interaction.guild_id:
             return []
-        async with aiosqlite.connect(DB_PATH) as db:
-            await configure_connection(db)
+        async with _pool.acquire() as db:
+            
             if not await phase8_capability(db):
                 return []
         query = current.lower()
@@ -502,10 +494,10 @@ def setup(tree, client):
             while not client.is_closed():
                 await asyncio.sleep(60)
                 now = datetime.now(timezone.utc).isoformat()
-                async with aiosqlite.connect(DB_PATH) as db:
-                    await configure_connection(db)
+                async with _pool.acquire() as db:
+                    
                     async with db.execute(
-                        "SELECT positionId FROM EternalOptionPosition WHERE status IN ('ACTIVE','SETTLEMENT_PENDING') AND expiresAt<=?",
+                        "SELECT positionId FROM EternalOptionPosition WHERE status IN ('ACTIVE','SETTLEMENT_PENDING') AND expiresAt<=$1",
                         (now,),
                     ) as cursor:
                         expired_positions = [row[0] for row in await cursor.fetchall()]
@@ -513,10 +505,10 @@ def setup(tree, client):
                     await settle_option(DB_PATH, position_id, now=now)
                 for guild in client.guilds:
                     await reconcile_voice_snapshot(DB_PATH, guild.id, _voice_snapshot(guild))
-                    async with aiosqlite.connect(DB_PATH) as db:
-                        await configure_connection(db)
+                    async with _pool.acquire() as db:
+                        
                         async with db.execute(
-                            "SELECT giveawayId FROM GiveawayV1 WHERE guildId=? AND status='ACTIVE' AND endsAt<=?",
+                            "SELECT giveawayId FROM GiveawayV1 WHERE guildId=$1 AND status='ACTIVE' AND endsAt<=$2",
                             (str(guild.id), now),
                         ) as cursor:
                             ended = [row[0] for row in await cursor.fetchall()]

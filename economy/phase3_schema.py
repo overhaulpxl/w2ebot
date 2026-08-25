@@ -5,7 +5,6 @@ import json
 import sqlite3
 import uuid
 
-import aiosqlite
 
 from .database import configure_connection
 
@@ -298,7 +297,7 @@ PHASE3_HARDENING_CHECKSUM = hashlib.sha256(
 
 
 async def _column_names(db, table):
-    async with db.execute(f"PRAGMA table_info({table})") as cursor:
+    migration = await db.fetchrow(f"PRAGMA table_info({table})") as cursor:
         return {row[1] for row in await cursor.fetchall()}
 
 
@@ -318,7 +317,7 @@ def _split_sql(script):
 
 async def _table_exists(db, table):
     async with db.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,),
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=$1", (table,),
     ) as cursor:
         return await cursor.fetchone() is not None
 
@@ -378,14 +377,14 @@ async def _rebuild_profile(db, now, *, failure_stage=None):
             "(guildId,userId,level,xp,maxHp,currentHp,attack,defense,critBps,energy,energyUpdatedAt,"
             "activeWeaponInstanceId,activeArmorInstanceId,activeAccessoryInstanceId,activePetInstanceId,"
             "migrationSourceHash,version,createdAt,updatedAt,starterPackClaimed,starterPackClaimedAt) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,NULL)",
+            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,0,NULL)",
             (*row[:3], xp, *row[4:]),
         )
         if int(row[2]) == 100 and int(row[3]) > 0:
             await db.execute(
                 "INSERT OR IGNORE INTO RpgPhase3MigrationReview "
                 "(reviewId,runId,guildId,userId,entityType,sourceKey,warningCode,detailsJson,createdAt) "
-                "VALUES (?,?,?,?,? ,?,'LEVEL_100_XP_RESET','{}',?)",
+                "VALUES ($20,$21,$22,$23,$24 ,$25,'LEVEL_100_XP_RESET','{}',$1)",
                 (str(uuid.uuid4()), f"schema-{PHASE3_HARDENING_VERSION}", row[0], row[1],
                  "profile", f"{row[0]}:{row[1]}", now),
             )
@@ -410,15 +409,14 @@ async def _rebuild_profile(db, now, *, failure_stage=None):
 
 async def migrate_phase3_schema(db_path, *, rebuild_profile=True, _failure_stage=None):
     """Terapkan schema hanya pada target staging/temporary yang dipilih operator."""
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
-        await db.execute("BEGIN IMMEDIATE")
+    async with _pool.acquire() as db:
+        
+        async with db.transaction():
         try:
             async with db.execute(
-                "SELECT checksum,status FROM EconomySchemaMigration WHERE version=?",
+                "SELECT checksum,status FROM EconomySchemaMigration WHERE version=$1",
                 (PHASE3_HARDENING_VERSION,),
-            ) as cursor:
-                migration = await cursor.fetchone()
+            )
             if migration and migration[1] == "COMPLETED":
                 if migration[0] != PHASE3_HARDENING_CHECKSUM:
                     raise ValueError("Checksum schema hardening tidak cocok.")
@@ -427,7 +425,7 @@ async def migrate_phase3_schema(db_path, *, rebuild_profile=True, _failure_stage
             now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
             await db.execute(
                 "INSERT OR REPLACE INTO EconomySchemaMigration "
-                "(version,name,checksum,status,startedAt,detailsJson) VALUES (?,?,?,?,?,'{}')",
+                "(version,name,checksum,status,startedAt,detailsJson) VALUES ($2,$3,$4,$5,$6,'{}')",
                 (PHASE3_HARDENING_VERSION, "phase3-hardening", PHASE3_HARDENING_CHECKSUM,
                  "RUNNING", now),
             )
@@ -514,7 +512,7 @@ async def migrate_phase3_schema(db_path, *, rebuild_profile=True, _failure_stage
                 if (await cursor.fetchone())[0] != "ok":
                     raise ValueError("integrity_check gagal setelah migrasi Phase 3.")
             await db.execute(
-                "UPDATE EconomySchemaMigration SET status='COMPLETED',completedAt=? WHERE version=?",
+                "UPDATE EconomySchemaMigration SET status='COMPLETED',completedAt=$1 WHERE version=$2",
                 (now, PHASE3_HARDENING_VERSION),
             )
             await db.commit()

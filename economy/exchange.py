@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 
-import aiosqlite
 
 from .constants import ECONOMY_FEE_BPS
 from .database import configure_connection
@@ -33,13 +32,12 @@ def exchange_limit_for_level(level):
 
 async def get_exchange_info(db_path, guild_id, user_id, *, enabled, now=None):
     try:
-        async with aiosqlite.connect(db_path) as db:
-            await configure_connection(db)
-            async with db.execute(
-                "SELECT level FROM RpgProfile WHERE guildId=? AND userId=?",
+        async with _pool.acquire() as db:
+            
+            row = await db.fetchrow(
+                "SELECT level FROM RpgProfile WHERE guildId=$1 AND userId=$2",
                 (str(guild_id), str(user_id)),
-            ) as cursor:
-                row = await cursor.fetchone()
+            )
         level = int(row[0]) if row else 1
         usage = await get_daily_usage(db_path, guild_id, user_id, "EXCHANGE_ETM", now=now)
     except aiosqlite.OperationalError:
@@ -68,11 +66,10 @@ async def exchange_etm_to_ecy(
     burn = convertible + fee_burn
 
     async def state_extension(db, context):
-        async with db.execute(
-            "SELECT level FROM RpgProfile WHERE guildId=? AND userId=?",
+        profile = await db.fetchrow(
+            "SELECT level FROM RpgProfile WHERE guildId=$1 AND userId=$2",
             (context.guild_id, str(user_id)),
-        ) as cursor:
-            profile = await cursor.fetchone()
+        )
         level = int(profile[0]) if profile else 1
         limit = exchange_limit_for_level(level)
         if limit <= 0:

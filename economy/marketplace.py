@@ -6,7 +6,6 @@ from datetime import datetime, timedelta, timezone
 import json
 import uuid
 
-import aiosqlite
 
 from .constants import (
     ECONOMY_MAX_AMOUNT, MARKETPLACE_FEE_BPS, MARKETPLACE_MAX_PRICE_ETM,
@@ -213,7 +212,7 @@ async def _apply_quantity_mutation(
         "(mutationId,listingId,escrowId,operationType,expectedListingVersion,expectedEscrowVersion,"
         "expectedOldQuantity,newQuantity,expectedListingStatus,expectedEscrowStatus,newListingStatus,"
         "newEscrowStatus,saleId,returnId,actorId,authorizationSource,createdAt) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)",
         (
             mutation_id, listing["listingId"], listing["escrowId"], operation_type,
             int(listing["version"]), int(listing["escrowVersion"]),
@@ -225,10 +224,9 @@ async def _apply_quantity_mutation(
     )
     if cursor.rowcount != 1:
         raise EconomyMutationError("stale", "Mutasi quantity marketplace gagal dibuat.")
-    async with db.execute(
-        "SELECT applied FROM MarketplaceQuantityMutation WHERE mutationId=?", (mutation_id,),
-    ) as result_cursor:
-        applied = await result_cursor.fetchone()
+    applied = await db.fetchrow(
+        "SELECT applied FROM MarketplaceQuantityMutation WHERE mutationId=$1", (mutation_id,),
+    )
     if not applied or int(applied[0]) != 1:
         raise EconomyMutationError("stale", "Mutasi quantity marketplace tidak diterapkan.")
     return mutation_id
@@ -236,8 +234,8 @@ async def _apply_quantity_mutation(
 
 async def _enqueue_watch_events(db, *, guild_id, listing_id, listing_version,
                                 event_type, now):
-    async with db.execute(
-        "SELECT userId FROM MarketplaceWatch WHERE guildId=? AND listingId=? AND active=1",
+    row = await db.fetchrow(
+        "SELECT userId FROM MarketplaceWatch WHERE guildId=$1 AND listingId=$2 AND active=1",
         (str(guild_id), str(listing_id)),
     ) as cursor:
         users = [str(row[0]) for row in await cursor.fetchall()]
@@ -251,7 +249,7 @@ async def _enqueue_watch_events(db, *, guild_id, listing_id, listing_version,
         await db.execute(
             "INSERT OR IGNORE INTO MarketplaceNotificationOutbox "
             "(eventId,eventKey,guildId,userId,listingId,listingVersion,eventType,sanitizedPayloadJson,status,createdAt) "
-            "VALUES (?,?,?,?,?,?,?,?, 'PENDING',?)",
+            "VALUES ($18,$19,$20,$21,$22,$23,$24,$25, 'PENDING',$1)",
             (str(uuid.uuid4()), event_key, str(guild_id), user_id, str(listing_id),
              int(listing_version), str(event_type), payload, now),
         )
@@ -268,7 +266,7 @@ async def record_recovery_review(db, *, guild_id, entity_type, entity_id,
         "INSERT INTO MarketplaceRecoveryReview "
         "(reviewId,guildId,entityType,entityId,listingId,errorCode,status,retryCount,"
         "firstDetectedAt,lastAttemptedAt,sanitizedMetadataJson) "
-        "VALUES (?,?,?,?,?,?,'OPEN',1,?,?,?) ON CONFLICT(guildId,entityType,entityId,errorCode) "
+        "VALUES ($1,$2,$3,$4,$5,$6,'OPEN',1,$7,$8,$9) ON CONFLICT(guildId,entityType,entityId,errorCode) "
         "DO UPDATE SET retryCount=MarketplaceRecoveryReview.retryCount+1,"
         "lastAttemptedAt=excluded.lastAttemptedAt,sanitizedMetadataJson=excluded.sanitizedMetadataJson",
         (review_id, str(guild_id), str(entity_type), str(entity_id),
@@ -278,16 +276,15 @@ async def record_recovery_review(db, *, guild_id, entity_type, entity_id,
 
 async def _user_state(db, guild_id, user_id):
     async with db.execute(
-        "SELECT status FROM MarketplaceUserState WHERE guildId=? AND userId=?",
+        "SELECT status FROM MarketplaceUserState WHERE guildId=$1 AND userId=$2",
         (str(guild_id), str(user_id)),
-    ) as cursor:
-        row = await cursor.fetchone()
+    )
     return row[0] if row else "ACTIVE"
 
 
 async def _is_paused(db, guild_id):
-    async with db.execute(
-        "SELECT 1 FROM EconomyFeatureState WHERE guildId=? AND feature IN ('marketplace','economy') "
+    row = await db.fetchrow(
+        "SELECT 1 FROM EconomyFeatureState WHERE guildId=$1 AND feature IN ('marketplace','economy') "
         "AND paused=1 LIMIT 1", (str(guild_id),),
     ) as cursor:
         return await cursor.fetchone() is not None
@@ -296,16 +293,14 @@ async def _is_paused(db, guild_id):
 async def _catalog_item(db, catalog_version, item_id):
     async with db.execute(
         "SELECT itemType,name,rarity,slot,requiredLevel,tradeable,definitionJson "
-        "FROM RpgCatalogItem WHERE catalogVersion=? AND itemId=?",
+        "FROM RpgCatalogItem WHERE catalogVersion=$1 AND itemId=$2",
         (str(catalog_version), str(item_id)),
-    ) as cursor:
-        row = await cursor.fetchone()
+    )
     if not row:
         raise ValueError("Definisi catalog historis asset tidak ditemukan.")
-    async with db.execute(
-        "SELECT catalogHash FROM RpgCatalogManifest WHERE catalogVersion=?", (str(catalog_version),),
-    ) as cursor:
-        manifest = await cursor.fetchone()
+    manifest = await db.fetchrow(
+        "SELECT catalogHash FROM RpgCatalogManifest WHERE catalogVersion=$1", (str(catalog_version),),
+    )
     if not manifest:
         raise ValueError("Manifest catalog historis asset tidak ditemukan.")
     try:
@@ -321,18 +316,17 @@ async def _resolve_listing_asset(db, guild_id, seller_id, *, asset_type, asset_i
                                  catalog_version=None, binding_status="UNBOUND"):
     asset_type = str(asset_type).upper()
     if asset_type == "EQUIPMENT":
-        async with db.execute(
+        row = await db.fetchrow(
             "SELECT itemId,catalogVersion,slot,enhancementLevel,pityBps,bindingStatus,status,acquiredSource "
-            "FROM RpgEquipmentInstance WHERE equipmentInstanceId=? AND guildId=? AND ownerId=?",
+            "FROM RpgEquipmentInstance WHERE equipmentInstanceId=$1 AND guildId=$2 AND ownerId=$3",
             (str(asset_id), str(guild_id), str(seller_id)),
-        ) as cursor:
-            row = await cursor.fetchone()
+        )
         if not row or row[6] != "OWNED":
             raise ValueError("Equipment tidak tersedia untuk marketplace.")
         if row[5] != "BOUND_ON_EQUIP":
             raise ValueError("Binding equipment tidak memenuhi syarat marketplace.")
-        async with db.execute(
-            "SELECT 1 FROM RpgProfile WHERE guildId=? AND userId=? AND ? IN "
+        row = await db.fetchrow(
+            "SELECT 1 FROM RpgProfile WHERE guildId=$1 AND userId=$2 AND $3 IN "
             "(activeWeaponInstanceId,activeArmorInstanceId,activeAccessoryInstanceId) LIMIT 1",
             (str(guild_id), str(seller_id), str(asset_id)),
         ) as cursor:
@@ -351,11 +345,10 @@ async def _resolve_listing_asset(db, guild_id, seller_id, *, asset_type, asset_i
     if not catalog_version:
         raise ValueError("Versi catalog stack wajib dipilih.")
     async with db.execute(
-        "SELECT quantity,status FROM RpgInventoryStack WHERE guildId=? AND userId=? AND itemId=? "
-        "AND catalogVersion=? AND bindingStatus=?",
+        "SELECT quantity,status FROM RpgInventoryStack WHERE guildId=$1 AND userId=$2 AND itemId=$3 "
+        "AND catalogVersion=$1 AND bindingStatus=$2",
         (str(guild_id), str(seller_id), str(asset_id), str(catalog_version), str(binding_status)),
-    ) as cursor:
-        row = await cursor.fetchone()
+    )
     if not row or row[1] != "ACTIVE" or int(row[0]) <= 0 or binding_status != "UNBOUND":
         raise ValueError("Stack tidak tersedia atau tidak tradeable.")
     catalog = await _catalog_item(db, catalog_version, asset_id)
@@ -383,17 +376,16 @@ async def create_listing(db_path, *, guild_id, seller_id, asset_type, asset_id,
         return MarketplaceResult(False, "invalid_amount", str(exc))
     listing_id, escrow_id = str(uuid.uuid4()), str(uuid.uuid4())
     timestamp = now or utc_now()
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         db.row_factory = aiosqlite.Row
-        await db.execute("BEGIN IMMEDIATE")
+        async with db.transaction():
         try:
             await require_marketplace_schema(db)
-            async with db.execute(
-                "SELECT listingId FROM MarketplaceListing WHERE guildId=? AND idempotencyKey=?",
+            existing = await db.fetchrow(
+                "SELECT listingId FROM MarketplaceListing WHERE guildId=$1 AND idempotencyKey=$2",
                 (str(guild_id), str(idempotency_key)),
-            ) as cursor:
-                existing = await cursor.fetchone()
+            )
             if existing:
                 await db.rollback()
                 return MarketplaceResult(True, "already_created", "Listing ini sudah dibuat.",
@@ -402,9 +394,9 @@ async def create_listing(db_path, *, guild_id, seller_id, asset_type, asset_id,
                 raise ValueError("Marketplace sedang dijeda.")
             if await _user_state(db, guild_id, seller_id) != "ACTIVE":
                 raise ValueError("Akun marketplace tidak dapat membuat listing.")
-            placeholders = ",".join("?" for _ in UNRESOLVED_LISTING_STATES)
-            async with db.execute(
-                f"SELECT COUNT(*) FROM MarketplaceListing WHERE guildId=? AND sellerId=? AND status IN ({placeholders})",
+            placeholders = ",".join("$3" for _ in UNRESOLVED_LISTING_STATES)
+            existing = await db.fetchrow(
+                f"SELECT COUNT(*) FROM MarketplaceListing WHERE guildId=$1 AND sellerId=$2 AND status IN ({placeholders})",
                 (str(guild_id), str(seller_id), *UNRESOLVED_LISTING_STATES),
             ) as cursor:
                 if int((await cursor.fetchone())[0]) >= MARKETPLACE_MAX_UNRESOLVED_LISTINGS:
@@ -422,7 +414,7 @@ async def create_listing(db_path, *, guild_id, seller_id, asset_type, asset_id,
                 "(listingId,guildId,sellerId,assetType,equipmentInstanceId,stackItemId,catalogVersion,"
                 "stackBindingStatus,originalQuantity,remainingQuantity,unitPriceEtm,totalListingValue,"
                 "assetSnapshotJson,status,escrowId,idempotencyKey,createdAt) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'ACTIVE',?,?,?)",
+                "VALUES ($4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'ACTIVE',$1,$2,$3)",
                 (listing_id, str(guild_id), str(seller_id), asset["asset_type"], asset["equipment_id"],
                  asset["stack_item_id"], asset["catalog_version"], asset["binding_status"], quantity,
                  quantity, unit_price_etm, amounts["gross"], snapshot, escrow_id,
@@ -434,7 +426,7 @@ async def create_listing(db_path, *, guild_id, seller_id, asset_type, asset_id,
                 "INSERT INTO MarketplaceEscrow "
                 "(escrowId,listingId,guildId,authoritativeOwnerId,assetType,equipmentInstanceId,stackItemId,"
                 "catalogVersion,stackBindingStatus,originalQuantity,remainingQuantity,assetSnapshotJson,status,createdAt,updatedAt) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'HELD',?,?)",
+                "VALUES ($4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15, 'HELD',$1,$2)",
                 (escrow_id, listing_id, str(guild_id), str(seller_id), asset["asset_type"],
                  asset["equipment_id"], asset["stack_item_id"], asset["catalog_version"],
                  asset["binding_status"], quantity, quantity, snapshot, timestamp, timestamp),
@@ -443,8 +435,8 @@ async def create_listing(db_path, *, guild_id, seller_id, asset_type, asset_id,
                 raise RuntimeError("Injected marketplace escrow failure")
             if asset["asset_type"] == "EQUIPMENT":
                 cursor = await db.execute(
-                    "UPDATE RpgEquipmentInstance SET status='ESCROWED',updatedAt=? "
-                    "WHERE equipmentInstanceId=? AND guildId=? AND ownerId=? AND status='OWNED'",
+                    "UPDATE RpgEquipmentInstance SET status='ESCROWED',updatedAt=$1 "
+                    "WHERE equipmentInstanceId=$26 AND guildId=$27 AND ownerId=$28 AND status='OWNED'",
                     (timestamp, asset["equipment_id"], str(guild_id), str(seller_id)),
                 )
                 if cursor.rowcount != 1:
@@ -477,17 +469,16 @@ async def reserve_purchase(db_path, *, guild_id, buyer_id, listing_id, quantity,
         quantity = _positive_integer(quantity, label="Quantity purchase")
     except (TypeError, ValueError, OverflowError) as exc:
         return MarketplaceResult(False, "invalid_quantity", str(exc))
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
-        await db.execute("BEGIN IMMEDIATE")
+    async with _pool.acquire() as db:
+        
+        async with db.transaction():
         try:
             await require_marketplace_schema(db)
             async with db.execute(
-                "SELECT saleId,transactionId,status FROM MarketplaceSale WHERE guildId=? AND buyerId=? "
-                "AND listingId=? AND status IN ('PENDING','REVIEW_REQUIRED')",
+                "SELECT saleId,transactionId,status FROM MarketplaceSale WHERE guildId=$1 AND buyerId=$2 "
+                "AND listingId=$1 AND status IN ('PENDING','REVIEW_REQUIRED')",
                 (str(guild_id), str(buyer_id), str(listing_id)),
-            ) as cursor:
-                existing = await cursor.fetchone()
+            )
             if existing:
                 await db.rollback()
                 return MarketplaceResult(existing[2] == "PENDING", existing[2].lower(),
@@ -500,12 +491,11 @@ async def reserve_purchase(db_path, *, guild_id, buyer_id, listing_id, quantity,
             if await _user_state(db, guild_id, buyer_id) != "ACTIVE":
                 raise ValueError("Akun marketplace tidak dapat membeli listing.")
             db.row_factory = aiosqlite.Row
-            async with db.execute(
+            listing = await db.fetchrow(
                 "SELECT " + _LISTING_ESCROW_COLUMNS + " "
                 "FROM MarketplaceListing l JOIN MarketplaceEscrow e ON e.escrowId=l.escrowId "
-                "WHERE l.listingId=? AND l.guildId=?", (str(listing_id), str(guild_id)),
-            ) as cursor:
-                listing = await cursor.fetchone()
+                "WHERE l.listingId=$1 AND l.guildId=$2", (str(listing_id), str(guild_id)),
+            )
             if not listing or listing["status"] not in ("ACTIVE", "PARTIALLY_FILLED"):
                 raise ValueError("Listing tidak tersedia.")
             if not _listing_escrow_consistent(listing):
@@ -524,7 +514,7 @@ async def reserve_purchase(db_path, *, guild_id, buyer_id, listing_id, quantity,
             await db.execute(
                 "INSERT INTO EconomyTransaction "
                 "(transactionId,guildId,idempotencyKey,operation,source,referenceId,actorId,reasonCode,"
-                "reasonText,metadataJson,status,createdAt) VALUES (?,?,?,?,?,?,?,?,?,?,'PENDING',?)",
+                "reasonText,metadataJson,status,createdAt) VALUES ($3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'PENDING',$1)",
                 (transaction_id, str(guild_id), str(idempotency_key), "MARKETPLACE_PURCHASE",
                  "marketplace", str(listing_id), str(buyer_id), "marketplace_purchase",
                  "marketplace purchase", envelope, timestamp),
@@ -536,7 +526,7 @@ async def reserve_purchase(db_path, *, guild_id, buyer_id, listing_id, quantity,
                 "(saleId,transactionId,guildId,listingId,escrowId,sellerId,buyerId,assetType,equipmentInstanceId,"
                 "stackItemId,catalogVersion,stackBindingStatus,quantity,unitPriceEtm,grossEtm,feeEtm,sellerProceedsEtm,"
                 "treasuryEtm,reserveEtm,burnEtm,expectedListingVersion,expectedEscrowVersion,idempotencyKey,authorizationSource,status,createdAt) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'PENDING',?)",
+                "VALUES ($2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,'PENDING',$1)",
                 (sale_id, transaction_id, str(guild_id), str(listing_id), listing["escrowId"],
                  listing["sellerId"], str(buyer_id), listing["assetType"], listing["equipmentInstanceId"],
                  listing["stackItemId"], listing["catalogVersion"], listing["stackBindingStatus"], quantity,
@@ -561,19 +551,18 @@ async def reserve_purchase(db_path, *, guild_id, buyer_id, listing_id, quantity,
 
 
 async def settle_purchase(db_path, *, guild_id, sale_id, failure_stage=None):
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         db.row_factory = aiosqlite.Row
-        async with db.execute(
+        sale = await db.fetchrow(
             "SELECT saleId,transactionId,guildId,listingId,escrowId,sellerId,buyerId,assetType,"
             "equipmentInstanceId,stackItemId,catalogVersion,stackBindingStatus,quantity,unitPriceEtm,"
             "grossEtm,feeEtm,sellerProceedsEtm,treasuryEtm,reserveEtm,burnEtm,expectedListingVersion,"
             "expectedEscrowVersion,idempotencyKey,authorizationSource,status,buyerReceiptJson,sellerReceiptJson,"
             "voidReasonCode,reviewReasonCode,createdAt,completedAt "
-            "FROM MarketplaceSale WHERE saleId=? AND guildId=?",
+            "FROM MarketplaceSale WHERE saleId=$1 AND guildId=$2",
             (str(sale_id), str(guild_id)),
-        ) as cursor:
-            sale = await cursor.fetchone()
+        )
     if not sale:
         return MarketplaceResult(False, "not_found", "Reservasi purchase tidak ditemukan.")
     if sale["status"] == "COMMITTED":
@@ -594,12 +583,11 @@ async def settle_purchase(db_path, *, guild_id, sale_id, failure_stage=None):
 
     async def finalize(db, context):
         db.row_factory = aiosqlite.Row
-        async with db.execute(
+        listing = await db.fetchrow(
             "SELECT " + _LISTING_ESCROW_COLUMNS + " "
             "FROM MarketplaceListing l JOIN MarketplaceEscrow e ON e.escrowId=l.escrowId "
-            "WHERE l.listingId=? AND l.guildId=?", (sale["listingId"], str(guild_id)),
-        ) as cursor:
-            listing = await cursor.fetchone()
+            "WHERE l.listingId=$2 AND l.guildId=$3", (sale["listingId"], str(guild_id)),
+        )
         if not listing or listing["status"] not in ("ACTIVE", "PARTIALLY_FILLED"):
             raise EconomyMutationError("stale", "Listing berubah sebelum settlement.")
         if not _listing_escrow_consistent(listing):
@@ -627,8 +615,8 @@ async def settle_purchase(db_path, *, guild_id, sale_id, failure_stage=None):
         buyer_stack_before = buyer_stack_after = None
         if sale["assetType"] == "EQUIPMENT":
             cursor = await db.execute(
-                "UPDATE RpgEquipmentInstance SET ownerId=?,status='OWNED',updatedAt=? "
-                "WHERE equipmentInstanceId=? AND guildId=? AND ownerId=? AND status='ESCROWED'",
+                "UPDATE RpgEquipmentInstance SET ownerId=$1,status='OWNED',updatedAt=$2 "
+                "WHERE equipmentInstanceId=$29 AND guildId=$30 AND ownerId=$31 AND status='ESCROWED'",
                 (sale["buyerId"], context.now, sale["equipmentInstanceId"], str(guild_id), sale["sellerId"]),
             )
             if cursor.rowcount != 1:
@@ -647,7 +635,7 @@ async def settle_purchase(db_path, *, guild_id, sale_id, failure_stage=None):
             "INSERT INTO MarketplaceSettlementEvidence "
             "(saleId,transactionId,guildId,listingId,escrowId,assetType,equipmentInstanceId,stackItemId,"
             "catalogVersion,stackBindingStatus,quantity,buyerId,sellerId,buyerStackBefore,buyerStackAfter,"
-            "quantityMutationId,createdAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "quantityMutationId,createdAt) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)",
             (sale["saleId"], sale["transactionId"], str(guild_id), sale["listingId"], sale["escrowId"],
              sale["assetType"], sale["equipmentInstanceId"], sale["stackItemId"], sale["catalogVersion"],
              sale["stackBindingStatus"], quantity, sale["buyerId"], sale["sellerId"],
@@ -655,13 +643,13 @@ async def settle_purchase(db_path, *, guild_id, sale_id, failure_stage=None):
         )
         if final_status == "SOLD":
             await db.execute(
-                "UPDATE MarketplaceListing SET completedAt=? WHERE listingId=?",
+                "UPDATE MarketplaceListing SET completedAt=$1 WHERE listingId=$2",
                 (context.now, sale["listingId"]),
             )
         buyer_receipt, seller_receipt = _sale_receipts(sale)
         cursor = await db.execute(
-            "UPDATE MarketplaceSale SET status='COMMITTED',buyerReceiptJson=?,sellerReceiptJson=?,completedAt=? "
-            "WHERE saleId=? AND status='PENDING'",
+            "UPDATE MarketplaceSale SET status='COMMITTED',buyerReceiptJson=$1,sellerReceiptJson=$2,completedAt=$3 "
+            "WHERE saleId=$32 AND status='PENDING'",
             (buyer_receipt, seller_receipt, context.now, sale["saleId"]),
         )
         if cursor.rowcount != 1:
@@ -693,18 +681,17 @@ async def cancel_listing(db_path, *, guild_id, listing_id, authorization,
     staff = context.is_staff
     authorization_source = context.source
     timestamp = now or utc_now()
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         db.row_factory = aiosqlite.Row
-        await db.execute("BEGIN IMMEDIATE")
+        async with db.transaction():
         try:
             await require_marketplace_schema(db)
-            async with db.execute(
+            listing = await db.fetchrow(
                 "SELECT " + _LISTING_ESCROW_COLUMNS + " FROM MarketplaceListing l "
                 "JOIN MarketplaceEscrow e ON e.escrowId=l.escrowId "
-                "WHERE l.listingId=? AND l.guildId=?", (str(listing_id), str(guild_id)),
-            ) as cursor:
-                listing = await cursor.fetchone()
+                "WHERE l.listingId=$1 AND l.guildId=$2", (str(listing_id), str(guild_id)),
+            )
             if not listing:
                 raise ValueError("Listing tidak ditemukan.")
             if not _listing_escrow_consistent(listing):
@@ -731,7 +718,7 @@ async def cancel_listing(db_path, *, guild_id, listing_id, authorization,
                 "INSERT INTO MarketplaceReturn "
                 "(returnId,listingId,escrowId,guildId,recipientId,assetType,equipmentInstanceId,stackItemId,"
                 "catalogVersion,stackBindingStatus,quantity,reasonCode,initiatedById,authorizationSource,status,"
-                "idempotencyKey,receiptJson,createdAt,completedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'COMMITTED',?,?,?,?)",
+                "idempotencyKey,receiptJson,createdAt,completedAt) VALUES ($3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'COMMITTED',$33,$34,$35,$36)",
                 (return_id, str(listing_id), listing["escrowId"], str(guild_id), owner,
                  listing["assetType"], listing["equipmentInstanceId"], listing["stackItemId"],
                  listing["catalogVersion"], listing["stackBindingStatus"], quantity, str(reason_code),
@@ -746,8 +733,8 @@ async def cancel_listing(db_path, *, guild_id, listing_id, authorization,
             )
             if listing["assetType"] == "EQUIPMENT":
                 cursor = await db.execute(
-                    "UPDATE RpgEquipmentInstance SET status='OWNED',updatedAt=? WHERE equipmentInstanceId=? "
-                    "AND guildId=? AND ownerId=? AND status='ESCROWED'",
+                    "UPDATE RpgEquipmentInstance SET status='OWNED',updatedAt=$1 WHERE equipmentInstanceId=$2 "
+                    "AND guildId=$37 AND ownerId=$38 AND status='ESCROWED'",
                     (timestamp, listing["equipmentInstanceId"], str(guild_id), owner),
                 )
                 if cursor.rowcount != 1:
@@ -757,7 +744,7 @@ async def cancel_listing(db_path, *, guild_id, listing_id, authorization,
                                    catalog_version=listing["catalogVersion"],
                                    binding_status=listing["stackBindingStatus"])
             await db.execute(
-                "UPDATE MarketplaceListing SET cancelledAt=?,completedAt=? WHERE listingId=?",
+                "UPDATE MarketplaceListing SET cancelledAt=$1,completedAt=$2 WHERE listingId=$3",
                 (timestamp, timestamp, str(listing_id)),
             )
             await _enqueue_watch_events(
@@ -777,19 +764,19 @@ async def cancel_listing(db_path, *, guild_id, listing_id, authorization,
 
 
 async def browse_listings(db_path, guild_id, *, query=None, seller_id=None, limit=20, offset=0):
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         await require_marketplace_schema(db)
         db.row_factory = aiosqlite.Row
-        clauses = ["l.guildId=?"]
+        clauses = ["l.guildId=$1"]
         params = [str(guild_id)]
         if seller_id:
-            clauses.append("l.sellerId=?")
+            clauses.append("l.sellerId=$2")
             params.append(str(seller_id))
         else:
             clauses.append("l.status IN ('ACTIVE','PARTIALLY_FILLED')")
         if query:
-            clauses.append("(l.stackItemId LIKE ? OR l.assetSnapshotJson LIKE ?)")
+            clauses.append("(l.stackItemId LIKE $39 OR l.assetSnapshotJson LIKE $40)")
             params.extend((f"%{str(query)[:80]}%", f"%{str(query)[:80]}%"))
         state_pairs = (
             "((l.status='ACTIVE' AND e.status='HELD') OR "
@@ -808,21 +795,21 @@ async def browse_listings(db_path, guild_id, *, query=None, seller_id=None, limi
             "AND rr.listingId=l.listingId AND rr.status='OPEN') "
         )
         params.extend((max(1, min(int(limit), 25)), max(0, int(offset))))
-        async with db.execute(
+        row = await db.fetchrow(
             "SELECT l.listingId,l.sellerId,l.assetType,l.equipmentInstanceId,l.stackItemId,l.catalogVersion,"
             "l.stackBindingStatus,l.remainingQuantity,l.unitPriceEtm,l.status,l.createdAt "
             "FROM MarketplaceListing l JOIN MarketplaceEscrow e ON e.escrowId=l.escrowId WHERE "
             + " AND ".join(clauses)
             + " AND l.remainingQuantity=e.remainingQuantity AND " + state_pairs + " "
-            + review_filter + "ORDER BY l.createdAt DESC LIMIT ? OFFSET ?", tuple(params),
+            + review_filter + "ORDER BY l.createdAt DESC LIMIT $1 OFFSET $2", tuple(params),
         ) as cursor:
             return [dict(row) for row in await cursor.fetchall()]
 
 
 async def get_listing_details(db_path, guild_id, listing_id):
     """Baca listing terminal maupun aktif tanpa membuat state baru."""
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         await require_marketplace_schema(db)
         db.row_factory = aiosqlite.Row
         async with db.execute(
@@ -831,23 +818,22 @@ async def get_listing_details(db_path, guild_id, listing_id):
             "l.assetSnapshotJson,l.status,l.createdAt,l.completedAt,e.status AS escrowStatus,"
             "e.remainingQuantity AS escrowRemaining FROM MarketplaceListing l "
             "JOIN MarketplaceEscrow e ON e.escrowId=l.escrowId "
-            "WHERE l.guildId=? AND l.listingId=?",
+            "WHERE l.guildId=$3 AND l.listingId=$4",
             (str(guild_id), str(listing_id)),
-        ) as cursor:
-            row = await cursor.fetchone()
+        )
     return dict(row) if row else None
 
 
 async def list_watchlist(db_path, guild_id, user_id, *, limit=50):
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         await require_marketplace_schema(db)
         db.row_factory = aiosqlite.Row
-        async with db.execute(
+        existing = await db.fetchrow(
             "SELECT w.listingId,l.assetType,l.equipmentInstanceId,l.stackItemId,l.catalogVersion,"
             "l.remainingQuantity,l.unitPriceEtm,l.status,w.notificationStatus "
             "FROM MarketplaceWatch w JOIN MarketplaceListing l ON l.listingId=w.listingId "
-            "WHERE w.guildId=? AND w.userId=? AND w.active=1 ORDER BY w.updatedAt DESC LIMIT ?",
+            "WHERE w.guildId=$5 AND w.userId=$6 AND w.active=1 ORDER BY w.updatedAt DESC LIMIT $7",
             (str(guild_id), str(user_id), max(1, min(int(limit), MARKETPLACE_MAX_WATCHES))),
         ) as cursor:
             return [dict(row) for row in await cursor.fetchall()]
@@ -859,18 +845,17 @@ async def set_watch(db_path, *, guild_id, user_id, listing_id, authorization, ac
     except PermissionError as exc:
         return MarketplaceResult(False, "unauthorized", str(exc), listing_id=str(listing_id))
     timestamp = now or utc_now()
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
-        await db.execute("BEGIN IMMEDIATE")
+    async with _pool.acquire() as db:
+        
+        async with db.transaction():
         try:
             await require_marketplace_schema(db)
             if active and await _is_paused(db, guild_id):
                 raise ValueError("Marketplace sedang dijeda.")
             async with db.execute(
-                "SELECT active FROM MarketplaceWatch WHERE guildId=? AND userId=? AND listingId=?",
+                "SELECT active FROM MarketplaceWatch WHERE guildId=$1 AND userId=$2 AND listingId=$3",
                 (str(guild_id), str(user_id), str(listing_id)),
-            ) as cursor:
-                existing = await cursor.fetchone()
+            )
             if existing and bool(existing[0]) == bool(active):
                 await db.rollback()
                 return MarketplaceResult(
@@ -878,8 +863,8 @@ async def set_watch(db_path, *, guild_id, user_id, listing_id, authorization, ac
                     replayed=True,
                 )
             if active:
-                async with db.execute(
-                    "SELECT COUNT(*) FROM MarketplaceWatch WHERE guildId=? AND userId=? AND active=1",
+                existing = await db.fetchrow(
+                    "SELECT COUNT(*) FROM MarketplaceWatch WHERE guildId=$1 AND userId=$2 AND active=1",
                     (str(guild_id), str(user_id)),
                 ) as cursor:
                     if int((await cursor.fetchone())[0]) >= MARKETPLACE_MAX_WATCHES:
@@ -889,7 +874,7 @@ async def set_watch(db_path, *, guild_id, user_id, listing_id, authorization, ac
                         )
             await db.execute(
                 "INSERT INTO MarketplaceWatch (guildId,userId,listingId,active,createdAt,removedAt,updatedAt) "
-                "VALUES (?,?,?,?,?,?,?) ON CONFLICT(guildId,userId,listingId) DO UPDATE SET "
+                "VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(guildId,userId,listingId) DO UPDATE SET "
                 "active=excluded.active,removedAt=excluded.removedAt,updatedAt=excluded.updatedAt",
                 (str(guild_id), str(user_id), str(listing_id), int(bool(active)), timestamp,
                  None if active else timestamp, timestamp),
@@ -910,19 +895,18 @@ async def create_report(db_path, *, guild_id, reporter_id, listing_id, category,
     timestamp = now or utc_now()
     cutoff = (datetime.fromisoformat(timestamp) - timedelta(seconds=MARKETPLACE_REPORT_COOLDOWN_SECONDS)).isoformat()
     clean = " ".join(str(details or "").replace("\r", " ").replace("\n", " ").split())[:500]
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
-        await db.execute("BEGIN IMMEDIATE")
+    async with _pool.acquire() as db:
+        
+        async with db.transaction():
         try:
             await require_marketplace_schema(db)
             if await _is_paused(db, guild_id):
                 raise ValueError("Marketplace sedang dijeda.")
             async with db.execute(
-                "SELECT reportId,status FROM MarketplaceReport WHERE guildId=? AND reporterId=? "
-                "AND listingId=? AND status IN ('OPEN','IN_REVIEW') LIMIT 1",
+                "SELECT reportId,status FROM MarketplaceReport WHERE guildId=$1 AND reporterId=$2 "
+                "AND listingId=$8 AND status IN ('OPEN','IN_REVIEW') LIMIT 1",
                 (str(guild_id), str(reporter_id), str(listing_id)),
-            ) as cursor:
-                existing = await cursor.fetchone()
+            )
             if existing:
                 await db.rollback()
                 return MarketplaceResult(
@@ -930,9 +914,9 @@ async def create_report(db_path, *, guild_id, reporter_id, listing_id, category,
                     listing_id=str(listing_id), replayed=True,
                     data={"report_id": existing[0], "status": existing[1]},
                 )
-            async with db.execute(
-                "SELECT 1 FROM MarketplaceReport WHERE guildId=? AND reporterId=? AND listingId=? "
-                "AND status IN ('RESOLVED','DISMISSED') AND createdAt>=? LIMIT 1",
+            existing = await db.fetchrow(
+                "SELECT 1 FROM MarketplaceReport WHERE guildId=$1 AND reporterId=$2 AND listingId=$3 "
+                "AND status IN ('RESOLVED','DISMISSED') AND createdAt>=$1 LIMIT 1",
                 (str(guild_id), str(reporter_id), str(listing_id), cutoff),
             ) as cursor:
                 if await cursor.fetchone():
@@ -941,7 +925,7 @@ async def create_report(db_path, *, guild_id, reporter_id, listing_id, category,
             await db.execute(
                 "INSERT INTO MarketplaceReport "
                 "(reportId,guildId,listingId,reporterId,reasonCategory,sanitizedDetails,status,createdAt) "
-                "VALUES (?,?,?,?,?,?,'OPEN',?)",
+                "VALUES ($2,$3,$4,$5,$6,$7,'OPEN',$1)",
                 (report_id, str(guild_id), str(listing_id), str(reporter_id), str(category)[:50], clean, timestamp),
             )
             await db.commit()
@@ -950,11 +934,10 @@ async def create_report(db_path, *, guild_id, reporter_id, listing_id, category,
             await db.rollback()
             async with aiosqlite.connect(db_path) as lookup:
                 async with lookup.execute(
-                    "SELECT reportId,status FROM MarketplaceReport WHERE guildId=? AND reporterId=? "
-                    "AND listingId=? AND status IN ('OPEN','IN_REVIEW')",
+                    "SELECT reportId,status FROM MarketplaceReport WHERE guildId=$1 AND reporterId=$2 "
+                    "AND listingId=$2 AND status IN ('OPEN','IN_REVIEW')",
                     (str(guild_id), str(reporter_id), str(listing_id)),
-                ) as cursor:
-                    existing = await cursor.fetchone()
+                )
             if existing:
                 return MarketplaceResult(
                     True, "report_existing", "Report marketplace yang sama masih diproses.",
@@ -968,18 +951,18 @@ async def create_report(db_path, *, guild_id, reporter_id, listing_id, category,
 
 
 async def marketplace_status(db_path, guild_id):
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         await require_marketplace_schema(db)
         paused = await _is_paused(db, guild_id)
-        placeholders = ",".join("?" for _ in UNRESOLVED_LISTING_STATES)
-        async with db.execute(
-            f"SELECT COUNT(*) FROM MarketplaceListing WHERE guildId=? AND status IN ({placeholders})",
+        placeholders = ",".join("$1" for _ in UNRESOLVED_LISTING_STATES)
+        version_row = await db.fetchrow(
+            f"SELECT COUNT(*) FROM MarketplaceListing WHERE guildId=$1 AND status IN ({placeholders})",
             (str(guild_id), *UNRESOLVED_LISTING_STATES),
         ) as cursor:
             unresolved = int((await cursor.fetchone())[0])
         async with db.execute(
-            "SELECT COUNT(*) FROM MarketplaceSale WHERE guildId=? AND status='REVIEW_REQUIRED'",
+            "SELECT COUNT(*) FROM MarketplaceSale WHERE guildId=$1 AND status='REVIEW_REQUIRED'",
             (str(guild_id),),
         ) as cursor:
             reviews = int((await cursor.fetchone())[0])
@@ -1000,14 +983,14 @@ async def set_marketplace_pause(db_path, *, guild_id, paused, reason, authorizat
 
 async def list_history(db_path, guild_id, user_id, *, kind="purchases", limit=20, offset=0):
     column = "buyerId" if str(kind).lower() != "sales" else "sellerId"
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         await require_marketplace_schema(db)
         db.row_factory = aiosqlite.Row
         async with db.execute(
             f"SELECT saleId,listingId,assetType,equipmentInstanceId,stackItemId,catalogVersion,quantity,"
             f"unitPriceEtm,grossEtm,sellerProceedsEtm,status,completedAt FROM MarketplaceSale "
-            f"WHERE guildId=? AND {column}=? ORDER BY createdAt DESC LIMIT ? OFFSET ?",
+            f"WHERE guildId=$1 AND {column}=$2 ORDER BY createdAt DESC LIMIT $3 OFFSET $4",
             (str(guild_id), str(user_id), max(1, min(int(limit), 25)), max(0, int(offset))),
         ) as cursor:
             return [dict(row) for row in await cursor.fetchall()]
@@ -1015,15 +998,15 @@ async def list_history(db_path, guild_id, user_id, *, kind="purchases", limit=20
 
 async def price_check(db_path, guild_id, *, item_id, catalog_version, days=30):
     cutoff = (datetime.now(timezone.utc) - timedelta(days=int(days))).isoformat()
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         await require_marketplace_schema(db)
         async with db.execute(
             "SELECT s.unitPriceEtm FROM MarketplaceSale s "
             "JOIN MarketplaceListing l ON l.listingId=s.listingId "
-            "WHERE s.guildId=? AND s.status='COMMITTED' AND s.catalogVersion=? "
-            "AND (s.stackItemId=? OR json_extract(l.assetSnapshotJson,'$.item_id')=?) "
-            "AND s.completedAt>=? ORDER BY s.unitPriceEtm",
+            "WHERE s.guildId=$5 AND s.status='COMMITTED' AND s.catalogVersion=$1 "
+            "AND (s.stackItemId=$2 OR json_extract(l.assetSnapshotJson,'$.item_id')=$1) "
+            "AND s.completedAt>=$2 ORDER BY s.unitPriceEtm",
             (str(guild_id), str(catalog_version), str(item_id), str(item_id), cutoff),
         ) as cursor:
             prices = [int(row[0]) for row in await cursor.fetchall()]
@@ -1043,22 +1026,21 @@ async def set_marketplace_user_state(db_path, *, guild_id, user_id, status, auth
     if status not in ("ACTIVE", "RESTRICTED", "FROZEN"):
         raise ValueError("Status user marketplace tidak valid.")
     timestamp = now or utc_now()
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         await require_marketplace_schema(db)
         if expected_version is not None:
             async with db.execute(
-                "SELECT version FROM MarketplaceUserState WHERE guildId=? AND userId=?",
+                "SELECT version FROM MarketplaceUserState WHERE guildId=$1 AND userId=$2",
                 (str(guild_id), str(user_id)),
-            ) as cursor:
-                version_row = await cursor.fetchone()
+            )
             actual = int(version_row[0]) if version_row else None
             if actual != int(expected_version):
                 raise ValueError("Versi state user marketplace sudah berubah.")
         await db.execute(
             "INSERT INTO MarketplaceUserState "
             "(guildId,userId,status,reasonCode,staffActorId,authorizationSource,version,createdAt,updatedAt) "
-            "VALUES (?,?,?,?,?,?,0,?,?) ON CONFLICT(guildId,userId) DO UPDATE SET "
+            "VALUES ($1,$2,$3,$4,$5,$6,0,$7,$8) ON CONFLICT(guildId,userId) DO UPDATE SET "
             "status=excluded.status,reasonCode=excluded.reasonCode,staffActorId=excluded.staffActorId,"
             "authorizationSource=excluded.authorizationSource,version=MarketplaceUserState.version+1,"
             "updatedAt=excluded.updatedAt",
@@ -1078,18 +1060,17 @@ async def moderate_listing(db_path, *, guild_id, listing_id, authorization, acti
     if action not in ("PAUSE", "REVIEW", "RESUME"):
         raise ValueError("Aksi moderasi tidak valid.")
     timestamp = now or utc_now()
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         db.row_factory = aiosqlite.Row
-        await db.execute("BEGIN IMMEDIATE")
+        async with db.transaction():
         try:
             await require_marketplace_schema(db)
-            async with db.execute(
+            row = await db.fetchrow(
                 "SELECT " + _LISTING_ESCROW_COLUMNS + " FROM MarketplaceListing l "
                 "JOIN MarketplaceEscrow e ON e.escrowId=l.escrowId "
-                "WHERE l.listingId=? AND l.guildId=?", (str(listing_id), str(guild_id)),
-            ) as cursor:
-                row = await cursor.fetchone()
+                "WHERE l.listingId=$3 AND l.guildId=$4", (str(listing_id), str(guild_id)),
+            )
             if not row or row["status"] in ("SOLD", "RETURNED", "CANCELLED", "EXPIRED"):
                 raise ValueError("Listing tidak dapat dimoderasi.")
             if not _listing_escrow_consistent(row):
@@ -1108,8 +1089,8 @@ async def moderate_listing(db_path, *, guild_id, listing_id, authorization, acti
                 authorization_source=context.source,
             )
             await db.execute(
-                "UPDATE MarketplaceListing SET moderationCode=?,moderationActorId=?,"
-                "moderationReasonCode=?,moderatedAt=? WHERE listingId=?",
+                "UPDATE MarketplaceListing SET moderationCode=$1,moderationActorId=$2,"
+                "moderationReasonCode=$5,moderatedAt=$6 WHERE listingId=$7",
                 (action, str(actor_id), str(reason_code)[:100], timestamp, str(listing_id)),
             )
             await _enqueue_watch_events(
@@ -1128,13 +1109,13 @@ async def resolve_report(db_path, *, guild_id, report_id, authorization, resolut
     context = require_authorization(authorization, guild_id=guild_id, staff=True)
     actor_id = context.actor_id
     timestamp = now or utc_now()
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         await require_marketplace_schema(db)
         cursor = await db.execute(
-            "UPDATE MarketplaceReport SET status='RESOLVED',staffActorId=?,resolutionCode=?,"
-            "resolutionMetadataJson='{}',reviewedAt=COALESCE(reviewedAt,?),resolvedAt=? "
-            "WHERE reportId=? AND guildId=? AND status IN ('OPEN','IN_REVIEW')",
+            "UPDATE MarketplaceReport SET status='RESOLVED',staffActorId=$1,resolutionCode=$2,"
+            "resolutionMetadataJson='{}',reviewedAt=COALESCE(reviewedAt,$3),resolvedAt=$4 "
+            "WHERE reportId=$5 AND guildId=$6 AND status IN ('OPEN','IN_REVIEW')",
             (str(actor_id), str(resolution_code)[:100], timestamp, timestamp,
              str(report_id), str(guild_id)),
         )
@@ -1147,19 +1128,18 @@ async def resolve_report(db_path, *, guild_id, report_id, authorization, resolut
 async def mark_purchase_review(db_path, *, guild_id, sale_id, reason_code):
     """Pertahankan identity purchase yang ambigu dan blok request pengganti."""
     clean_reason = str(reason_code or "ambiguous_state")[:100]
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         db.row_factory = aiosqlite.Row
-        await db.execute("BEGIN IMMEDIATE")
+        async with db.transaction():
         try:
-            async with db.execute(
+            sale = await db.fetchrow(
                 "SELECT s.listingId,s.status AS saleStatus," + _LISTING_ESCROW_COLUMNS + " "
                 "FROM MarketplaceSale s JOIN MarketplaceListing l ON l.listingId=s.listingId "
                 "JOIN MarketplaceEscrow e ON e.escrowId=s.escrowId "
-                "WHERE s.guildId=? AND s.saleId=?",
+                "WHERE s.guildId=$1 AND s.saleId=$2",
                 (str(guild_id), str(sale_id)),
-            ) as cursor:
-                sale = await cursor.fetchone()
+            )
             if not sale:
                 raise ValueError("Purchase tidak ditemukan.")
             if sale["saleStatus"] == "COMMITTED":
@@ -1169,8 +1149,8 @@ async def mark_purchase_review(db_path, *, guild_id, sale_id, reason_code):
                 await db.rollback()
                 return MarketplaceResult(False, "void", "Purchase sudah dibatalkan secara aman.", sale_id=str(sale_id))
             await db.execute(
-                "UPDATE MarketplaceSale SET status='REVIEW_REQUIRED',reviewReasonCode=? "
-                "WHERE saleId=? AND status IN ('PENDING','REVIEW_REQUIRED')",
+                "UPDATE MarketplaceSale SET status='REVIEW_REQUIRED',reviewReasonCode=$1 "
+                "WHERE saleId=$1 AND status IN ('PENDING','REVIEW_REQUIRED')",
                 (clean_reason, str(sale_id)),
             )
             timestamp = utc_now()
@@ -1183,7 +1163,7 @@ async def mark_purchase_review(db_path, *, guild_id, sale_id, reason_code):
                 )
                 await db.execute(
                     "UPDATE MarketplaceListing SET moderationCode='PURCHASE_RECOVERY_REVIEW',"
-                    "moderationReasonCode=?,moderatedAt=? WHERE listingId=?",
+                    "moderationReasonCode=$1,moderatedAt=$2 WHERE listingId=$3",
                     (clean_reason, timestamp, sale["listingId"]),
                 )
             await record_recovery_review(
@@ -1201,43 +1181,41 @@ async def mark_purchase_review(db_path, *, guild_id, sale_id, reason_code):
 async def void_purchase(db_path, *, guild_id, sale_id, reason_code="mutation_free"):
     """VOID hanya bila pasangan reservasi terbukti belum memutasi ledger atau asset."""
     timestamp = utc_now()
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         db.row_factory = aiosqlite.Row
-        await db.execute("BEGIN IMMEDIATE")
+        async with db.transaction():
         try:
-            async with db.execute(
+            sale = await db.fetchrow(
                 "SELECT s.saleId,s.transactionId,s.listingId,s.expectedListingVersion,"
                 "s.expectedEscrowVersion,s.status,t.status AS transactionStatus "
                 "FROM MarketplaceSale s "
                 "JOIN EconomyTransaction t ON t.transactionId=s.transactionId "
-                "WHERE s.guildId=? AND s.saleId=?",
+                "WHERE s.guildId=$4 AND s.saleId=$5",
                 (str(guild_id), str(sale_id)),
-            ) as cursor:
-                sale = await cursor.fetchone()
+            )
             if not sale or sale["status"] not in ("PENDING", "REVIEW_REQUIRED") or sale["transactionStatus"] != "PENDING":
                 raise ValueError("Purchase tidak dapat di-VOID.")
-            async with db.execute("SELECT COUNT(*) FROM EconomyLedger WHERE transactionId=?", (sale["transactionId"],)) as cursor:
+            state = await db.fetchrow("SELECT COUNT(*) FROM EconomyLedger WHERE transactionId=$1", sale["transactionId"]) as cursor:
                 if int((await cursor.fetchone())[0]):
                     raise ValueError("Purchase memiliki ledger dan wajib direview.")
             async with db.execute(
                 "SELECT l.version,e.version,l.remainingQuantity,e.remainingQuantity FROM MarketplaceListing l "
-                "JOIN MarketplaceEscrow e ON e.escrowId=l.escrowId WHERE l.listingId=?",
+                "JOIN MarketplaceEscrow e ON e.escrowId=l.escrowId WHERE l.listingId=$6",
                 (sale["listingId"],),
-            ) as cursor:
-                state = await cursor.fetchone()
+            )
             if not state or int(state[0]) != int(sale["expectedListingVersion"]) or int(state[1]) != int(sale["expectedEscrowVersion"]):
                 raise ValueError("State purchase ambigu dan wajib direview.")
             cursor = await db.execute(
-                "UPDATE MarketplaceSale SET status='VOID',voidReasonCode=?,completedAt=? "
-                "WHERE saleId=? AND status IN ('PENDING','REVIEW_REQUIRED')",
+                "UPDATE MarketplaceSale SET status='VOID',voidReasonCode=$1,completedAt=$2 "
+                "WHERE saleId=$1 AND status IN ('PENDING','REVIEW_REQUIRED')",
                 (str(reason_code)[:100], timestamp, str(sale_id)),
             )
             if cursor.rowcount != 1:
                 raise ValueError("Purchase berubah sebelum VOID.")
             cursor = await db.execute(
-                "UPDATE EconomyTransaction SET status='REVERSED',metadataJson=?,committedAt=? "
-                "WHERE transactionId=? AND status='PENDING'",
+                "UPDATE EconomyTransaction SET status='REVERSED',metadataJson=$1,committedAt=$2 "
+                "WHERE transactionId=$2 AND status='PENDING'",
                 (json.dumps({"result_code": "void", "reason_code": str(reason_code)[:100]}, separators=(",", ":")),
                  timestamp, sale["transactionId"]),
             )
@@ -1255,12 +1233,12 @@ async def void_purchase(db_path, *, guild_id, sale_id, reason_code="mutation_fre
 async def claim_returns(db_path, *, guild_id, recipient_id, authorization, limit=20):
     """Retry return tertunda tanpa mengubah penerima authoritative escrow."""
     require_authorization(authorization, guild_id=guild_id, actor_id=recipient_id)
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         await require_marketplace_schema(db)
-        async with db.execute(
-            "SELECT returnId,listingId FROM MarketplaceReturn WHERE guildId=? AND recipientId=? "
-            "AND status IN ('PENDING','REVIEW_REQUIRED') ORDER BY createdAt LIMIT ?",
+        row = await db.fetchrow(
+            "SELECT returnId,listingId FROM MarketplaceReturn WHERE guildId=$1 AND recipientId=$2 "
+            "AND status IN ('PENDING','REVIEW_REQUIRED') ORDER BY createdAt LIMIT $1",
             (str(guild_id), str(recipient_id), max(1, min(int(limit), 100))),
         ) as cursor:
             pending_returns = [(row[0], row[1]) for row in await cursor.fetchall()]
@@ -1277,10 +1255,10 @@ async def claim_returns(db_path, *, guild_id, recipient_id, authorization, limit
 async def settle_pending_return(db_path, *, guild_id, recipient_id, return_id):
     """Selesaikan envelope return yang sudah ada tanpa mengganti identity atau recipient."""
     timestamp = utc_now()
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         db.row_factory = aiosqlite.Row
-        await db.execute("BEGIN IMMEDIATE")
+        async with db.transaction():
         try:
             async with db.execute(
                 "SELECT r.returnId,r.listingId,r.escrowId,r.guildId,r.recipientId,r.assetType,"
@@ -1289,10 +1267,9 @@ async def settle_pending_return(db_path, *, guild_id, recipient_id, return_id):
                 "e.remainingQuantity AS escrowRemaining,e.version AS escrowVersion,"
                 "l.remainingQuantity AS listingRemaining,l.status AS listingStatus,l.version AS listingVersion "
                 "FROM MarketplaceReturn r JOIN MarketplaceEscrow e ON e.escrowId=r.escrowId "
-                "JOIN MarketplaceListing l ON l.listingId=r.listingId WHERE r.returnId=? AND r.guildId=?",
+                "JOIN MarketplaceListing l ON l.listingId=r.listingId WHERE r.returnId=$2 AND r.guildId=$3",
                 (str(return_id), str(guild_id)),
-            ) as cursor:
-                row = await cursor.fetchone()
+            )
             if not row:
                 raise ValueError("Return tidak ditemukan.")
             if row["status"] == "COMMITTED":
@@ -1321,8 +1298,8 @@ async def settle_pending_return(db_path, *, guild_id, recipient_id, return_id):
             )
             if row["assetType"] == "EQUIPMENT":
                 cursor = await db.execute(
-                    "UPDATE RpgEquipmentInstance SET status='OWNED',updatedAt=? WHERE equipmentInstanceId=? "
-                    "AND guildId=? AND ownerId=? AND status='ESCROWED'",
+                    "UPDATE RpgEquipmentInstance SET status='OWNED',updatedAt=$1 WHERE equipmentInstanceId=$2 "
+                    "AND guildId=$1 AND ownerId=$2 AND status='ESCROWED'",
                     (timestamp, row["equipmentInstanceId"], str(guild_id), row["recipientId"]),
                 )
                 if cursor.rowcount != 1:
@@ -1333,7 +1310,7 @@ async def settle_pending_return(db_path, *, guild_id, recipient_id, return_id):
                     catalog_version=row["catalogVersion"], binding_status=row["stackBindingStatus"],
                 )
             await db.execute(
-                "UPDATE MarketplaceListing SET cancelledAt=COALESCE(cancelledAt,?),completedAt=? WHERE listingId=?",
+                "UPDATE MarketplaceListing SET cancelledAt=COALESCE(cancelledAt,$1),completedAt=$2 WHERE listingId=$3",
                 (timestamp, timestamp, row["listingId"]),
             )
             receipt = json.dumps(
@@ -1343,8 +1320,8 @@ async def settle_pending_return(db_path, *, guild_id, recipient_id, return_id):
                 sort_keys=True, separators=(",", ":"),
             )
             cursor = await db.execute(
-                "UPDATE MarketplaceReturn SET status='COMMITTED',receiptJson=?,completedAt=?,lastAttemptedAt=?,"
-                "lastErrorCode=NULL WHERE returnId=? AND status IN ('PENDING','REVIEW_REQUIRED')",
+                "UPDATE MarketplaceReturn SET status='COMMITTED',receiptJson=$1,completedAt=$2,lastAttemptedAt=$3,"
+                "lastErrorCode=NULL WHERE returnId=$3 AND status IN ('PENDING','REVIEW_REQUIRED')",
                 (receipt, timestamp, timestamp, row["returnId"]),
             )
             if cursor.rowcount != 1:
@@ -1359,8 +1336,8 @@ async def settle_pending_return(db_path, *, guild_id, recipient_id, return_id):
 
 async def pending_watch_notifications(db_path, *, limit=100):
     """Read-only compatibility view over the append-only outbox."""
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         await require_marketplace_schema(db)
         db.row_factory = aiosqlite.Row
         async with db.execute(
@@ -1368,7 +1345,7 @@ async def pending_watch_notifications(db_path, *, limit=100):
             "o.eventType,o.sanitizedPayloadJson,o.status,o.messageId "
             "FROM MarketplaceNotificationOutbox o JOIN MarketplaceWatch w "
             "ON w.guildId=o.guildId AND w.userId=o.userId AND w.listingId=o.listingId "
-            "WHERE w.active=1 AND o.status='PENDING' ORDER BY o.createdAt LIMIT ?",
+            "WHERE w.active=1 AND o.status='PENDING' ORDER BY o.createdAt LIMIT $1",
             (max(1, min(int(limit), 500)),),
         ) as cursor:
             return [dict(row) for row in await cursor.fetchall()]
@@ -1377,12 +1354,12 @@ async def pending_watch_notifications(db_path, *, limit=100):
 async def mark_watch_notification(db_path, *, guild_id, user_id, listing_id, event_key,
                                   sent, message_id=None):
     """Compatibility finalizer; event identity, not watch row, is authoritative."""
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         cursor = await db.execute(
-            "UPDATE MarketplaceNotificationOutbox SET status=?,messageId=?,sentAt=?,lastAttemptedAt=?,"
-            "leaseOwner=NULL,leaseExpiresAt=NULL,lastErrorCode=? WHERE guildId=? AND userId=? "
-            "AND listingId=? AND eventKey=? AND status IN ('PENDING','SENDING')",
+            "UPDATE MarketplaceNotificationOutbox SET status=$1,messageId=$2,sentAt=$3,lastAttemptedAt=$4,"
+            "leaseOwner=NULL,leaseExpiresAt=NULL,lastErrorCode=$2 WHERE guildId=$3 AND userId=$4 "
+            "AND listingId=$5 AND eventKey=$6 AND status IN ('PENDING','SENDING')",
             ("SENT" if sent else "PENDING", str(message_id) if message_id else None,
              utc_now() if sent else None, utc_now(), None if sent else "delivery_failed",
              str(guild_id), str(user_id), str(listing_id), str(event_key)),
@@ -1395,31 +1372,31 @@ async def claim_notification_events(db_path, *, lease_owner, limit=100, lease_se
     timestamp = now or utc_now()
     expiry = (datetime.fromisoformat(timestamp) + timedelta(seconds=max(10, int(lease_seconds)))).isoformat()
     claimed = []
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         db.row_factory = aiosqlite.Row
-        await db.execute("BEGIN IMMEDIATE")
+        async with db.transaction():
         try:
             await require_marketplace_schema(db)
             async with db.execute(
                 "SELECT o.eventId FROM MarketplaceNotificationOutbox o JOIN MarketplaceWatch w "
                 "ON w.guildId=o.guildId AND w.userId=o.userId AND w.listingId=o.listingId "
-                "WHERE w.active=1 AND (o.status='PENDING' OR (o.status='SENDING' AND o.leaseExpiresAt<?)) "
-                "ORDER BY o.createdAt LIMIT ?",
+                "WHERE w.active=1 AND (o.status='PENDING' OR (o.status='SENDING' AND o.leaseExpiresAt<$1)) "
+                "ORDER BY o.createdAt LIMIT $2",
                 (timestamp, max(1, min(int(limit), 500))),
             ) as cursor:
                 event_ids = [row[0] for row in await cursor.fetchall()]
             for event_id in event_ids:
                 cursor = await db.execute(
-                    "UPDATE MarketplaceNotificationOutbox SET status='SENDING',leaseOwner=?,leaseExpiresAt=?,"
+                    "UPDATE MarketplaceNotificationOutbox SET status='SENDING',leaseOwner=$1,leaseExpiresAt=$2,"
                     "attemptCount=attemptCount+1,lastAttemptedAt=?,lastErrorCode=NULL "
-                    "WHERE eventId=? AND (status='PENDING' OR (status='SENDING' AND leaseExpiresAt<?))",
+                    "WHERE eventId=? AND (status='PENDING' OR (status='SENDING' AND leaseExpiresAt<$1))",
                     (str(lease_owner), expiry, timestamp, event_id, timestamp),
                 )
                 if cursor.rowcount == 1:
                     async with db.execute(
                         "SELECT eventId,eventKey,guildId,userId,listingId,listingVersion,eventType,"
-                        "sanitizedPayloadJson,attemptCount,messageId FROM MarketplaceNotificationOutbox WHERE eventId=?",
+                        "sanitizedPayloadJson,attemptCount,messageId FROM MarketplaceNotificationOutbox WHERE eventId=$1",
                         (event_id,),
                     ) as row_cursor:
                         claimed.append(dict(await row_cursor.fetchone()))
@@ -1434,11 +1411,11 @@ async def finalize_notification_event(db_path, *, event_id, lease_owner, sent=Fa
                                       message_id=None, error_code=None, ambiguous=False, now=None):
     timestamp = now or utc_now()
     status = "SENT" if sent else ("REVIEW_REQUIRED" if ambiguous else "PENDING")
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         cursor = await db.execute(
-            "UPDATE MarketplaceNotificationOutbox SET status=?,messageId=COALESCE(?,messageId),"
-            "sentAt=CASE WHEN ?='SENT' THEN ? ELSE sentAt END,leaseOwner=NULL,leaseExpiresAt=NULL,"
+            "UPDATE MarketplaceNotificationOutbox SET status=$1,messageId=COALESCE($2,messageId),"
+            "sentAt=CASE WHEN $2='SENT' THEN ? ELSE sentAt END,leaseOwner=NULL,leaseExpiresAt=NULL,"
             "lastAttemptedAt=?,lastErrorCode=? WHERE eventId=? AND status='SENDING' AND leaseOwner=?",
             (status, str(message_id) if message_id else None, status, timestamp, timestamp,
              str(error_code)[:100] if error_code else None, str(event_id), str(lease_owner)),

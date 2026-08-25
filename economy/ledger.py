@@ -5,7 +5,6 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-import aiosqlite
 
 from .constants import CURRENCIES, ECONOMY_MAX_AMOUNT
 from .database import configure_connection, ensure_system_accounts
@@ -86,11 +85,10 @@ def _validate_delta(delta):
 
 
 async def _existing_result(db, guild_id, idempotency_key):
-    async with db.execute(
-        "SELECT transactionId,status,metadataJson FROM EconomyTransaction WHERE guildId=? AND idempotencyKey=?",
+    row = await db.fetchrow(
+        "SELECT transactionId,status,metadataJson FROM EconomyTransaction WHERE guildId=$1 AND idempotencyKey=$2",
         (str(guild_id), str(idempotency_key)),
-    ) as cursor:
-        row = await cursor.fetchone()
+    )
     if not row:
         return None
     transaction_id, status, metadata_raw = row
@@ -117,17 +115,16 @@ async def _mutate_wallet(db, guild_id, delta, now):
         "VALUES (?,?,0,0,0,?,?)",
         (str(guild_id), str(delta.user_id), now, now),
     )
-    async with db.execute(
-        f"SELECT {column},version FROM EconomyWallet WHERE guildId=? AND userId=?",
+    row = await db.fetchrow(
+        f"SELECT {column},version FROM EconomyWallet WHERE guildId=$1 AND userId=$2",
         (str(guild_id), str(delta.user_id)),
-    ) as cursor:
-        row = await cursor.fetchone()
+    )
     before, version = int(row[0]), int(row[1])
     after = before + delta.amount
     if after < 0:
         raise EconomyMutationError("insufficient_funds", "Saldo tidak mencukupi.")
     cursor = await db.execute(
-        f"UPDATE EconomyWallet SET {column}=?,version=version+1,updatedAt=? "
+        f"UPDATE EconomyWallet SET {column}=$1,version=version+1,updatedAt=$2 "
         "WHERE guildId=? AND userId=? AND version=?",
         (after, now, str(guild_id), str(delta.user_id), version),
     )
@@ -137,12 +134,11 @@ async def _mutate_wallet(db, guild_id, delta, now):
 
 
 async def _mutate_system(db, guild_id, delta, now):
-    async with db.execute(
+    row = await db.fetchrow(
         "SELECT currency,balance,allowNegative,version FROM EconomySystemAccount "
         "WHERE guildId=? AND accountCode=?",
         (str(guild_id), delta.account_id),
-    ) as cursor:
-        row = await cursor.fetchone()
+    )
     if not row or row[0] != delta.currency:
         raise EconomyMutationError("invalid_account", "System account tidak valid untuk currency ini.")
     before, allow_negative, version = int(row[1]), bool(row[2]), int(row[3])
@@ -150,7 +146,7 @@ async def _mutate_system(db, guild_id, delta, now):
     if after < 0 and not allow_negative:
         raise EconomyMutationError("insufficient_funds", "Saldo system account tidak mencukupi.")
     cursor = await db.execute(
-        "UPDATE EconomySystemAccount SET balance=?,version=version+1,updatedAt=? "
+        "UPDATE EconomySystemAccount SET balance=$1,version=version+1,updatedAt=$2 "
         "WHERE guildId=? AND accountCode=? AND version=?",
         (after, now, str(guild_id), delta.account_id, version),
     )
@@ -193,11 +189,11 @@ async def apply_deltas_in_connection(
     await db.executemany(
         "INSERT INTO EconomyLedger "
         "(transactionId,sequence,guildId,accountKind,accountId,userId,currency,transactionType,"
-        "amount,balanceBefore,balanceAfter,referenceId,source,createdAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "amount,balanceBefore,balanceAfter,referenceId,source,createdAt) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)",
         ledger_rows,
     )
-    async with db.execute(
-        "SELECT currency,SUM(amount) FROM EconomyLedger WHERE transactionId=? GROUP BY currency",
+    row = await db.fetchrow(
+        "SELECT currency,SUM(amount) FROM EconomyLedger WHERE transactionId=$1 GROUP BY currency",
         (str(transaction_id),),
     ) as cursor:
         rows = await cursor.fetchall()
@@ -244,20 +240,20 @@ async def execute_transaction(
         if any(value != 0 for value in totals.values()):
             raise EconomyMutationError("unbalanced", "Ledger transaction tidak seimbang.")
 
-        async with aiosqlite.connect(db_path) as db:
-            await configure_connection(db)
-            await db.execute("BEGIN IMMEDIATE")
+        async with _pool.acquire() as db:
+            
+            async with db.transaction():
             try:
                 existing = await _existing_result(db, guild_id, idempotency_key)
                 if existing:
-                    await db.rollback()
+                    # await db.rollback()
                     return existing
 
                 now = _transaction_now(now_override)
                 await db.execute(
                     "INSERT INTO EconomyTransaction "
                     "(transactionId,guildId,idempotencyKey,operation,source,referenceId,actorId,reasonCode,reasonText,metadataJson,status,createdAt) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,'PENDING',?)",
+                    "VALUES ($15,$16,$17,$18,$19,$20,$21,$22,$23,$24,'PENDING',$1)",
                     (transaction_id, str(guild_id), str(idempotency_key), operation, source,
                      str(reference_id) if reference_id is not None else None,
                      str(actor_id) if actor_id is not None else None, reason_code, reason_text, "{}", now),
@@ -267,37 +263,34 @@ async def execute_transaction(
                 # inside the same transaction and happen after the PENDING header.
                 await ensure_system_accounts(db, guild_id, now)
                 if feature:
-                    async with db.execute(
-                        "SELECT paused FROM EconomyFeatureState WHERE guildId=? AND feature IN (?, 'economy') AND paused=1 LIMIT 1",
+                    invariant_rows = await db.fetch(
+                        "SELECT paused FROM EconomyFeatureState WHERE guildId=$1 AND feature IN ($2, 'economy') AND paused=1 LIMIT 1",
                         (str(guild_id), str(feature)),
                     ) as cursor:
                         if await cursor.fetchone():
                             raise EconomyMutationError("paused", "Fitur ekonomi sedang dijeda.")
                 if require_whitelist:
                     async with db.execute(
-                        "SELECT enabled FROM EconomyMintWhitelist WHERE guildId=? AND userId=?",
+                        "SELECT enabled FROM EconomyMintWhitelist WHERE guildId=$1 AND userId=$2",
                         (str(guild_id), str(actor_id)),
-                    ) as cursor:
-                        row = await cursor.fetchone()
+                    )
                     if not row or int(row[0]) != 1:
                         raise EconomyMutationError("unauthorized", "User ID ini tidak terdaftar di whitelist ekonomi.")
                 if reverse_original_transaction_id:
-                    async with db.execute(
-                        "SELECT status FROM EconomyTransaction WHERE transactionId=? AND guildId=?",
+                    original = await db.fetchrow(
+                        "SELECT status FROM EconomyTransaction WHERE transactionId=$1 AND guildId=$2",
                         (str(reverse_original_transaction_id), str(guild_id)),
-                    ) as cursor:
-                        original = await cursor.fetchone()
+                    )
                     if not original or original[0] != "COMMITTED":
                         raise EconomyMutationError("invalid_status", "Transaksi asal tidak dapat direverse.")
                 if require_spendable_system_debits:
                     for delta in deltas:
                         if delta.account_kind != "SYSTEM" or delta.amount >= 0:
                             continue
-                        async with db.execute(
-                            "SELECT accountClass,spendable FROM EconomySystemAccount WHERE guildId=? AND accountCode=?",
+                        system_row = await db.fetchrow(
+                            "SELECT accountClass,spendable FROM EconomySystemAccount WHERE guildId=$1 AND accountCode=$2",
                             (str(guild_id), delta.account_id),
-                        ) as cursor:
-                            system_row = await cursor.fetchone()
+                        )
                         if not system_row or system_row[0] != "TREASURY" or int(system_row[1]) != 1:
                             raise EconomyMutationError("invalid_account", "System debit wajib memakai treasury spendable.")
 
@@ -322,21 +315,20 @@ async def execute_transaction(
                 await db.executemany(
                     "INSERT INTO EconomyLedger "
                     "(transactionId,sequence,guildId,accountKind,accountId,userId,currency,transactionType,amount,balanceBefore,balanceAfter,referenceId,source,createdAt) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)",
                     ledger_rows,
                 )
-                async with db.execute(
-                    "SELECT currency,SUM(amount) FROM EconomyLedger WHERE transactionId=? GROUP BY currency",
+                header = await db.fetchrow(
+                    "SELECT currency,SUM(amount) FROM EconomyLedger WHERE transactionId=$1 GROUP BY currency",
                     (transaction_id,),
-                ) as cursor:
-                    invariant_rows = await cursor.fetchall()
+                )
                 if not invariant_rows or any(int(total) != 0 for _, total in invariant_rows):
                     raise EconomyMutationError("unbalanced", "Ledger invariant gagal setelah penulisan.")
 
                 if marker:
                     await db.execute(
                         "INSERT INTO EconomySeedMarker (guildId,seedKey,accountCode,currency,amount,transactionId,appliedAt) "
-                        "VALUES (?,?,?,?,?,?,?)",
+                        "VALUES ($15,$16,$17,$18,$19,$20,$21)",
                         (str(guild_id), marker["seed_key"], marker["account_code"],
                          marker["currency"], marker["amount"], transaction_id, now),
                     )
@@ -344,7 +336,7 @@ async def execute_transaction(
                 if reverse_original_transaction_id:
                     cursor = await db.execute(
                         "UPDATE EconomyTransaction SET status='REVERSED' "
-                        "WHERE transactionId=? AND guildId=? AND status='COMMITTED'",
+                        "WHERE transactionId=$25 AND guildId=$26 AND status='COMMITTED'",
                         (str(reverse_original_transaction_id), str(guild_id)),
                     )
                     if cursor.rowcount != 1:
@@ -372,24 +364,24 @@ async def execute_transaction(
                     "extension": extension_metadata,
                 }, separators=(",", ":"), sort_keys=True)
                 cursor = await db.execute(
-                    "UPDATE EconomyTransaction SET status='COMMITTED',metadataJson=?,committedAt=? "
-                    "WHERE transactionId=? AND status='PENDING'",
+                    "UPDATE EconomyTransaction SET status='COMMITTED',metadataJson=$1,committedAt=$2 "
+                    "WHERE transactionId=$27 AND status='PENDING'",
                     (metadata, now, transaction_id),
                 )
                 if cursor.rowcount != 1:
                     raise EconomyMutationError("stale", "Transaction header tidak dapat diselesaikan.")
-                await db.commit()
+                # await db.commit() (managed by asyncpg/pool)
                 return EconomyResult(True, success_code, success_message, transaction_id, balances=balances)
             except Exception:
-                await db.rollback()
+                # await db.rollback()
                 raise
     except EconomyMutationError as exc:
         return EconomyResult(False, exc.code, exc.message)
     except aiosqlite.IntegrityError:
         # A concurrent writer can win the unique idempotency key after this
         # connection began. Read the committed result in a fresh transaction.
-        async with aiosqlite.connect(db_path) as db:
-            await configure_connection(db)
+        async with _pool.acquire() as db:
+            
             existing = await _existing_result(db, guild_id, idempotency_key)
             if existing:
                 return existing
@@ -401,14 +393,13 @@ async def execute_transaction(
 async def reverse_committed_transaction(
     db_path, *, guild_id, actor_id, original_transaction_id, reason, idempotency_key,
 ):
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
-        async with db.execute(
+    async with _pool.acquire() as db:
+        
+        rows = await db.fetch(
             "SELECT accountKind,accountId,userId,currency,amount FROM EconomyLedger "
-            "WHERE transactionId=? ORDER BY sequence",
+            "WHERE transactionId=$1 ORDER BY sequence",
             (str(original_transaction_id),),
-        ) as cursor:
-            rows = await cursor.fetchall()
+        )
     if not rows:
         return EconomyResult(False, "not_found", "Ledger transaksi asal tidak ditemukan.")
     deltas = tuple(
@@ -445,44 +436,43 @@ async def settle_pending_transaction(
         totals[delta.currency] = totals.get(delta.currency, 0) + delta.amount
     if not deltas or any(total != 0 for total in totals.values()):
         return EconomyResult(False, "unbalanced", "Transaksi ekonomi tidak seimbang.", transaction_id)
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
-        await db.execute("BEGIN IMMEDIATE")
+    async with _pool.acquire() as db:
+        
+        async with db.transaction():
         try:
-            async with db.execute(
+            rows = await db.fetch(
                 "SELECT status,operation,actorId,metadataJson FROM EconomyTransaction "
-                "WHERE transactionId=? AND guildId=?", (str(transaction_id), str(guild_id)),
-            ) as cursor:
-                header = await cursor.fetchone()
+                "WHERE transactionId=$2 AND guildId=$3", (str(transaction_id), str(guild_id)),
+            )
             if not header:
-                await db.rollback()
+                # await db.rollback()
                 return EconomyResult(False, "missing_transaction", "Reservasi transaksi tidak ditemukan.", transaction_id)
             if header[0] == "COMMITTED":
                 try:
                     metadata = json.loads(header[3] or "{}")
                 except (TypeError, ValueError):
                     metadata = {}
-                await db.rollback()
+                # await db.rollback()
                 return EconomyResult(True, metadata.get("result_code", "already_committed"),
                                      metadata.get("result_message", "Transaksi sudah diproses."),
                                      transaction_id, replayed=True,
                                      balances=metadata.get("balances") or {})
             if header[0] != "PENDING":
-                await db.rollback()
+                # await db.rollback()
                 return EconomyResult(False, "invalid_status", "Reservasi transaksi tidak dapat diselesaikan.", transaction_id)
             async with db.execute(
-                "SELECT 1 FROM EconomyLedger WHERE transactionId=? LIMIT 1", (str(transaction_id),),
+                "SELECT 1 FROM EconomyLedger WHERE transactionId=$1 LIMIT 1", (str(transaction_id),),
             ) as cursor:
                 if await cursor.fetchone():
-                    await db.rollback()
+                    # await db.rollback()
                     return EconomyResult(False, "review_required", "Transaksi memerlukan rekonsiliasi manual.", transaction_id)
             if feature:
                 async with db.execute(
-                    "SELECT 1 FROM EconomyFeatureState WHERE guildId=? AND feature IN (?, 'economy') "
+                    "SELECT 1 FROM EconomyFeatureState WHERE guildId=$1 AND feature IN ($2, 'economy') "
                     "AND paused=1 LIMIT 1", (str(guild_id), str(feature)),
                 ) as cursor:
                     if await cursor.fetchone():
-                        await db.rollback()
+                        # await db.rollback()
                         return EconomyResult(False, "paused", "Fitur ekonomi sedang dijeda.", transaction_id)
             now = _transaction_now(now_override)
             await ensure_system_accounts(db, guild_id, now)
@@ -504,7 +494,7 @@ async def settle_pending_transaction(
             await db.executemany(
                 "INSERT INTO EconomyLedger "
                 "(transactionId,sequence,guildId,accountKind,accountId,userId,currency,transactionType,"
-                "amount,balanceBefore,balanceAfter,referenceId,source,createdAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "amount,balanceBefore,balanceAfter,referenceId,source,createdAt) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)",
                 ledger_rows,
             )
             if before_commit:
@@ -514,33 +504,32 @@ async def settle_pending_transaction(
             else:
                 extension = {}
             async with db.execute(
-                "SELECT currency,SUM(amount) FROM EconomyLedger WHERE transactionId=? GROUP BY currency",
+                "SELECT currency,SUM(amount) FROM EconomyLedger WHERE transactionId=$1 GROUP BY currency",
                 (str(transaction_id),),
-            ) as cursor:
-                rows = await cursor.fetchall()
+            )
             if not rows or any(int(row[1]) != 0 for row in rows):
                 raise EconomyMutationError("unbalanced", "Ledger marketplace tidak seimbang.")
             metadata = json.dumps({"result_code": success_code, "result_message": success_message,
                                    "balances": balances, "extension": extension},
                                   sort_keys=True, separators=(",", ":"))
             cursor = await db.execute(
-                "UPDATE EconomyTransaction SET status='COMMITTED',metadataJson=?,committedAt=? "
+                "UPDATE EconomyTransaction SET status='COMMITTED',metadataJson=$1,committedAt=$2 "
                 "WHERE transactionId=? AND status='PENDING'",
                 (metadata, now, str(transaction_id)),
             )
             if cursor.rowcount != 1:
                 raise EconomyMutationError("stale", "Header transaksi marketplace berubah.")
-            await db.commit()
+            # await db.commit() (managed by asyncpg/pool)
             return EconomyResult(True, success_code, success_message, str(transaction_id), balances=balances)
         except EconomyMutationError as exc:
-            await db.rollback()
+            # await db.rollback()
             return EconomyResult(False, exc.code, exc.message, str(transaction_id))
         except ValueError:
-            await db.rollback()
+            # await db.rollback()
             return EconomyResult(False, "stale", "State transaksi berubah sebelum settlement.", str(transaction_id))
         except aiosqlite.Error:
-            await db.rollback()
+            # await db.rollback()
             return EconomyResult(False, "database_failure", "Transaksi gagal sebelum perubahan disimpan.", str(transaction_id))
         except Exception:
-            await db.rollback()
+            # await db.rollback()
             return EconomyResult(False, "database_failure", "Transaksi gagal sebelum perubahan disimpan.", str(transaction_id))

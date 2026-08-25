@@ -7,7 +7,6 @@ import sqlite3
 import tempfile
 from datetime import datetime, timezone
 
-import aiosqlite
 
 from .catalog import catalog_hash
 from .database import configure_connection
@@ -60,16 +59,14 @@ def _stack_summary(connection):
 
 async def verify_phase4_staging(db_path):
     manifest = logical_sqlite_manifest(db_path)
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         capable = await phase4_schema_capability(db)
-        async with db.execute(
-            "SELECT checksum,status FROM EconomySchemaMigration WHERE version=?",
+        marker = await db.fetchrow(
+            "SELECT checksum,status FROM EconomySchemaMigration WHERE version=$1",
             (ECONOMY_PHASE4_MIGRATION_VERSION,),
-        ) as cursor:
-            marker = await cursor.fetchone()
-        async with db.execute("SELECT catalogHash FROM RpgCatalogManifest ORDER BY catalogVersion DESC LIMIT 1") as cursor:
-            catalog = await cursor.fetchone()
+        )
+        catalog = await db.fetchrow("SELECT catalogHash FROM RpgCatalogManifest ORDER BY catalogVersion DESC LIMIT 1")
     connection = sqlite3.connect(db_path)
     try:
         stack = _stack_summary(connection)
@@ -101,8 +98,8 @@ async def phase4_dry_run(db_path):
 
 
 async def reconcile_phase4_staging(db_path):
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         if not await phase4_schema_capability(db):
             raise ValueError("Schema Phase 4 belum siap untuk rekonsiliasi.")
         checks = {}

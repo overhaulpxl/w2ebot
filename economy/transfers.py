@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 
-import aiosqlite
 
 from .constants import ECONOMY_FEE_BPS, TRANSFER_DAILY_LIMIT_ETM, TRANSFER_MIN_ETM
 from .database import configure_connection
@@ -21,14 +20,13 @@ async def get_daily_usage(db_path, guild_id, user_id, usage_type, *, now=None):
     if usage_type not in ALLOWED_USAGE_TYPES:
         raise ValueError("usageType tidak valid")
     period = jakarta_date(now)
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
-        async with db.execute(
+    async with _pool.acquire() as db:
+        
+        row = await db.fetchrow(
             "SELECT submittedAmount FROM EconomyDailyUsage "
             "WHERE guildId=? AND userId=? AND periodDate=? AND usageType=?",
             (str(guild_id), str(user_id), period, usage_type),
-        ) as cursor:
-            row = await cursor.fetchone()
+        )
     return UsageSnapshot(period, int(row[0]) if row else 0)
 
 
@@ -36,19 +34,18 @@ async def apply_daily_usage(db, context, *, user_id, usage_type, amount, limit):
     if usage_type not in ALLOWED_USAGE_TYPES:
         raise EconomyMutationError("invalid_usage", "Usage ekonomi tidak valid.")
     period = jakarta_date(context.now)
-    async with db.execute(
+    row = await db.fetchrow(
         "SELECT submittedAmount,version FROM EconomyDailyUsage "
         "WHERE guildId=? AND userId=? AND periodDate=? AND usageType=?",
         (context.guild_id, str(user_id), period, usage_type),
-    ) as cursor:
-        row = await cursor.fetchone()
+    )
     before = int(row[0]) if row else 0
     after = before + int(amount)
     if after > int(limit):
         raise EconomyMutationError("daily_limit", "Batas transaksi harian terlampaui.")
     if row:
         cursor = await db.execute(
-            "UPDATE EconomyDailyUsage SET submittedAmount=?,version=version+1,updatedAt=? "
+            "UPDATE EconomyDailyUsage SET submittedAmount=$1,version=version+1,updatedAt=$2 "
             "WHERE guildId=? AND userId=? AND periodDate=? AND usageType=? AND version=?",
             (after, context.now, context.guild_id, str(user_id), period, usage_type, int(row[1])),
         )

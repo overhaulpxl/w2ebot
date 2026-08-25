@@ -2,7 +2,6 @@
 
 import secrets
 
-import aiosqlite
 
 from .catalog import (
     ENHANCEMENT_COST_BPS, ENHANCEMENT_MATERIALS, ENHANCEMENT_SUCCESS_BPS, EQUIPMENT,
@@ -16,15 +15,14 @@ from .operations import reserve_operation
 
 
 async def reserve_enhancement(db_path, *, guild_id, user_id, equipment_instance_id, now=None):
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
+    async with _pool.acquire() as db:
+        
         await assert_equipment_not_in_marketplace_escrow(db, guild_id, equipment_instance_id)
-        async with db.execute(
+        item = await db.fetchrow(
             "SELECT itemId,enhancementLevel,pityBps,status FROM RpgEquipmentInstance "
             "WHERE equipmentInstanceId=? AND guildId=? AND ownerId=?",
             (str(equipment_instance_id), str(guild_id), str(user_id)),
-        ) as cursor:
-            item = await cursor.fetchone()
+        )
         if not item or item[3] != "OWNED" or item[0] not in EQUIPMENT:
             return EconomyResult(False, "not_found", "Equipment tidak ditemukan.")
         target = int(item[1]) + 1
@@ -32,11 +30,10 @@ async def reserve_enhancement(db_path, *, guild_id, user_id, equipment_instance_
             return EconomyResult(False, "max_enhancement", "Equipment sudah mencapai +15.")
         cost = EQUIPMENT[item[0]]["base_value"] * ENHANCEMENT_COST_BPS[target] // 10_000
         material = ENHANCEMENT_MATERIALS.get(target)
-        async with db.execute(
-            "SELECT etmBalance FROM EconomyWallet WHERE guildId=? AND userId=?",
+        wallet = await db.fetchrow(
+            "SELECT etmBalance FROM EconomyWallet WHERE guildId=$1 AND userId=$2",
             (str(guild_id), str(user_id)),
-        ) as cursor:
-            wallet = await cursor.fetchone()
+        )
         if not wallet or int(wallet[0]) < cost:
             return EconomyResult(False, "insufficient_balance", "Saldo ETM tidak mencukupi.")
         if material and await inventory_quantity(
@@ -52,10 +49,10 @@ async def reserve_enhancement(db_path, *, guild_id, user_id, equipment_instance_
         source_resource_id=equipment_instance_id, outcome=outcome, now=now,
     )
     if not replayed:
-        async with aiosqlite.connect(db_path) as db:
-            await configure_connection(db)
+        async with _pool.acquire() as db:
+            
             await db.execute(
-                "INSERT INTO RpgEnhancementAttempt (operationId,equipmentInstanceId,targetLevel,successRoll) VALUES (?,?,?,?)",
+                "INSERT INTO RpgEnhancementAttempt (operationId,equipmentInstanceId,targetLevel,successRoll) VALUES ($1,$2,$3,$4)",
                 (operation_id, str(equipment_instance_id), target, roll),
             )
             await db.commit()
@@ -63,13 +60,12 @@ async def reserve_enhancement(db_path, *, guild_id, user_id, equipment_instance_
 
 
 async def settle_enhancement(db_path, *, guild_id, user_id, operation_id):
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
-        async with db.execute(
-            "SELECT sourceResourceId,outcomeJson,status FROM RpgOperation WHERE operationId=? AND guildId=? AND userId=?",
+    async with _pool.acquire() as db:
+        
+        row = await db.fetchrow(
+            "SELECT sourceResourceId,outcomeJson,status FROM RpgOperation WHERE operationId=$1 AND guildId=$2 AND userId=$3",
             (str(operation_id), str(guild_id), str(user_id)),
-        ) as cursor:
-            row = await cursor.fetchone()
+        )
     if not row:
         return EconomyResult(False, "not_found", "Attempt enhancement tidak ditemukan.")
     import json
@@ -81,19 +77,17 @@ async def settle_enhancement(db_path, *, guild_id, user_id, operation_id):
 
     async def extension(db, context):
         await assert_equipment_not_in_marketplace_escrow(db, guild_id, row[0])
-        async with db.execute(
-            "SELECT status,sourceResourceId,outcomeJson FROM RpgOperation WHERE operationId=?",
+        operation = await db.fetchrow(
+            "SELECT status,sourceResourceId,outcomeJson FROM RpgOperation WHERE operationId=$1",
             (str(operation_id),),
-        ) as cursor:
-            operation = await cursor.fetchone()
+        )
         if not operation or operation[0] != "RESERVED":
             raise EconomyMutationError("stale", "Attempt enhancement sudah diproses.")
-        async with db.execute(
+        item = await db.fetchrow(
             "SELECT itemId,enhancementLevel,pityBps,status FROM RpgEquipmentInstance "
             "WHERE equipmentInstanceId=? AND guildId=? AND ownerId=?",
             (operation[1], str(guild_id), str(user_id)),
-        ) as cursor:
-            item = await cursor.fetchone()
+        )
         if not item or item[3] != "OWNED" or int(item[1]) + 1 != int(outcome["target_level"]):
             raise EconomyMutationError("stale", "Status equipment sudah berubah.")
         success = int(outcome["roll"]) < min(10_000, ENHANCEMENT_SUCCESS_BPS[int(outcome["target_level"])] + int(item[2]))
@@ -111,7 +105,7 @@ async def settle_enhancement(db_path, *, guild_id, user_id, operation_id):
         next_level = int(outcome["target_level"]) if success else int(item[1])
         next_pity = 0 if success else min(2000, int(item[2]) + 500)
         cursor = await db.execute(
-            "UPDATE RpgEquipmentInstance SET enhancementLevel=?,pityBps=?,updatedAt=? "
+            "UPDATE RpgEquipmentInstance SET enhancementLevel=$1,pityBps=$2,updatedAt=$3 "
             "WHERE equipmentInstanceId=? AND guildId=? AND ownerId=? AND status='OWNED'",
             (next_level, next_pity, context.now, operation[1], str(guild_id), str(user_id)),
         )
@@ -119,7 +113,7 @@ async def settle_enhancement(db_path, *, guild_id, user_id, operation_id):
             raise EconomyMutationError("stale", "Equipment berubah saat enhancement diproses.")
         result = {"success": success, "enhancement_level": next_level, "pity_bps": next_pity}
         await db.execute(
-            "UPDATE RpgOperation SET status='COMMITTED',reservationKey=NULL,resultJson=?,transactionId=?,updatedAt=?,settledAt=? "
+            "UPDATE RpgOperation SET status='COMMITTED',reservationKey=NULL,resultJson=$1,transactionId=$2,updatedAt=$3,settledAt=$4 "
             "WHERE operationId=? AND status='RESERVED'",
             (json.dumps(result, sort_keys=True), context.transaction_id, context.now, context.now, str(operation_id)),
         )

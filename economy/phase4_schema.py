@@ -5,7 +5,6 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 
-import aiosqlite
 
 from .catalog import catalog_hash
 from .constants import ECONOMY_PHASE4_MIGRATION_VERSION, RPG_PHASE3_CATALOG_VERSION
@@ -433,12 +432,12 @@ def _split_sql(script):
 
 
 async def _columns(db, table):
-    async with db.execute(f'PRAGMA table_info("{table}")') as cursor:
+    marker = await db.fetchrow(f'PRAGMA table_info("{table}")') as cursor:
         return {row[1]: row for row in await cursor.fetchall()}
 
 
 async def _object_names(db, object_type):
-    async with db.execute("SELECT name FROM sqlite_master WHERE type=?", (object_type,)) as cursor:
+    async with db.execute("SELECT name FROM sqlite_master WHERE type=$1", object_type) as cursor:
         return {row[0] for row in await cursor.fetchall()}
 
 
@@ -449,10 +448,9 @@ async def phase4_schema_capability(db):
         required_stack = {"guildId", "userId", "itemId", "catalogVersion", "bindingStatus", "status", "quantity", "version"}
         pk_order = [row[1] for row in sorted(stack_columns.values(), key=lambda row: row[5]) if row[5] > 0]
         async with db.execute(
-            "SELECT checksum,status FROM EconomySchemaMigration WHERE version=?",
+            "SELECT checksum,status FROM EconomySchemaMigration WHERE version=$1",
             (ECONOMY_PHASE4_MIGRATION_VERSION,),
-        ) as cursor:
-            marker = await cursor.fetchone()
+        )
         tables = await _object_names(db, "table")
         indexes = await _object_names(db, "index")
         triggers = await _object_names(db, "trigger")
@@ -483,20 +481,19 @@ async def _rebuild_stack(db, now, *, failure_stage=None):
     required_legacy = {"guildId", "userId", "itemId", "quantity", "version", "createdAt", "updatedAt"}
     if not required_legacy.issubset(columns):
         raise ValueError("Schema RpgInventoryStack legacy tidak dikenali.")
-    async with db.execute(
+    manifest = await db.fetchrow(
         "SELECT guildId,userId,itemId,quantity,version,createdAt,updatedAt "
         "FROM RpgInventoryStack ORDER BY guildId,userId,itemId"
     ) as cursor:
         source = [tuple(row) for row in await cursor.fetchall()]
     expected_hash = catalog_hash()
     async with db.execute(
-        "SELECT catalogHash FROM RpgCatalogManifest WHERE catalogVersion=?",
+        "SELECT catalogHash FROM RpgCatalogManifest WHERE catalogVersion=$1",
         (RPG_PHASE3_CATALOG_VERSION,),
-    ) as cursor:
-        manifest = await cursor.fetchone()
+    )
     provenance_valid = bool(manifest and manifest[0] == expected_hash)
-    async with db.execute(
-        "SELECT itemId FROM RpgCatalogItem WHERE catalogVersion=?",
+    marker = await db.fetchrow(
+        "SELECT itemId FROM RpgCatalogItem WHERE catalogVersion=$1",
         (RPG_PHASE3_CATALOG_VERSION,),
     ) as cursor:
         known_items = {row[0] for row in await cursor.fetchall()} if provenance_valid else set()
@@ -524,7 +521,7 @@ async def _rebuild_stack(db, now, *, failure_stage=None):
         await db.execute(
             "INSERT INTO RpgInventoryStack_phase4 "
             "(guildId,userId,itemId,catalogVersion,bindingStatus,status,quantity,version,createdAt,updatedAt) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)", migrated,
+            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)", migrated,
         )
     if failure_stage == "after_stack_copy":
         raise RuntimeError("Injected Phase 4 migration failure")
@@ -560,15 +557,14 @@ async def _ensure_hardening_columns(db):
 
 
 async def migrate_phase4_schema(db_path, *, failure_stage=None):
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
-        await db.execute("BEGIN IMMEDIATE")
+    async with _pool.acquire() as db:
+        
+        async with db.transaction():
         try:
             async with db.execute(
-                "SELECT checksum,status FROM EconomySchemaMigration WHERE version=?",
+                "SELECT checksum,status FROM EconomySchemaMigration WHERE version=$1",
                 (ECONOMY_PHASE4_MIGRATION_VERSION,),
-            ) as cursor:
-                marker = await cursor.fetchone()
+            )
             if marker and marker[1] == "COMPLETED":
                 if marker[0] not in (PHASE4_MIGRATION_CHECKSUM, PHASE4_PRE_HARDENING_CHECKSUM):
                     raise ValueError("Checksum migration Phase 4 tidak cocok.")
@@ -580,7 +576,7 @@ async def migrate_phase4_schema(db_path, *, failure_stage=None):
             now = datetime.now(timezone.utc).isoformat()
             await db.execute(
                 "INSERT OR REPLACE INTO EconomySchemaMigration "
-                "(version,name,checksum,status,startedAt,detailsJson) VALUES (?,?,?,?,?,?)",
+                "(version,name,checksum,status,startedAt,detailsJson) VALUES ($1,$2,$3,$4,$5,$6)",
                 (ECONOMY_PHASE4_MIGRATION_VERSION, "phase4-marketplace", PHASE4_MIGRATION_CHECKSUM,
                  "RUNNING", now, json.dumps({"stack_algorithm": STACK_MIGRATION_ALGORITHM}, separators=(",", ":"))),
             )
@@ -613,7 +609,7 @@ async def migrate_phase4_schema(db_path, *, failure_stage=None):
                 if (await cursor.fetchone())[0] != "ok":
                     raise ValueError("integrity_check gagal setelah migration Phase 4.")
             await db.execute(
-                "UPDATE EconomySchemaMigration SET status='COMPLETED',completedAt=? WHERE version=?",
+                "UPDATE EconomySchemaMigration SET status='COMPLETED',completedAt=$1 WHERE version=$2",
                 (now, ECONOMY_PHASE4_MIGRATION_VERSION),
             )
             if failure_stage == "after_marker_complete":

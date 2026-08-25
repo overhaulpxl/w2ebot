@@ -1,17 +1,15 @@
-import aiosqlite
 
 from .database import configure_connection
 
 
 async def get_cutover_readiness(db_path, guild_id):
-    async with aiosqlite.connect(db_path) as db:
-        await configure_connection(db)
-        async with db.execute(
+    async with _pool.acquire() as db:
+        
+        row = await db.fetchrow(
             "SELECT state,firstProductionTransactionId,changedAt,detailsJson "
-            "FROM EconomyCutoverState WHERE guildId=?",
+            "FROM EconomyCutoverState WHERE guildId=$1",
             (str(guild_id),),
-        ) as cursor:
-            row = await cursor.fetchone()
+        )
     if not row:
         return {
             "state": "LEGACY", "first_production_transaction_id": None,
