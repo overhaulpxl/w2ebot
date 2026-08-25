@@ -2784,6 +2784,7 @@
       "docs/PHASE9C_STAGING_ACCEPTANCE_CHECKLIST.md"
     ],
     "value": [
+      "Supabase Migration (Refactoring SQLite syntax to PostgreSQL)",
       "Phase 5 connected Discord staging validation",
       "Phase 6 connected Discord staging validation",
       "Phase 7 connected Discord staging validation",

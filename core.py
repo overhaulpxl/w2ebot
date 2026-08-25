@@ -1629,7 +1629,23 @@ async def crypto_mining_loop():
             logging.info(f"[MINING] {miner_count} penambang: {summary_str}")
 
 @client.event
+_pool = None
+
+async def init_db_pool():
+    global _pool
+    if _pool is None:
+        try:
+            _pool = await asyncpg.create_pool(
+                os.getenv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/postgres"),
+                min_size=2,
+                max_size=10
+            )
+            logging.info("Supabase PostgreSQL connection pool established.")
+        except Exception as e:
+            logging.critical("Failed to connect to Supabase: %s", type(e).__name__)
+
 async def on_ready():
+    await init_db_pool()
     global TREE_SYNC_DONE
     if not clean_caches.is_running():
         clean_caches.start()
