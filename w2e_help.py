@@ -5,7 +5,7 @@ import os
 BOT_PREFIX = os.getenv("BOT_PREFIX", "w!")
 
 
-def get_help_embed(category: str, guild=None) -> discord.Embed:
+def get_help_embed(category: str, guild=None) -> discord.Embed | list[discord.Embed]:
     guild_name = guild.name if guild else "W2E Server"
 
     if category == "main":
@@ -47,12 +47,12 @@ def get_help_embed(category: str, guild=None) -> discord.Embed:
         return embed
 
     if category == "rpg":
-        embed = discord.Embed(
-            title="Kategori: RPG & Ekonomi",
+        embed1 = discord.Embed(
+            title="Kategori: RPG & Ekonomi (1/2)",
             description="Kumpulkan koin, bangun mining rig, beli pet, dan lawan Raid Boss bareng.",
             color=discord.Color.gold(),
         )
-        commands = [
+        commands1 = [
             (f"`{BOT_PREFIX}daily`", "Klaim koin harian (Booster dapat bonus +50%)."),
             (f"`{BOT_PREFIX}weekly`", "Klaim koin mingguan."),
             (f"`{BOT_PREFIX}work`", "Kerja untuk dapat koin."),
@@ -68,6 +68,14 @@ def get_help_embed(category: str, guild=None) -> discord.Embed:
             (f"`{BOT_PREFIX}miner`", "Lihat status mining rig kamu."),
             (f"`{BOT_PREFIX}market`", "Lihat harga kripto saat ini."),
             (f"`{BOT_PREFIX}portfolio`", "Lihat kepemilikan dan nilai kripto kamu."),
+        ]
+        
+        embed2 = discord.Embed(
+            title="Kategori: RPG & Ekonomi (2/2)",
+            description="Lanjutan command RPG & Ekonomi.",
+            color=discord.Color.gold(),
+        )
+        commands2 = [
             (f"`{BOT_PREFIX}buycoin <symbol> <jumlah>`", "Beli kripto; Phase 6 memakai ECY, unit hingga 8 desimal, fee 2%, dan `all`."),
             (f"`{BOT_PREFIX}sellcoin <symbol> <jumlah>`", "Jual kripto; Phase 6 memakai ECY, profit/cost basis, fee 2%, dan `all`."),
             (f"`{BOT_PREFIX}tebak <1-10>`", "Tebak angka, benar dapat 100 koin."),
@@ -79,10 +87,15 @@ def get_help_embed(category: str, guild=None) -> discord.Embed:
             (f"`{BOT_PREFIX}buypet <slime/wolf/dragon>`", "Beli pet untuk bonus damage Boss Raid."),
             (f"`{BOT_PREFIX}gacha` & `{BOT_PREFIX}box`", "Gacha item acak atau buka loot box."),
         ]
-        for cmd, desc in commands:
-            embed.add_field(name=cmd, value=desc, inline=False)
-        embed.set_footer(text=f"Gunakan prefix `{BOT_PREFIX}` sebelum menulis command.")
-        return embed
+        
+        for cmd, desc in commands1:
+            embed1.add_field(name=cmd, value=desc, inline=False)
+        for cmd, desc in commands2:
+            embed2.add_field(name=cmd, value=desc, inline=False)
+            
+        embed1.set_footer(text=f"Gunakan prefix `{BOT_PREFIX}` sebelum menulis command.")
+        embed2.set_footer(text=f"Gunakan prefix `{BOT_PREFIX}` sebelum menulis command.")
+        return [embed1, embed2]
 
     if category == "ai":
         embed = discord.Embed(
@@ -324,8 +337,11 @@ class HelpSelect(discord.ui.Select):
             return
 
         value = self.values[0]
-        embed = get_help_embed(value, interaction.guild)
-        await interaction.response.edit_message(embed=embed, view=self.view)
+        embeds_or_embed = get_help_embed(value, interaction.guild)
+        if isinstance(embeds_or_embed, list):
+            await interaction.response.edit_message(embeds=embeds_or_embed, view=self.view)
+        else:
+            await interaction.response.edit_message(embed=embeds_or_embed, view=self.view)
 
 
 class W2EHelpView(discord.ui.View):

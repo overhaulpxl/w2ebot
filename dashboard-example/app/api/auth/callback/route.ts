@@ -18,7 +18,7 @@ export async function GET(request: NextRequest) {
     const state = request.nextUrl.searchParams.get("state") ?? "";
     const cookieState = request.cookies.get(STATE_COOKIE)?.value ?? "";
     const verifier = request.cookies.get(PKCE_COOKIE)?.value ?? "";
-    if (!code || !state || !cookieState || !verifier || !same(state, cookieState)) throw new Error("unauthenticated");
+    if (!code || !state || !cookieState || !verifier || !same(state, cookieState)) throw new Error("unauthenticated_state_mismatch");
     const body = new URLSearchParams({
       client_id: process.env.DASHBOARD_DISCORD_CLIENT_ID ?? "",
       client_secret: process.env.DASHBOARD_DISCORD_CLIENT_SECRET ?? "",
@@ -30,14 +30,14 @@ export async function GET(request: NextRequest) {
     const tokenResponse = await fetch("https://discord.com/api/v10/oauth2/token", {
       method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body, cache: "no-store",
     });
-    if (!tokenResponse.ok) throw new Error("unauthenticated");
+    if (!tokenResponse.ok) throw new Error("unauthenticated_discord_token");
     const token = await tokenResponse.json() as { access_token?: string };
     const identityResponse = await fetch("https://discord.com/api/v10/users/@me", {
       headers: { Authorization: `Bearer ${token.access_token ?? ""}` }, cache: "no-store",
     });
-    if (!identityResponse.ok) throw new Error("unauthenticated");
+    if (!identityResponse.ok) throw new Error("unauthenticated_discord_identity");
     const identity = await identityResponse.json() as { id?: string };
-    if (!identity.id || !/^\d+$/.test(identity.id)) throw new Error("unauthenticated");
+    if (!identity.id || !/^\d+$/.test(identity.id)) throw new Error("unauthenticated_bad_identity");
     const rawSession = randomOpaqueToken();
     const tokenHash = hashSessionToken(rawSession);
     const challenge = createHash("sha256").update(verifier).digest("base64url");

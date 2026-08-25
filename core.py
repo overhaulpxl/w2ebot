@@ -3583,6 +3583,8 @@ async def _signed_internal(request, payload, *, permission='DASHBOARD_VIEW', ses
     envelope = envelope_from_headers(request.headers)
     if envelope.key_id != DASHBOARD_INTERNAL_KEY_ID or envelope.guild_id != str(ALLOWED_SERVER_ID):
         raise DashboardSecurityError('unauthenticated', 401)
+    if envelope.issued_at > int(time.time()) + 10 or envelope.expires_at < int(time.time()):
+        raise DashboardSecurityError('unauthenticated', 401)
     verify_envelope_signature(
         envelope, request.headers.get('X-W2E-Signature'), DASHBOARD_INTERNAL_SIGNING_KEY,
         method=request.method, route=request.path, payload=payload,
@@ -4213,7 +4215,7 @@ async def start_web_server():
     app = build_web_application()
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', 8081)
+    site = web.TCPSite(runner, '127.0.0.1', 8081)
     await site.start()
     logging.info("Bot API started on port 8081")
     logging.info("Legacy dashboard routes disabled; Phase 9A internal routes fail closed.")
@@ -4505,10 +4507,10 @@ DEAL_SETUP_INCOMPLETE_MESSAGE = "Setup belum lengkap. Admin harus mengatur role 
 
 def _load_deal_system_phase():
     try:
-        phase = int(os.getenv("DEAL_SYSTEM_PHASE", "6"))
+        phase = int(os.getenv("DEAL_SYSTEM_PHASE", "9"))
     except (TypeError, ValueError):
-        phase = 6
-    return min(6, max(1, phase))
+        phase = 9
+    return min(9, max(1, phase))
 
 
 DEAL_SYSTEM_PHASE = _load_deal_system_phase()

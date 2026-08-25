@@ -27,6 +27,20 @@ def setup(tree, client):
         else:
             await send_embed(interaction, f"{target.display_name} tidak sedang berada di voice channel mana pun.")
     
+    @tree.command(name="about", description="Menampilkan informasi tentang bot ini.")
+    async def slash_about(interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="Tentang Way 2 Eternal Bot",
+            description="Bot Discord serbaguna dengan AI Gemini, RPG, Economy, dan Web Dashboard terintegrasi.",
+            color=discord.Color.blue()
+        )
+        embed.add_field(name="Developer", value="W2E Dev Team", inline=True)
+        embed.add_field(name="Library", value="discord.py, asyncpg", inline=True)
+        embed.add_field(name="Database", value="PostgreSQL (Supabase)", inline=True)
+        embed.add_field(name="Versi", value="Phase 9C", inline=True)
+        embed.set_footer(text="Ditenagai oleh Google Gemini & Next.js")
+        await interaction.response.send_message(embed=embed)
+
     @tree.command(name="checkbots", description="Pantau aktivitas bot musik di server")
     async def slash_radar(interaction: discord.Interaction):
         await interaction.response.defer()
