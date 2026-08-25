@@ -200,13 +200,12 @@ async def load_json(filepath):
     if basename in _json_cache:
         return _json_cache[basename]
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT content FROM json_store WHERE filename=?", (basename,)) as cursor:
-                row = await cursor.fetchone()
-                if row:
-                    data = json.loads(row[0])
-                    _json_cache[basename] = data
-                    return data
+        async with _pool.acquire() as db:
+            row = await db.fetchrow("SELECT content FROM json_store WHERE filename=$1", basename)
+            if row:
+                data = json.loads(row['content'])
+                _json_cache[basename] = data
+                return data
     except Exception as e:
         logging.error("DB Load Error exception=%s", type(e).__name__)
     _json_cache[basename] = {}
@@ -216,37 +215,38 @@ async def save_json(filepath, data):
     basename = os.path.basename(filepath)
     _json_cache[basename] = data
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute("INSERT OR REPLACE INTO json_store (filename, content) VALUES (?, ?)", (basename, json.dumps(data, ensure_ascii=False)))
-            await db.commit()
+        async with _pool.acquire() as db:
+            await db.execute(
+                "INSERT INTO json_store (filename, content) VALUES ($1, $2) "
+                "ON CONFLICT (filename) DO UPDATE SET content = $2",
+                basename, json.dumps(data, ensure_ascii=False)
+            )
     except Exception as e:
         logging.error("DB Save Error exception=%s", type(e).__name__)
 
 async def get_discord_stat(uid):
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT coins, xp, level, lastDaily FROM DiscordStat WHERE id=?", (str(uid),)) as cursor:
-                row = await cursor.fetchone()
-                if row:
-                    coins, xp, level, lastDaily = row[0], row[1], row[2], row[3]
-                    
-                    # O(1) Level Up Math
-                    if xp >= level * 100:
-                        a = 50
-                        b = 100 * level - 50
-                        c = -xp
-                        discriminant = b**2 - 4*a*c
-                        if discriminant > 0:
-                            n = floor((-b + sqrt(discriminant)) / (2*a))
-                            if n > 0:
-                                xp_consumed = 100 * n * level + 50 * n * (n - 1)
-                                old_level = level
-                                level += n
-                                xp -= int(xp_consumed)
-                                await db.execute("UPDATE DiscordStat SET xp=?, level=? WHERE id=?", (xp, level, str(uid)))
-                                await db.commit()
-                                logging.info(f"[LEVELUP] uid={uid} naik level {old_level} -> {level} (sisa XP {xp})")
-                    return {'coins': coins, 'xp': xp, 'level': level, 'lastDaily': lastDaily}
+        async with _pool.acquire() as db:
+            row = await db.fetchrow("SELECT coins, xp, level, lastDaily FROM DiscordStat WHERE id=$1", str(uid))
+            if row:
+                coins, xp, level, lastDaily = row['coins'], row['xp'], row['level'], row['lastdaily']
+                
+                # O(1) Level Up Math
+                if xp >= level * 100:
+                    a = 50
+                    b = 100 * level - 50
+                    c = -xp
+                    discriminant = b**2 - 4*a*c
+                    if discriminant > 0:
+                        n = floor((-b + sqrt(discriminant)) / (2*a))
+                        if n > 0:
+                            xp_consumed = 100 * n * level + 50 * n * (n - 1)
+                            old_level = level
+                            level += n
+                            xp -= int(xp_consumed)
+                            await db.execute("UPDATE DiscordStat SET xp=$1, level=$2 WHERE id=$3", xp, level, str(uid))
+                            logging.info(f"[LEVELUP] uid={uid} naik level {old_level} -> {level} (sisa XP {xp})")
+                return {'coins': coins, 'xp': xp, 'level': level, 'lastDaily': lastDaily}
     except Exception as e:
         logging.error("DB Error get exception=%s", type(e).__name__)
     return {'coins': 0, 'xp': 0, 'level': 1, 'lastDaily': ''}
@@ -264,39 +264,36 @@ async def update_discord_stat(uid, display_name, coins, xp, level, last_daily):
                 level += n
                 xp -= int(xp_consumed)
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
+        async with _pool.acquire() as db:
             now = datetime.utcnow().isoformat() + "Z"
             await db.execute("""
                 INSERT INTO DiscordStat (id, displayName, coins, xp, level, lastDaily, updatedAt) 
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
                 ON CONFLICT(id) DO UPDATE SET 
-                displayName=excluded.displayName,
-                coins=excluded.coins,
-                xp=excluded.xp,
-                level=excluded.level,
-                lastDaily=excluded.lastDaily,
-                updatedAt=excluded.updatedAt
-            """, (str(uid), display_name, coins, xp, level, last_daily, now))
-            await db.commit()
+                displayName=EXCLUDED.displayName,
+                coins=EXCLUDED.coins,
+                xp=EXCLUDED.xp,
+                level=EXCLUDED.level,
+                lastDaily=EXCLUDED.lastDaily,
+                updatedAt=EXCLUDED.updatedAt
+            """, str(uid), display_name, coins, xp, level, last_daily, now)
     except Exception as e:
         logging.error("DB Error update exception=%s", type(e).__name__)
 
 
 async def adjust_coins(uid, delta, display_name=None):
-    # Atomic coin delta — avoids the read-modify-write race where two concurrent
+    # Atomic coin delta - avoids the read-modify-write race where two concurrent
     # commands read the same balance and the last writer wins. Clamps at 0.
     try:
         now = datetime.utcnow().isoformat() + "Z"
-        async with aiosqlite.connect(DB_PATH) as db:
+        async with _pool.acquire() as db:
             await db.execute(
-                "INSERT INTO DiscordStat (id, displayName, coins, updatedAt) VALUES (?, ?, MAX(0, ?), ?) "
-                "ON CONFLICT(id) DO UPDATE SET coins = MAX(0, coins + ?), "
-                "displayName = COALESCE(?, displayName), updatedAt = ?",
-                (str(uid), display_name or str(uid), delta, now, delta, display_name, now))
-            await db.commit()
-            async with db.execute("SELECT coins FROM DiscordStat WHERE id=?", (str(uid),)) as c:
-                row = await c.fetchone()
-            saldo = row[0] if row else '?'
+                "INSERT INTO DiscordStat (id, displayName, coins, updatedAt) VALUES ($1, $2, GREATEST(0, $3), $4) "
+                "ON CONFLICT(id) DO UPDATE SET coins = GREATEST(0, DiscordStat.coins + $5), "
+                "displayName = COALESCE($6, DiscordStat.displayName), updatedAt = $7",
+                str(uid), display_name or str(uid), delta, now, delta, display_name, now)
+            row = await db.fetchrow("SELECT coins FROM DiscordStat WHERE id=$1", str(uid))
+            saldo = row['coins'] if row else '?'
         arah = '+' if delta >= 0 else ''
         logging.info(f"[ECONOMY] {display_name or uid} ({uid}) koin {arah}{delta} -> saldo {saldo}")
     except Exception as e:
@@ -317,18 +314,16 @@ async def try_spend(uid, amount, display_name=None):
         return True
     try:
         now = datetime.utcnow().isoformat() + "Z"
-        async with aiosqlite.connect(DB_PATH) as db:
-            cur = await db.execute(
-                "UPDATE DiscordStat SET coins = coins - ?, "
-                "displayName = COALESCE(?, displayName), updatedAt = ? "
-                "WHERE id = ? AND coins >= ?",
-                (amount, display_name, now, str(uid), amount))
-            await db.commit()
-            ok = cur.rowcount > 0
+        async with _pool.acquire() as db:
+            result = await db.execute(
+                "UPDATE DiscordStat SET coins = coins - $1, "
+                "displayName = COALESCE($2, displayName), updatedAt = $3 "
+                "WHERE id = $4 AND coins >= $5",
+                amount, display_name, now, str(uid), amount)
+            ok = result == "UPDATE 1"
             if ok:
-                async with db.execute("SELECT coins FROM DiscordStat WHERE id=?", (str(uid),)) as c:
-                    row = await c.fetchone()
-                saldo = row[0] if row else '?'
+                row = await db.fetchrow("SELECT coins FROM DiscordStat WHERE id=$1", str(uid))
+                saldo = row['coins'] if row else '?'
                 logging.info(f"[ECONOMY] {display_name or uid} ({uid}) bayar -{amount} -> saldo {saldo}")
             else:
                 logging.info(f"[ECONOMY] {display_name or uid} ({uid}) GAGAL bayar {amount} (saldo kurang)")
@@ -345,13 +340,12 @@ async def add_xp(uid, display_name, xp_delta):
         return
     try:
         now = datetime.utcnow().isoformat() + "Z"
-        async with aiosqlite.connect(DB_PATH) as db:
+        async with _pool.acquire() as db:
             await db.execute(
-                "INSERT INTO DiscordStat (id, displayName, xp, updatedAt) VALUES (?, ?, MAX(0, ?), ?) "
-                "ON CONFLICT(id) DO UPDATE SET xp = MAX(0, xp + ?), "
-                "displayName = COALESCE(?, displayName), updatedAt = ?",
-                (str(uid), display_name or str(uid), xp_delta, now, xp_delta, display_name, now))
-            await db.commit()
+                "INSERT INTO DiscordStat (id, displayName, xp, updatedAt) VALUES ($1, $2, GREATEST(0, $3), $4) "
+                "ON CONFLICT(id) DO UPDATE SET xp = GREATEST(0, DiscordStat.xp + $5), "
+                "displayName = COALESCE($6, DiscordStat.displayName), updatedAt = $7",
+                str(uid), display_name or str(uid), xp_delta, now, xp_delta, display_name, now)
         logging.info(f"[XP] {display_name or uid} ({uid}) +{xp_delta} XP")
     except Exception as e:
         logging.error("DB Error add_xp exception=%s", type(e).__name__)
@@ -361,13 +355,12 @@ async def set_last_daily(uid, value, display_name=None):
     # Update kolom lastDaily TANPA menyentuh coins/xp (menghindari clobber saldo).
     try:
         now = datetime.utcnow().isoformat() + "Z"
-        async with aiosqlite.connect(DB_PATH) as db:
+        async with _pool.acquire() as db:
             await db.execute(
-                "INSERT INTO DiscordStat (id, displayName, lastDaily, updatedAt) VALUES (?, ?, ?, ?) "
-                "ON CONFLICT(id) DO UPDATE SET lastDaily = ?, "
-                "displayName = COALESCE(?, displayName), updatedAt = ?",
-                (str(uid), display_name or str(uid), value, now, value, display_name, now))
-            await db.commit()
+                "INSERT INTO DiscordStat (id, displayName, lastDaily, updatedAt) VALUES ($1, $2, $3, $4) "
+                "ON CONFLICT(id) DO UPDATE SET lastDaily = $5, "
+                "displayName = COALESCE($6, DiscordStat.displayName), updatedAt = $7",
+                str(uid), display_name or str(uid), value, now, value, display_name, now)
     except Exception as e:
         logging.error("DB Error set_last_daily exception=%s", type(e).__name__)
 
@@ -1327,8 +1320,7 @@ async def reserve_phase9b_legacy_notification(guild, *, category, event_type, so
 
 
 async def phase9b_schema_ready():
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute('PRAGMA foreign_keys=ON')
+    async with _pool.acquire() as db:
         return await phase9b_capability(db)
 
 async def check_birthdays():
