@@ -5,6 +5,7 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 
+import aiosqlite
 
 from .catalog import catalog_hash
 from .constants import ECONOMY_PHASE4_MIGRATION_VERSION, RPG_PHASE3_CATALOG_VERSION
@@ -437,7 +438,7 @@ async def _columns(db, table):
 
 
 async def _object_names(db, object_type):
-    async with db.execute("SELECT name FROM sqlite_master WHERE type=$1", object_type) as cursor:
+    row = await db.fetchrow("SELECT name FROM sqlite_master WHERE type=$1", object_type) as cursor:
         return {row[0] for row in await cursor.fetchall()}
 
 
@@ -448,8 +449,7 @@ async def phase4_schema_capability(db):
         required_stack = {"guildId", "userId", "itemId", "catalogVersion", "bindingStatus", "status", "quantity", "version"}
         pk_order = [row[1] for row in sorted(stack_columns.values(), key=lambda row: row[5]) if row[5] > 0]
         async with db.execute(
-            "SELECT checksum,status FROM EconomySchemaMigration WHERE version=$1",
-            (ECONOMY_PHASE4_MIGRATION_VERSION,),
+            "SELECT checksum,status FROM EconomySchemaMigration WHERE version=$1", ECONOMY_PHASE4_MIGRATION_VERSION,),
         )
         tables = await _object_names(db, "table")
         indexes = await _object_names(db, "index")
@@ -462,7 +462,6 @@ async def phase4_schema_capability(db):
             and REQUIRED_TABLES.issubset(tables)
             and REQUIRED_INDEXES.issubset(indexes)
             and REQUIRED_TRIGGERS.issubset(triggers)
-        )
     except aiosqlite.Error:
         return False
 
@@ -484,27 +483,22 @@ async def _rebuild_stack(db, now, *, failure_stage=None):
     manifest = await db.fetchrow(
         "SELECT guildId,userId,itemId,quantity,version,createdAt,updatedAt "
         "FROM RpgInventoryStack ORDER BY guildId,userId,itemId"
-    ) as cursor:
         source = [tuple(row) for row in await cursor.fetchall()]
     expected_hash = catalog_hash()
     async with db.execute(
-        "SELECT catalogHash FROM RpgCatalogManifest WHERE catalogVersion=$1",
-        (RPG_PHASE3_CATALOG_VERSION,),
+        "SELECT catalogHash FROM RpgCatalogManifest WHERE catalogVersion=$1", RPG_PHASE3_CATALOG_VERSION,),
     )
     provenance_valid = bool(manifest and manifest[0] == expected_hash)
     marker = await db.fetchrow(
-        "SELECT itemId FROM RpgCatalogItem WHERE catalogVersion=$1",
-        (RPG_PHASE3_CATALOG_VERSION,),
-    ) as cursor:
+        "SELECT itemId FROM RpgCatalogItem WHERE catalogVersion=$1", RPG_PHASE3_CATALOG_VERSION,),
         known_items = {row[0] for row in await cursor.fetchall()} if provenance_valid else set()
     await db.execute("""CREATE TABLE RpgInventoryStack_phase4 (
         guildId TEXT NOT NULL, userId TEXT NOT NULL, itemId TEXT NOT NULL,
         catalogVersion TEXT NOT NULL, bindingStatus TEXT NOT NULL,
-        status TEXT NOT NULL CHECK(status IN ('ACTIVE','REVIEW_REQUIRED')),
+        status TEXT NOT NULL CHECK(status IN ('ACTIVE','REVIEW_REQUIRED'),
         quantity INTEGER NOT NULL CHECK(quantity>=0), version INTEGER NOT NULL DEFAULT 0,
         createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL,
-        PRIMARY KEY(guildId,userId,itemId,catalogVersion,bindingStatus)
-    )""")
+        PRIMARY KEY(guildId,userId,itemId,catalogVersion,bindingStatus)""")
     if failure_stage == "after_stack_create":
         raise RuntimeError("Injected Phase 4 migration failure")
 
@@ -528,7 +522,6 @@ async def _rebuild_stack(db, now, *, failure_stage=None):
     async with db.execute(
         "SELECT guildId,userId,itemId,catalogVersion,bindingStatus,status,quantity,version,createdAt,updatedAt "
         "FROM RpgInventoryStack_phase4 ORDER BY guildId,userId,itemId,catalogVersion,bindingStatus"
-    ) as cursor:
         copied = [tuple(row) for row in await cursor.fetchall()]
     expected_target = sorted(target)
     if copied != expected_target or _rows_checksum(copied) != _rows_checksum(expected_target):
@@ -541,7 +534,6 @@ async def _rebuild_stack(db, now, *, failure_stage=None):
     await db.execute("DROP TABLE RpgInventoryStack_phase3_old")
     await db.execute(
         "CREATE INDEX idx_rpg_inventory_user ON RpgInventoryStack(guildId,userId,itemId,catalogVersion,bindingStatus)"
-    )
     if failure_stage == "after_stack_swap":
         raise RuntimeError("Injected Phase 4 migration failure")
 
@@ -553,17 +545,15 @@ async def _ensure_hardening_columns(db):
         if "authorizationSource" not in columns:
             await db.execute(
                 "ALTER TABLE MarketplaceSale ADD COLUMN authorizationSource TEXT NOT NULL DEFAULT 'DISCORD'"
-            )
 
 
 async def migrate_phase4_schema(db_path, *, failure_stage=None):
-    async with _pool.acquire() as db:
-        
-        async with db.transaction():
+    async with aiosqlite.connect(db_path) as db:
+        await configure_connection(db)
+        await db.execute("BEGIN IMMEDIATE")
         try:
             async with db.execute(
-                "SELECT checksum,status FROM EconomySchemaMigration WHERE version=$1",
-                (ECONOMY_PHASE4_MIGRATION_VERSION,),
+                "SELECT checksum,status FROM EconomySchemaMigration WHERE version=$1", ECONOMY_PHASE4_MIGRATION_VERSION,),
             )
             if marker and marker[1] == "COMPLETED":
                 if marker[0] not in (PHASE4_MIGRATION_CHECKSUM, PHASE4_PRE_HARDENING_CHECKSUM):
@@ -578,7 +568,7 @@ async def migrate_phase4_schema(db_path, *, failure_stage=None):
                 "INSERT OR REPLACE INTO EconomySchemaMigration "
                 "(version,name,checksum,status,startedAt,detailsJson) VALUES ($1,$2,$3,$4,$5,$6)",
                 (ECONOMY_PHASE4_MIGRATION_VERSION, "phase4-marketplace", PHASE4_MIGRATION_CHECKSUM,
-                 "RUNNING", now, json.dumps({"stack_algorithm": STACK_MIGRATION_ALGORITHM}, separators=(",", ":"))),
+                 "RUNNING", now, json.dumps({"stack_algorithm": STACK_MIGRATION_ALGORITHM}, separators=(",", ":")),
             )
             if failure_stage == "after_marker":
                 raise RuntimeError("Injected Phase 4 migration failure")
@@ -588,8 +578,7 @@ async def migrate_phase4_schema(db_path, *, failure_stage=None):
                 async with db.execute(
                     "SELECT guildId,reporterId,listingId,COUNT(*) FROM MarketplaceReport "
                     "WHERE status IN ('OPEN','IN_REVIEW') GROUP BY guildId,reporterId,listingId HAVING COUNT(*)>1 LIMIT 1"
-                ) as cursor:
-                    if await cursor.fetchone():
+                        if row:
                         raise ValueError("Report unresolved duplikat wajib direkonsiliasi sebelum hardening.")
             await db.execute("DROP TRIGGER IF EXISTS trg_market_listing_escrow_quantity")
             for index, statement in enumerate(_split_sql(PHASE4_SCHEMA_SQL)):

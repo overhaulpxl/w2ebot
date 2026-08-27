@@ -254,7 +254,7 @@ REQUIRED_PHASE6_COLUMNS = {
 
 def phase6_capability_sync(connection):
     marker = connection.execute(
-        "SELECT checksum,status FROM EconomySchemaMigration WHERE version=?",
+        "SELECT checksum,status FROM EconomySchemaMigration WHERE version=$1",
         (ECONOMY_PHASE6_MIGRATION_VERSION,),
     ).fetchone()
     if not marker or marker != (PHASE6_SCHEMA_CHECKSUM, "COMPLETED"):
@@ -278,7 +278,6 @@ def phase6_capability_sync(connection):
     expected = sorted(
         (symbol, name, price, maximum_bps, level)
         for symbol, (name, price, maximum_bps, level) in CRYPTO_ASSETS.items()
-    )
     state_symbols = [row[0] for row in connection.execute(
         "SELECT symbol FROM CryptoMarketState ORDER BY symbol"
     ).fetchall()]
@@ -286,17 +285,14 @@ def phase6_capability_sync(connection):
 
 
 async def phase6_capability(db):
-    async with db.execute(
-        "SELECT checksum,status FROM EconomySchemaMigration WHERE version=?",
-        (ECONOMY_PHASE6_MIGRATION_VERSION,),
-    ) as cursor:
+    definitions = await db.fetch(
+        "SELECT checksum,status FROM EconomySchemaMigration WHERE version=$1", ECONOMY_PHASE6_MIGRATION_VERSION,),
         marker = await cursor.fetchone()
     if not marker or tuple(marker) != (PHASE6_SCHEMA_CHECKSUM, "COMPLETED"):
         return False
     async with db.execute(
         "SELECT name,type FROM sqlite_master WHERE name LIKE 'Crypto%' OR name LIKE 'idx_crypto_%' OR name LIKE 'uq_crypto_%' OR name LIKE 'trg_crypto_%'"
-    ) as cursor:
-        objects = dict(await cursor.fetchall())
+        objects = dict(await cursor.fetchall()
     structure_ready = (all(objects.get(name) == "table" for name in REQUIRED_PHASE6_TABLES)
                        and all(objects.get(name) == "index" for name in REQUIRED_PHASE6_INDEXES)
                        and all(objects.get(name) == "trigger" for name in REQUIRED_PHASE6_TRIGGERS))
@@ -310,12 +306,9 @@ async def phase6_capability(db):
     async with db.execute(
         "SELECT symbol,name,basePriceEcy,maximumNormalChangeBps,volatilityLevel "
         "FROM CryptoAssetDefinition ORDER BY symbol"
-    ) as cursor:
-        definitions = await cursor.fetchall()
     expected = sorted(
         (symbol, name, price, maximum_bps, level)
-        for symbol, (name, price, maximum_bps, level) in CRYPTO_ASSETS.items()
-    )
+        for symbol, name, price, maximum_bps, level) in CRYPTO_ASSETS.items()
     async with db.execute("SELECT symbol FROM CryptoMarketState ORDER BY symbol") as cursor:
         state_symbols = [row[0] for row in await cursor.fetchall()]
     return definitions == expected and state_symbols == sorted(CRYPTO_ASSETS)

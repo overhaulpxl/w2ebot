@@ -7,7 +7,7 @@ permission, parsing command, dan rendering respons.
 import discord
 from discord import app_commands
 
-from core import  add_coins, load_json, register_prefix_command_handler, save_json
+from core import DB_PATH, add_coins, load_json, register_prefix_command_handler, save_json
 from economy.adventures import reserve_dungeon, settle_dungeon
 from economy.bosses import boss_status, settle_boss, start_boss
 from economy.catalog import DUNGEONS, EQUIPMENT
@@ -52,13 +52,13 @@ async def _autocomplete_ready(interaction, table):
         return False
     if not getattr(getattr(interaction, "user", None), "id", None):
         return False
+    import aiosqlite
     try:
         async with _pool.acquire() as db:
-            row = await db.fetchrow(
-                "SELECT 1 FROM pg_tables WHERE schemaname='public' AND tablename=$1", table
-            )
-            return row is not None
-    except Exception:
+            rows = await db.fetch(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=$1", table,),
+                return await cursor.fetchone() is not None
+    except (aiosqlite.Error, OSError):
         return False
 
 
@@ -67,17 +67,17 @@ async def _equipment_choices(interaction, current):
         return []
     current = str(current or "").lower()
     # Autocomplete hanya membaca instance; tidak membuat profile atau inventory.
+    import aiosqlite
     async with _pool.acquire() as db:
-        rows = await db.fetch(
+        async with db.execute(
             "SELECT equipmentInstanceId,itemId,enhancementLevel FROM RpgEquipmentInstance "
-            "WHERE guildId=$1 AND ownerId=$2 AND status='OWNED' ORDER BY createdAt LIMIT 25",
-            str(interaction.guild_id), str(interaction.user.id)
+            "WHERE guildId=$1 AND ownerId=$2 AND status='OWNED' ORDER BY createdAt LIMIT 25", str(interaction.guild_id), str(interaction.user.id),
         )
     choices = []
     for instance_id, item_id, enhancement in rows:
         name = f"{EQUIPMENT.get(item_id, {}).get('name', item_id)} +{enhancement}"
         if current in name.lower() or current in str(instance_id).lower():
-            choices.append(app_commands.Choice(name=name[:100], value=str(instance_id)))
+            choices.append(app_commands.Choice(name=name[:100], value=str(instance_id))
     return choices[:25]
 
 
@@ -96,15 +96,15 @@ async def _open_item_choices(interaction, current):
     if not await _autocomplete_ready(interaction, "RpgInventoryStack"):
         return []
     current = str(current or "").lower()
+    import aiosqlite
     async with _pool.acquire() as db:
         rows = await db.fetch(
             "SELECT itemId,quantity FROM RpgInventoryStack WHERE guildId=$1 AND userId=$2 AND quantity>0 "
-            "AND (itemId LIKE 'egg_pet_%' OR itemId='item_epic_chest') ORDER BY itemId LIMIT 25",
-            str(interaction.guild_id), str(interaction.user.id)
+            "AND (itemId LIKE 'egg_pet_%' OR itemId='item_epic_chest') ORDER BY itemId LIMIT 25", str(interaction.guild_id), str(interaction.user.id),
         )
     return [
-        app_commands.Choice(name=f"{item['itemid']} x{item['quantity']}"[:100], value=item['itemid'])
-        for item in rows if current in item['itemid'].lower()
+        app_commands.Choice(name=f"{item_id} x{quantity}"[:100], value=item_id)
+        for item_id, quantity in rows if current in item_id.lower()
     ][:25]
 
 

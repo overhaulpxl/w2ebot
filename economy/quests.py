@@ -5,6 +5,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 
+import aiosqlite
 
 from .activity import activity_metric, append_activity_event
 from .constants import RPG_PHASE3_CATALOG_VERSION
@@ -46,13 +47,12 @@ def weekly_boss_target(level):
 
 async def ensure_quest_assignments(db_path, guild_id, user_id, *, now=None):
     timestamp = utc_iso(now)
-    async with _pool.acquire() as db:
-        
-        async with db.transaction():
+    async with aiosqlite.connect(db_path) as db:
+        await configure_connection(db)
+        await db.execute("BEGIN IMMEDIATE")
         try:
             profile = await db.fetchrow(
-                "SELECT level FROM RpgProfile WHERE guildId=$1 AND userId=$2",
-                (str(guild_id), str(user_id)),
+                "SELECT level FROM RpgProfile WHERE guildId=$1 AND userId=$2", str(guild_id), str(user_id),
             )
             if not profile:
                 raise ValueError("Profile RPG belum tersedia.")
@@ -63,8 +63,7 @@ async def ensure_quest_assignments(db_path, guild_id, user_id, *, now=None):
                 await db.execute(
                     "INSERT OR IGNORE INTO RpgQuestAssignment "
                     "(guildId,userId,questType,periodKey,periodStartUtc,periodEndUtc,assignedPlayerLevel,bossDamageTarget,status,createdAt) "
-                    "VALUES (?,?,?,?,?,?,?,?, 'ACTIVE',$1)",
-                    (str(guild_id), str(user_id), quest_type, key, utc_iso(start), utc_iso(end), level, target, timestamp),
+                    "VALUES ($1,$2,$3,$4,$5,$6,$7,$8, 'ACTIVE',$9)", str(guild_id), str(user_id), quest_type, key, utc_iso(start), utc_iso(end), level, target, timestamp),
                 )
             await db.commit()
         except Exception:
@@ -74,16 +73,15 @@ async def ensure_quest_assignments(db_path, guild_id, user_id, *, now=None):
 
 async def quest_progress(db_path, guild_id, user_id, *, now=None):
     await ensure_quest_assignments(db_path, guild_id, user_id, now=now)
-    async with _pool.acquire() as db:
-        
+    async with aiosqlite.connect(db_path) as db:
+        await configure_connection(db)
         db.row_factory = aiosqlite.Row
         results = {}
         for quest_type in ("DAILY", "WEEKLY"):
             key, _, _ = quest_period(quest_type, now=now)
             assignment = await db.fetchrow(
                 "SELECT questType,periodKey,periodStartUtc,periodEndUtc,assignedPlayerLevel,bossDamageTarget,status,claimedTransactionId,claimedAt "
-                "FROM RpgQuestAssignment WHERE guildId=$1 AND userId=$2 AND questType=$3 AND periodKey=$4",
-                (str(guild_id), str(user_id), quest_type, key),
+                "FROM RpgQuestAssignment WHERE guildId=$1 AND userId=$2 AND questType=$3 AND periodKey=$4", str(guild_id), str(user_id), quest_type, key),
             )
             if quest_type == "DAILY":
                 metrics = {
@@ -100,7 +98,7 @@ async def quest_progress(db_path, guild_id, user_id, *, now=None):
                 }
                 targets = {"hunts": 25, "dungeons": 5, "boss_damage": int(assignment[5])}
             results[quest_type] = {"assignment": dict(assignment), "progress": metrics, "targets": targets,
-                                   "complete": all(metrics[key] >= value for key, value in targets.items())}
+                                   "complete": all(metrics[key] >= value for key, value in targets.items()}
         return results
 
 
@@ -144,12 +142,11 @@ async def claim_quest(db_path, *, guild_id, user_id, quest_type, now=None):
             raise EconomyMutationError("stale", "Reservasi claim quest sudah berubah.")
         profile = await db.fetchrow(
             "SELECT level,xp FROM RpgProfile WHERE guildId=$1 AND userId=$2",
-            (str(guild_id), str(user_id)),
+            (str(guild_id), str(user_id),
         )
         level, xp, discarded = apply_player_xp(profile[0], profile[1], xp_reward)
         await db.execute(
-            "UPDATE RpgProfile SET level=$1,xp=$2,version=version+1,updatedAt=$3 WHERE guildId=$4 AND userId=$5",
-            (level, xp, context.now, str(guild_id), str(user_id)),
+            "UPDATE RpgProfile SET level=$1,xp=$2,version=version+1,updatedAt=$3 WHERE guildId=$4 AND userId=$5", level, xp, context.now, str(guild_id), str(user_id),
         )
         await adjust_stack(
             db, guild_id, user_id, item_id, 1, context.now,
@@ -157,8 +154,7 @@ async def claim_quest(db_path, *, guild_id, user_id, quest_type, now=None):
         )
         cursor = await db.execute(
             "UPDATE RpgQuestAssignment SET status='CLAIMED',claimedTransactionId=$1,claimedAt=$2 "
-            "WHERE guildId=? AND userId=? AND questType=? AND periodKey=? AND status!='CLAIMED'",
-            (context.transaction_id, context.now, str(guild_id), str(user_id), quest_type, assignment["periodKey"]),
+            "WHERE guildId=$1 AND userId=$2 AND questType=$3 AND periodKey=$4 AND status!='CLAIMED'", context.transaction_id, context.now, str(guild_id), str(user_id), quest_type, assignment["periodKey"]),
         )
         if cursor.rowcount != 1:
             raise EconomyMutationError("stale", "Quest ini sudah diklaim.")
@@ -174,8 +170,8 @@ async def claim_quest(db_path, *, guild_id, user_id, quest_type, now=None):
                    "etm": etm, "assignment": f"{quest_type}:{assignment['periodKey']}"}
         cursor = await db.execute(
             "UPDATE RpgOperation SET status='COMMITTED',reservationKey=NULL,resultJson=$1,"
-            "transactionId=?,updatedAt=?,settledAt=? WHERE operationId=? AND status='RESERVED'",
-            (json.dumps(receipt, sort_keys=True, separators=(",", ":")), context.transaction_id,
+            "transactionId=$1,updatedAt=$2,settledAt=$3 WHERE operationId=$4 AND status='RESERVED'",
+            (json.dumps(receipt, sort_keys=True, separators=(",", ":"), context.transaction_id,
              context.now, context.now, operation_id),
         )
         if cursor.rowcount != 1:

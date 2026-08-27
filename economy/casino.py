@@ -7,6 +7,7 @@ import json
 import uuid
 from types import SimpleNamespace
 
+import aiosqlite
 
 from .casino_games import (
     SecureRng, apply_blackjack_action, blackjack_allowed_actions, blackjack_natural,
@@ -108,28 +109,22 @@ def effective_maximum_stake(game, available_bankroll):
 
 
 async def _bankroll_state(db, guild_id):
-    row = await db.fetchrow(
-        "SELECT balance FROM EconomySystemAccount WHERE guildId=$1 AND accountCode='ECY_CASINO'",
-        (str(guild_id),),
-    )
+    rows = await db.fetch(
+        "SELECT balance FROM EconomySystemAccount WHERE guildId=$1 AND accountCode='ECY_CASINO'", str(guild_id),),
+        row = await cursor.fetchone()
     bankroll = int(row[0]) if row else 0
     options_table = await db.fetchrow(
         "SELECT COALESCE(SUM(liabilityEcy),0) FROM CasinoBankrollReservation "
-        "WHERE guildId=$1 AND status IN ('ACTIVE','REVIEW_REQUIRED')",
-        (str(guild_id),),
-    ) as cursor:
-        reserved = int((await cursor.fetchone())[0])
-    rows = await db.fetch(
+        "WHERE guildId=$1 AND status IN ('ACTIVE','REVIEW_REQUIRED')", str(guild_id),),
+        reserved = int((await cursor.fetchone()[0])
+    row = await db.fetchrow(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='EternalOptionReservation'"
-    )
     options_reserved = 0
     if options_table:
         pause = await db.fetchrow(
             "SELECT COALESCE(SUM(liabilityEcy),0) FROM EternalOptionReservation "
-            "WHERE guildId=$1 AND status IN ('ACTIVE','REVIEW_REQUIRED')",
-            (str(guild_id),),
-        ) as cursor:
-            options_reserved = int((await cursor.fetchone())[0])
+            "WHERE guildId=$1 AND status IN ('ACTIVE','REVIEW_REQUIRED')", str(guild_id),),
+            options_reserved = int((await cursor.fetchone()[0])
     reserved += options_reserved
     available = bankroll - reserved
     return {"bankrollEcy": bankroll, "reservedLiabilityEcy": reserved,
@@ -139,8 +134,8 @@ async def _bankroll_state(db, guild_id):
 
 
 async def casino_status(db_path, guild_id):
-    async with _pool.acquire() as db:
-        
+    async with aiosqlite.connect(db_path) as db:
+        await configure_connection(db)
         capable = await phase5_capability(db)
         if not capable:
             return {"schemaCapable": False, "seeded": False, "paused": True,
@@ -149,19 +144,14 @@ async def casino_status(db_path, guild_id):
                     "unresolvedSessions": 0, "reviewRequired": 0}
         state = await _bankroll_state(db, guild_id)
         async with db.execute(
-            "SELECT paused FROM EconomyFeatureState WHERE guildId=$1 AND feature='casino'",
-            (str(guild_id),),
+            "SELECT paused FROM EconomyFeatureState WHERE guildId=$1 AND feature='casino'", str(guild_id),),
         )
         replay = await db.fetchrow(
-            "SELECT COUNT(*) FROM EconomySeedMarker WHERE guildId=$1 AND accountCode='ECY_CASINO'",
-            (str(guild_id),),
-        ) as cursor:
-            seeded = int((await cursor.fetchone())[0]) > 0
+            "SELECT COUNT(*) FROM EconomySeedMarker WHERE guildId=$1 AND accountCode='ECY_CASINO'", str(guild_id),),
+            seeded = int((await cursor.fetchone()[0]) > 0
         async with db.execute(
             "SELECT COUNT(*),SUM(CASE WHEN status='REVIEW_REQUIRED' THEN 1 ELSE 0 END) "
-            "FROM CasinoSession WHERE guildId=$1 AND status IN ('RESERVED','ACTIVE','SETTLEMENT_PENDING','REVIEW_REQUIRED')",
-            (str(guild_id),),
-        ) as cursor:
+            "FROM CasinoSession WHERE guildId=$1 AND status IN ('RESERVED','ACTIVE','SETTLEMENT_PENDING','REVIEW_REQUIRED')", str(guild_id),),
             count, review = await cursor.fetchone()
     return {"schemaCapable": True, "seeded": seeded, "paused": bool(pause and pause[0]),
             **state, "unresolvedSessions": int(count), "reviewRequired": int(review or 0)}
@@ -198,27 +188,26 @@ async def reserve_session(db_path, *, guild_id, user_id, request_id, game, stake
     except ValueError as exc:
         return CasinoResult(False, "invalid_input", str(exc), request_id=request_id)
     rng = rng or SecureRng()
-    session_id = str(uuid.uuid4())
-    settlement_id = str(uuid.uuid4())
+    session_id = str(uuid.uuid4()
+    settlement_id = str(uuid.uuid4()
     reservation_id = str(uuid.uuid4())
     timestamp = now or utc_now()
     try:
-        async with _pool.acquire() as db:
-            
-            async with db.transaction():
+        async with aiosqlite.connect(db_path) as db:
+            await configure_connection(db)
+            await db.execute("BEGIN IMMEDIATE")
             if not await phase5_capability(db):
                 await db.rollback()
                 return CasinoResult(False, "schema_unavailable", "Schema Casino Phase 5 belum siap.", request_id=request_id)
             async with db.execute(
-                "SELECT sessionId,status FROM CasinoSession WHERE requestId=$1", (request_id,),
+                "SELECT sessionId,status FROM CasinoSession WHERE requestId=$1", request_id,),
             )
             if replay:
                 await db.rollback()
                 return await get_session_result(db_path, replay[0], replayed=True)
             unresolved = await db.fetchrow(
                 "SELECT sessionId,requestId FROM CasinoSession WHERE guildId=$1 AND userId=$2 "
-                "AND status IN ('RESERVED','ACTIVE','SETTLEMENT_PENDING','REVIEW_REQUIRED') LIMIT 1",
-                (str(guild_id), str(user_id)),
+                "AND status IN ('RESERVED','ACTIVE','SETTLEMENT_PENDING','REVIEW_REQUIRED') LIMIT 1", str(guild_id), str(user_id),
             )
             if unresolved:
                 await db.rollback()
@@ -226,7 +215,7 @@ async def reserve_session(db_path, *, guild_id, user_id, request_id, game, stake
                                     unresolved[0], unresolved[1])
             previous = await db.fetchrow(
                 "SELECT gameType,settledAt FROM CasinoSession WHERE guildId=$1 AND userId=$2 AND status='COMMITTED' "
-                "ORDER BY settledAt DESC LIMIT 1", (str(guild_id), str(user_id)),
+                "ORDER BY settledAt DESC LIMIT 1", (str(guild_id), str(user_id),
             )
             if previous and previous[1]:
                 committed_at = datetime.fromisoformat(str(previous[1]).replace("Z", "+00:00"))
@@ -238,23 +227,18 @@ async def reserve_session(db_path, *, guild_id, user_id, request_id, game, stake
                     return CasinoResult(False, "cooldown", f"Tunggu {int(remaining) + 1} detik sebelum wager berikutnya.", request_id=request_id)
             wallet = await db.fetchrow(
                 "SELECT COUNT(*) FROM CasinoSession WHERE guildId=$1 "
-                "AND status IN ('RESERVED','ACTIVE','SETTLEMENT_PENDING','REVIEW_REQUIRED')",
-                (str(guild_id),),
-            ) as cursor:
-                if int((await cursor.fetchone())[0]) >= CASINO_MAX_UNRESOLVED_GUILD:
+                "AND status IN ('RESERVED','ACTIVE','SETTLEMENT_PENDING','REVIEW_REQUIRED')", str(guild_id),),
+                if int((await cursor.fetchone()[0]) >= CASINO_MAX_UNRESOLVED_GUILD:
                     await db.rollback()
                     return CasinoResult(False, "guild_limit", "Guild sudah memiliki 100 sesi Casino belum selesai.", request_id=request_id)
             async with db.execute(
-                "SELECT paused FROM EconomyFeatureState WHERE guildId=$1 AND feature IN ('economy','casino') AND paused=1 LIMIT 1",
-                (str(guild_id),),
-            ) as cursor:
-                if await cursor.fetchone():
+                "SELECT paused FROM EconomyFeatureState WHERE guildId=$1 AND feature IN ('economy','casino') AND paused=1 LIMIT 1", str(guild_id),),
+            )
+                        if row:
                     await db.rollback()
                     return CasinoResult(False, "paused", "Casino sedang dijeda.", request_id=request_id)
-            async with db.execute(
-                "SELECT 1 FROM EconomySeedMarker WHERE guildId=$1 AND accountCode='ECY_CASINO' LIMIT 1",
-                (str(guild_id),),
-            ) as cursor:
+            row = await db.fetchrow(
+                "SELECT 1 FROM EconomySeedMarker WHERE guildId=$1 AND accountCode='ECY_CASINO' LIMIT 1", str(guild_id),),
                 if not await cursor.fetchone():
                     await db.rollback()
                     return CasinoResult(False, "unseeded", "Bankroll Casino belum di-seed.", request_id=request_id)
@@ -268,7 +252,7 @@ async def reserve_session(db_path, *, guild_id, user_id, request_id, game, stake
                                     receipt={"effectiveMaximumStakeEcy": maximum, **state})
             async with db.execute(
                 "SELECT ecyBalance FROM EconomyWallet WHERE guildId=$1 AND userId=$2",
-                (str(guild_id), str(user_id)),
+                (str(guild_id), str(user_id),
             )
             if not wallet or int(wallet[0]) < stake:
                 await db.rollback()
@@ -278,21 +262,19 @@ async def reserve_session(db_path, *, guild_id, user_id, request_id, game, stake
             await db.execute(
                 "INSERT INTO CasinoSession "
                 "(sessionId,requestId,guildId,userId,gameType,stakeEcy,maximumGrossLiabilityEcy,outcomeJson,stateJson,status,reservationKey,createdAt) "
-                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
-                (session_id, request_id, str(guild_id), str(user_id), game, stake, liability,
+                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)", session_id, request_id, str(guild_id), str(user_id), game, stake, liability,
                  _json(outcome), _json(outcome if game == "BLACKJACK" else {}), status,
                  f"casino:{guild_id}:{user_id}", timestamp),
             )
             await db.execute(
                 "INSERT INTO CasinoSettlement (settlementId,sessionId,stakeEcy,grossPayoutEcy,status,createdAt) "
-                "VALUES ($13,$14,$15,$16, 'PENDING',$1)",
-                (settlement_id, session_id, stake, int(outcome.get("grossPayoutEcy", 0)), timestamp),
+                "VALUES ($1,$2,$3,$4, 'PENDING',$5)",
+                (settlement_id, session_id, stake, int(outcome.get("grossPayoutEcy", 0), timestamp),
             )
             if liability > 0:
                 await db.execute(
                     "INSERT INTO CasinoBankrollReservation "
-                    "(reservationId,sessionId,guildId,liabilityEcy,status,createdAt) VALUES ($2,$3,$4,$5, 'ACTIVE',$1)",
-                    (reservation_id, session_id, str(guild_id), liability, timestamp),
+                    "(reservationId,sessionId,guildId,liabilityEcy,status,createdAt) VALUES ($1,$2,$3,$4, 'ACTIVE',$5)", reservation_id, session_id, str(guild_id), liability, timestamp),
                 )
             await db.commit()
     except aiosqlite.IntegrityError:
@@ -308,7 +290,7 @@ async def reserve_session(db_path, *, guild_id, user_id, request_id, game, stake
         if outcome.get("state") == "DEALER_TURN":
             return await settle_session(db_path, session_id=session_id)
         return CasinoResult(True, "active", "Sesi Blackjack aktif.", session_id, request_id,
-                            _blackjack_public_state(json.loads((await _read_session_state(db_path, session_id)))))
+                            _blackjack_public_state(json.loads((await _read_session_state(db_path, session_id)))
     settled = await settle_session(db_path, session_id=session_id)
     if not settled.ok and settled.code in {
         "insufficient_funds", "paused", "invalid_account", "invalid_amount", "invalid_entries", "unbalanced",
@@ -318,29 +300,26 @@ async def reserve_session(db_path, *, guild_id, user_id, request_id, game, stake
 
 
 async def _read_session_state(db_path, session_id):
-    async with _pool.acquire() as db:
-        
-        row = await db.fetchrow("SELECT stateJson FROM CasinoSession WHERE sessionId=$1", str(session_id))
+    async with aiosqlite.connect(db_path) as db:
+        await configure_connection(db)
+        row = await db.fetchrow("SELECT stateJson FROM CasinoSession WHERE sessionId=$1", str(session_id)
     return row[0] if row else "{}"
 
 
 async def _void_unfunded_session(db_path, *, session_id, reason_code):
     now = utc_now()
-    async with _pool.acquire() as db:
-        
-        async with db.transaction():
+    async with aiosqlite.connect(db_path) as db:
+        await configure_connection(db)
+        await db.execute("BEGIN IMMEDIATE")
         await db.execute(
-            "UPDATE CasinoSettlement SET status='VOID',voidReasonCode=$1,settledAt=$2 WHERE sessionId=$3 AND status='PENDING'",
-            (str(reason_code), now, str(session_id)),
+            "UPDATE CasinoSettlement SET status='VOID',voidReasonCode=$1,settledAt=$2 WHERE sessionId=$3 AND status='PENDING'", str(reason_code), now, str(session_id)),
         )
         await db.execute(
-            "UPDATE CasinoBankrollReservation SET status='RELEASED',releasedAt=$1 WHERE sessionId=$2 AND status='ACTIVE'",
-            (now, str(session_id)),
+            "UPDATE CasinoBankrollReservation SET status='RELEASED',releasedAt=$1 WHERE sessionId=$2 AND status='ACTIVE'", now, str(session_id),
         )
         await db.execute(
             "UPDATE CasinoSession SET status='VOID',reservationKey=NULL,settledAt=$1,lastErrorCode=$2 "
-            "WHERE sessionId=$1 AND status IN ('RESERVED','ACTIVE')",
-            (now, str(reason_code), str(session_id)),
+            "WHERE sessionId=$1 AND status IN ('RESERVED','ACTIVE')", now, str(reason_code), str(session_id),
         )
         await db.commit()
 
@@ -348,8 +327,7 @@ async def _void_unfunded_session(db_path, *, session_id, reason_code):
 async def _commit_blackjack_entry(db_path, *, session_id, guild_id, user_id, request_id, stake):
     async def commit_entry(db, context):
         row = await db.fetchrow(
-            "SELECT stateJson,version FROM CasinoSession WHERE sessionId=$1 AND status='ACTIVE'",
-            (str(session_id),),
+            "SELECT stateJson,version FROM CasinoSession WHERE sessionId=$1 AND status='ACTIVE'", str(session_id),),
         )
         if not row:
             raise EconomyMutationError("stale", "Sesi Blackjack berubah sebelum acceptance.")
@@ -359,13 +337,11 @@ async def _commit_blackjack_entry(db_path, *, session_id, guild_id, user_id, req
         await db.execute(
             "INSERT INTO CasinoSessionAction "
             "(actionId,sessionId,requestId,sequence,actorId,actionType,actionJson,resultJson,transactionId,createdAt) "
-            "VALUES ($1,$2,$3,$4,$5,'ACCEPT',$1,$2,$3,$4)",
-            (str(uuid.uuid4()), str(session_id), f"entry:{request_id}", 1, str(user_id),
+            "VALUES ($1,$2,$3,$4,$5,'ACCEPT',$6,$7,$8,$9)", str(uuid.uuid4(), str(session_id), f"entry:{request_id}", 1, str(user_id),
              _json({"stakeEcy": stake}), _json({"accepted": True}), context.transaction_id, context.now),
         )
         cursor = await db.execute(
-            "UPDATE CasinoSession SET stateJson=$1,version=version+1 WHERE sessionId=$2 AND status='ACTIVE' AND version=$3",
-            (_json(state), str(session_id), int(row[1])),
+            "UPDATE CasinoSession SET stateJson=$1,version=version+1 WHERE sessionId=$2 AND status='ACTIVE' AND version=$3", _json(state), str(session_id), int(row[1]),
         )
         if cursor.rowcount != 1:
             raise EconomyMutationError("stale", "Sesi Blackjack berubah saat acceptance.")
@@ -375,7 +351,7 @@ async def _commit_blackjack_entry(db_path, *, session_id, guild_id, user_id, req
         operation="CASINO_BLACKJACK_ENTRY", source="CASINO_V1", actor_id=user_id,
         reason="Acceptance stake Blackjack", reason_code="casino_blackjack_entry",
         reference_id=session_id,
-        deltas=(AccountDelta("USER", str(user_id), "ECY", -stake, str(user_id)),
+        deltas=(AccountDelta("USER", str(user_id), "ECY", -stake, str(user_id),
                 AccountDelta("SYSTEM", "ECY_CASINO", "ECY", stake)),
         feature="casino", before_commit=commit_entry,
         success_code="blackjack_entry", success_message="Stake awal Blackjack berhasil diproses.",
@@ -383,14 +359,14 @@ async def _commit_blackjack_entry(db_path, *, session_id, guild_id, user_id, req
 
 
 async def get_session_result(db_path, session_id, *, replayed=False):
-    async with _pool.acquire() as db:
-        
+    async with aiosqlite.connect(db_path) as db:
+        await configure_connection(db)
         row = await db.fetchrow(
             "SELECT s.requestId,s.status,x.receiptJson,s.gameType,s.stateJson FROM CasinoSession s "
-            "JOIN CasinoSettlement x ON x.sessionId=s.sessionId WHERE s.sessionId=$1", (str(session_id),),
+            "JOIN CasinoSettlement x ON x.sessionId=s.sessionId WHERE s.sessionId=$1", str(session_id),),
         )
     if not row:
-        return CasinoResult(False, "not_found", "Sesi Casino tidak ditemukan.", str(session_id))
+        return CasinoResult(False, "not_found", "Sesi Casino tidak ditemukan.", str(session_id)
     receipt = json.loads(row[2]) if row[2] else None
     if row[1] == "COMMITTED":
         return CasinoResult(True, "committed", "Sesi Casino sudah diselesaikan.", str(session_id), row[0], receipt, replayed)
@@ -402,15 +378,15 @@ async def get_session_result(db_path, session_id, *, replayed=False):
 
 
 async def settle_session(db_path, *, session_id, result_override=None, recovery_authorized=False):
-    async with _pool.acquire() as db:
-        
+    async with aiosqlite.connect(db_path) as db:
+        await configure_connection(db)
         row = await db.fetchrow(
             "SELECT s.guildId,s.userId,s.gameType,s.stakeEcy,s.status,s.outcomeJson,s.stateJson,s.requestId,"
             "x.grossPayoutEcy,x.status FROM CasinoSession s JOIN CasinoSettlement x ON x.sessionId=s.sessionId "
-            "WHERE s.sessionId=$2", (str(session_id),),
+            "WHERE s.sessionId=$1", str(session_id),),
         )
     if not row:
-        return CasinoResult(False, "not_found", "Sesi Casino tidak ditemukan.", str(session_id))
+        return CasinoResult(False, "not_found", "Sesi Casino tidak ditemukan.", str(session_id)
     guild_id, user_id, game, base_stake, status, outcome_raw, state_raw, request_id, stored_payout, settlement_status = row
     if status == "COMMITTED":
         return await get_session_result(db_path, session_id, replayed=True)
@@ -447,43 +423,36 @@ async def settle_session(db_path, *, session_id, result_override=None, recovery_
     if payout:
         deltas.extend((
             AccountDelta("SYSTEM", "ECY_CASINO", "ECY", -payout),
-            AccountDelta("USER", str(user_id), "ECY", payout, str(user_id)),
-        ))
+            AccountDelta("USER", str(user_id), "ECY", payout, str(user_id)))
 
     async def finalize(db, context):
         locked = await db.fetchrow(
             "SELECT s.status,x.status,r.status FROM CasinoSession s JOIN CasinoSettlement x ON x.sessionId=s.sessionId "
-            "LEFT JOIN CasinoBankrollReservation r ON r.sessionId=s.sessionId WHERE s.sessionId=$3",
-            (str(session_id),),
+            "LEFT JOIN CasinoBankrollReservation r ON r.sessionId=s.sessionId WHERE s.sessionId=$1", str(session_id),),
         )
-        session_states = {"RESERVED", "ACTIVE", "SETTLEMENT_PENDING"} | ({"REVIEW_REQUIRED"} if recovery_authorized else set())
+        session_states = {"RESERVED", "ACTIVE", "SETTLEMENT_PENDING"} | ({"REVIEW_REQUIRED"} if recovery_authorized else set()
         settlement_states = {"PENDING"} | ({"REVIEW_REQUIRED"} if recovery_authorized else set())
         reservation_states = {"ACTIVE"} | ({"REVIEW_REQUIRED"} if recovery_authorized else set())
         reservation_valid = locked and (
             locked[2] in reservation_states or (game == "GACHA" and locked[2] is None)
-        )
         if not locked or locked[0] not in session_states or locked[1] not in settlement_states or not reservation_valid:
             raise EconomyMutationError("stale", "Status sesi Casino berubah sebelum settlement.")
         cursor = await db.execute(
             "UPDATE CasinoSettlement SET transactionId=$1,grossPayoutEcy=$2,status='COMMITTED',receiptJson=$3,settledAt=$4 "
-            "WHERE sessionId=$2 AND status IN ('PENDING','REVIEW_REQUIRED') AND receiptJson IS NULL",
-            (context.transaction_id, payout, _json(receipt), context.now, str(session_id)),
+            "WHERE sessionId=$1 AND status IN ('PENDING','REVIEW_REQUIRED') AND receiptJson IS NULL", context.transaction_id, payout, _json(receipt), context.now, str(session_id)),
         )
         if cursor.rowcount != 1:
             raise EconomyMutationError("stale", "Settlement Casino tidak dapat diselesaikan.")
         await db.execute(
-            "UPDATE CasinoBankrollReservation SET status='RELEASED',releasedAt=$1 WHERE sessionId=$2 AND status IN ('ACTIVE','REVIEW_REQUIRED')",
-            (context.now, str(session_id)),
+            "UPDATE CasinoBankrollReservation SET status='RELEASED',releasedAt=$1 WHERE sessionId=$2 AND status IN ('ACTIVE','REVIEW_REQUIRED')", context.now, str(session_id),
         )
         await db.execute(
             "UPDATE CasinoSession SET status='COMMITTED',reservationKey=NULL,settledAt=$1,version=version+1,stateJson=$2 "
-            "WHERE sessionId=$3 AND status IN ('RESERVED','ACTIVE','SETTLEMENT_PENDING','REVIEW_REQUIRED')",
-            (context.now, _json({**state, "result": result, "state": "SETTLED"}), str(session_id)),
+            "WHERE sessionId=$1 AND status IN ('RESERVED','ACTIVE','SETTLEMENT_PENDING','REVIEW_REQUIRED')", context.now, _json({**state, "result": result, "state": "SETTLED"}), str(session_id),
         )
         await db.execute(
             "INSERT INTO CasinoNotificationOutbox "
-            "(eventId,eventKey,guildId,userId,sessionId,payloadJson,status,createdAt) VALUES ($1,$2,$3,$4,$5,$6,'PENDING',$1)",
-            (str(uuid.uuid4()), f"casino:settled:{session_id}", str(guild_id), str(user_id), str(session_id), _json(receipt), context.now),
+            "(eventId,eventKey,guildId,userId,sessionId,payloadJson,status,createdAt) VALUES ($1,$2,$3,$4,$5,$6,'PENDING',$7)", str(uuid.uuid4(), f"casino:settled:{session_id}", str(guild_id), str(user_id), str(session_id), _json(receipt), context.now),
         )
         return {"casinoReceipt": receipt}
 
@@ -491,9 +460,9 @@ async def settle_session(db_path, *, session_id, result_override=None, recovery_
         transaction_id = state.get("entryTransactionId")
         if not transaction_id:
             return CasinoResult(False, "review_required", "Transaction acceptance Blackjack tidak ditemukan.", str(session_id), request_id)
-        async with _pool.acquire() as db:
-            
-            async with db.transaction():
+        async with aiosqlite.connect(db_path) as db:
+            await configure_connection(db)
+            await db.execute("BEGIN IMMEDIATE")
             try:
                 context = SimpleNamespace(
                     transaction_id=transaction_id,
@@ -528,41 +497,36 @@ async def resolve_review_session(db_path, *, guild_id, actor_id, session_id, res
         return await settle_session(db_path, session_id=session_id, recovery_authorized=True)
     if resolution != "REFUND":
         return CasinoResult(False, "invalid_resolution", "Resolusi harus RETRY atau REFUND.", str(session_id))
-    async with _pool.acquire() as db:
-        
+    async with aiosqlite.connect(db_path) as db:
+        await configure_connection(db)
         session = await db.fetchrow(
-            "SELECT status FROM CasinoSession WHERE sessionId=$1 AND guildId=$2",
-            (str(session_id), str(guild_id)),
+            "SELECT status FROM CasinoSession WHERE sessionId=$1 AND guildId=$2", str(session_id), str(guild_id),
         )
         if not session or session[0] != "REVIEW_REQUIRED":
             return CasinoResult(False, "invalid_status", "Sesi tidak berada pada REVIEW_REQUIRED.", str(session_id))
         row = await db.fetchrow(
             "SELECT l.accountKind,l.accountId,l.userId,l.currency,SUM(l.amount) "
             "FROM EconomyLedger l JOIN EconomyTransaction t ON t.transactionId=l.transactionId "
-            "WHERE t.guildId=$2 AND t.referenceId=$3 AND t.status='COMMITTED' "
-            "GROUP BY l.accountKind,l.accountId,l.userId,l.currency HAVING SUM(l.amount)<>0",
-            (str(guild_id), str(session_id)),
+            "WHERE t.guildId=$1 AND t.referenceId=$2 AND t.status='COMMITTED' "
+            "GROUP BY l.accountKind,l.accountId,l.userId,l.currency HAVING SUM(l.amount)<>0", str(guild_id), str(session_id),
         )
     if not rows:
         now = utc_now()
-        async with _pool.acquire() as db:
-            
-            async with db.transaction():
+        async with aiosqlite.connect(db_path) as db:
+            await configure_connection(db)
+            await db.execute("BEGIN IMMEDIATE")
             await db.execute(
                 "UPDATE CasinoSettlement SET status='VOID',voidReasonCode='review_no_mutation',settledAt=$1 "
-                "WHERE sessionId=$4 AND status='REVIEW_REQUIRED'", (now, str(session_id)),
+                "WHERE sessionId=$1 AND status='REVIEW_REQUIRED'", now, str(session_id),
             )
             await db.execute(
-                "UPDATE CasinoBankrollReservation SET status='RELEASED',releasedAt=$1 WHERE sessionId=$2 AND status='REVIEW_REQUIRED'",
-                (now, str(session_id)),
+                "UPDATE CasinoBankrollReservation SET status='RELEASED',releasedAt=$1 WHERE sessionId=$2 AND status='REVIEW_REQUIRED'", now, str(session_id),
             )
             await db.execute(
-                "UPDATE CasinoSession SET status='VOID',reservationKey=NULL,settledAt=$1 WHERE sessionId=$2 AND status='REVIEW_REQUIRED'",
-                (now, str(session_id)),
+                "UPDATE CasinoSession SET status='VOID',reservationKey=NULL,settledAt=$1 WHERE sessionId=$2 AND status='REVIEW_REQUIRED'", now, str(session_id),
             )
             await db.execute(
-                "UPDATE CasinoRecoveryReview SET status='RESOLVED',resolvedAt=$1 WHERE entityId=$2 AND status='OPEN'",
-                (now, str(session_id)),
+                "UPDATE CasinoRecoveryReview SET status='RESOLVED',resolvedAt=$1 WHERE entityId=$2 AND status='OPEN'", now, str(session_id),
             )
             await db.commit()
         return CasinoResult(True, "void", "Sesi tanpa mutasi ekonomi telah di-void.", str(session_id))
@@ -571,20 +535,16 @@ async def resolve_review_session(db_path, *, guild_id, actor_id, session_id, res
     async def finalize_refund(db, context):
         await db.execute(
             "UPDATE CasinoSettlement SET status='VOID',transactionId=$1,voidReasonCode='review_refund',settledAt=$2 "
-            "WHERE sessionId=$5 AND status='REVIEW_REQUIRED'",
-            (context.transaction_id, context.now, str(session_id)),
+            "WHERE sessionId=$1 AND status='REVIEW_REQUIRED'", context.transaction_id, context.now, str(session_id),
         )
         await db.execute(
-            "UPDATE CasinoBankrollReservation SET status='RELEASED',releasedAt=$1 WHERE sessionId=$2 AND status='REVIEW_REQUIRED'",
-            (context.now, str(session_id)),
+            "UPDATE CasinoBankrollReservation SET status='RELEASED',releasedAt=$1 WHERE sessionId=$2 AND status='REVIEW_REQUIRED'", context.now, str(session_id),
         )
         await db.execute(
-            "UPDATE CasinoSession SET status='VOID',reservationKey=NULL,settledAt=$1 WHERE sessionId=$2 AND status='REVIEW_REQUIRED'",
-            (context.now, str(session_id)),
+            "UPDATE CasinoSession SET status='VOID',reservationKey=NULL,settledAt=$1 WHERE sessionId=$2 AND status='REVIEW_REQUIRED'", context.now, str(session_id),
         )
         await db.execute(
-            "UPDATE CasinoRecoveryReview SET status='RESOLVED',resolvedAt=$1 WHERE entityId=$2 AND status='OPEN'",
-            (context.now, str(session_id)),
+            "UPDATE CasinoRecoveryReview SET status='RESOLVED',resolvedAt=$1 WHERE entityId=$2 AND status='OPEN'", context.now, str(session_id),
         )
         return {"sessionId": str(session_id), "resolution": "REFUND"}
 
@@ -601,17 +561,15 @@ async def resolve_review_session(db_path, *, guild_id, actor_id, session_id, res
 async def blackjack_action(db_path, *, session_id, user_id, action, action_request_id, now=None):
     timestamp = now or utc_now()
     try:
-        async with _pool.acquire() as db:
-            
+        async with aiosqlite.connect(db_path) as db:
+            await configure_connection(db)
             async with db.execute(
-                "SELECT guildId,userId,status,stateJson,requestId,version FROM CasinoSession WHERE sessionId=$1 AND gameType='BLACKJACK'",
-                (str(session_id),),
+                "SELECT guildId,userId,status,stateJson,requestId,version FROM CasinoSession WHERE sessionId=$1 AND gameType='BLACKJACK'", str(session_id),),
             )
             if not row or row[1] != str(user_id):
-                return CasinoResult(False, "unauthorized", "Sesi Blackjack bukan milik user ini.", str(session_id))
+                return CasinoResult(False, "unauthorized", "Sesi Blackjack bukan milik user ini.", str(session_id)
             replay = await db.fetchrow(
-                "SELECT resultJson FROM CasinoSessionAction WHERE sessionId=$1 AND requestId=$2",
-                (str(session_id), str(action_request_id)),
+                "SELECT resultJson FROM CasinoSessionAction WHERE sessionId=$1 AND requestId=$2", str(session_id), str(action_request_id),
             )
             if replay:
                 return CasinoResult(True, "action_replayed", "Aksi Blackjack sudah diproses.", str(session_id), row[4], json.loads(replay[0]), True)
@@ -627,29 +585,27 @@ async def blackjack_action(db_path, *, session_id, user_id, action, action_reque
 
         async def write_action(db, transaction_id=None, context_now=timestamp):
             locked = await db.fetchrow(
-                "SELECT status,version FROM CasinoSession WHERE sessionId=$1", (str(session_id),),
+                "SELECT status,version FROM CasinoSession WHERE sessionId=$1", str(session_id),),
             )
             if not locked or locked[0] != "ACTIVE" or int(locked[1]) != int(row[5]):
                 raise EconomyMutationError("stale", "Sesi Blackjack berubah saat aksi diproses.")
             row = await db.fetchrow(
                 "SELECT 1 FROM CasinoSessionAction WHERE sessionId=$1 AND requestId=$2",
-                (str(session_id), str(action_request_id)),
-            ) as cursor:
-                if await cursor.fetchone():
+                (str(session_id), str(action_request_id),
+            )
+                        if row:
                     raise EconomyMutationError("stale", "Aksi Blackjack sudah diproses.")
-            async with db.execute("SELECT COALESCE(MAX(sequence),0)+1 FROM CasinoSessionAction WHERE sessionId=$1", str(session_id)) as cursor:
+            async with db.execute("SELECT COALESCE(MAX(sequence),0)+1 FROM CasinoSessionAction WHERE sessionId=$1", str(session_id) as cursor:
                 sequence = int((await cursor.fetchone())[0])
             await db.execute(
                 "INSERT INTO CasinoSessionAction "
                 "(actionId,sessionId,requestId,sequence,actorId,actionType,actionJson,resultJson,transactionId,createdAt) "
-                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
-                (str(uuid.uuid4()), str(session_id), str(action_request_id), sequence, str(user_id), str(action).upper(),
+                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)", str(uuid.uuid4(), str(session_id), str(action_request_id), sequence, str(user_id), str(action).upper(),
                  _json({"action": str(action).upper()}), _json(result_data), transaction_id, context_now),
             )
             cursor = await db.execute(
                 "UPDATE CasinoSession SET stateJson=$1,version=version+1,lastAttemptedAt=$2 "
-                "WHERE sessionId=$11 AND status='ACTIVE' AND version=$1",
-                (_json(state), context_now, str(session_id), int(row[5])),
+                "WHERE sessionId=$1 AND status='ACTIVE' AND version=$2", _json(state), context_now, str(session_id), int(row[5]),
             )
             if cursor.rowcount != 1:
                 raise EconomyMutationError("stale", "Aksi Blackjack kehilangan ownership lock.")
@@ -671,9 +627,9 @@ async def blackjack_action(db_path, *, session_id, user_id, action, action_reque
             if not transaction.ok:
                 return CasinoResult(False, transaction.code, transaction.message, str(session_id), row[4])
         else:
-            async with _pool.acquire() as db:
-                
-                async with db.transaction():
+            async with aiosqlite.connect(db_path) as db:
+                await configure_connection(db)
+                await db.execute("BEGIN IMMEDIATE")
                 try:
                     await write_action(db)
                     await db.commit()
@@ -692,12 +648,11 @@ async def blackjack_action(db_path, *, session_id, user_id, action, action_reque
 async def is_casino_authorized(db_path, guild_id, user_id, permission_class):
     if permission_class not in CASINO_AUTH_CLASSES:
         return False
-    async with _pool.acquire() as db:
-        
+    async with aiosqlite.connect(db_path) as db:
+        await configure_connection(db)
         try:
             async with db.execute(
-                "SELECT enabled FROM CasinoAuthorization WHERE guildId=$1 AND userId=$2 AND permissionClass=$3",
-                (str(guild_id), str(user_id), permission_class),
+                "SELECT enabled FROM CasinoAuthorization WHERE guildId=$1 AND userId=$2 AND permissionClass=$3", str(guild_id), str(user_id), permission_class),
             )
             return bool(row and int(row[0]) == 1)
         except aiosqlite.OperationalError:
@@ -715,7 +670,7 @@ async def set_casino_paused(db_path, *, guild_id, actor_id, paused, reason):
             actor_id=actor_id, reason=normalized,
         )
     except ValueError as exc:
-        return EconomyResult(False, "invalid_reason", str(exc))
+        return EconomyResult(False, "invalid_reason", str(exc)
     return EconomyResult(
         True, "paused" if paused else "resumed",
         "Casino berhasil dijeda." if paused else "Casino berhasil dilanjutkan.",
@@ -729,27 +684,24 @@ async def set_casino_authorization(db_path, *, guild_id, user_id, permission_cla
     if not 1 <= len(reason) <= 300 or "\n" in reason or "\r" in reason:
         raise ValueError("Alasan otorisasi wajib 1-300 karakter dalam satu baris.")
     now = utc_now()
-    async with _pool.acquire() as db:
-        
-        async with db.transaction():
+    async with aiosqlite.connect(db_path) as db:
+        await configure_connection(db)
+        await db.execute("BEGIN IMMEDIATE")
         if not await phase5_capability(db):
             await db.rollback()
             raise ValueError("Schema Casino Phase 5 belum siap.")
         old = await db.fetchrow(
-            "SELECT enabled FROM CasinoAuthorization WHERE guildId=$1 AND userId=$2 AND permissionClass=$3",
-            (str(guild_id), str(user_id), permission_class),
+            "SELECT enabled FROM CasinoAuthorization WHERE guildId=$1 AND userId=$2 AND permissionClass=$3", str(guild_id), str(user_id), permission_class),
         )
         await db.execute(
             "INSERT INTO CasinoAuthorization (guildId,userId,permissionClass,enabled,grantedById,reasonCode,createdAt,updatedAt) "
             "VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(guildId,userId,permissionClass) DO UPDATE SET "
-            "enabled=excluded.enabled,grantedById=excluded.grantedById,reasonCode=excluded.reasonCode,updatedAt=excluded.updatedAt",
-            (str(guild_id), str(user_id), permission_class, int(bool(enabled)), str(actor_id), reason, now, now),
+            "enabled=excluded.enabled,grantedById=excluded.grantedById,reasonCode=excluded.reasonCode,updatedAt=excluded.updatedAt", str(guild_id), str(user_id), permission_class, int(bool(enabled), str(actor_id), reason, now, now),
         )
         await db.execute(
             "INSERT INTO CasinoAuthorizationAudit "
-            "(auditId,guildId,userId,permissionClass,oldEnabled,newEnabled,actionType,actorId,reasonCode,createdAt) VALUES ($2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
-            (str(uuid.uuid4()), str(guild_id), str(user_id), permission_class,
-             int(old[0]) if old else None, int(bool(enabled)), "GRANT" if enabled else "REVOKE",
+            "(auditId,guildId,userId,permissionClass,oldEnabled,newEnabled,actionType,actorId,reasonCode,createdAt) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)", str(uuid.uuid4(), str(guild_id), str(user_id), permission_class,
+             int(old[0]) if old else None, int(bool(enabled), "GRANT" if enabled else "REVOKE",
              str(actor_id), reason, now),
         )
         await db.commit()
@@ -759,41 +711,37 @@ async def record_owner_recovery_override(db_path, *, guild_id, actor_id, reason)
     reason = str(reason or "").strip()
     if not 1 <= len(reason) <= 300 or "\n" in reason or "\r" in reason:
         raise ValueError("Owner override memerlukan alasan audit 1-300 karakter.")
-    async with _pool.acquire() as db:
-        
+    async with aiosqlite.connect(db_path) as db:
+        await configure_connection(db)
         await db.execute(
             "INSERT INTO CasinoAuthorizationAudit "
             "(auditId,guildId,userId,permissionClass,oldEnabled,newEnabled,actionType,actorId,reasonCode,createdAt) "
-            "VALUES ($12,$13,$14,$15,NULL,0,'OWNER_OVERRIDE',$1,$2,$3)",
-            (str(uuid.uuid4()), str(guild_id), str(actor_id), "CASINO_RECOVERY",
+            "VALUES ($1,$2,$3,$4,NULL,0,'OWNER_OVERRIDE',$5,$6,$7)", str(uuid.uuid4(), str(guild_id), str(actor_id), "CASINO_RECOVERY",
              str(actor_id), reason, utc_now()),
         )
         await db.commit()
 
 
 async def list_casino_authorizations(db_path, guild_id):
-    async with _pool.acquire() as db:
-        
+    async with aiosqlite.connect(db_path) as db:
+        await configure_connection(db)
         issuance = await db.fetchrow(
-            "SELECT userId,permissionClass,enabled,grantedById,updatedAt FROM CasinoAuthorization WHERE guildId=$1 ORDER BY userId,permissionClass",
-            (str(guild_id),),
-        ) as cursor:
+            "SELECT userId,permissionClass,enabled,grantedById,updatedAt FROM CasinoAuthorization WHERE guildId=$1 ORDER BY userId,permissionClass", str(guild_id),),
             return await cursor.fetchall()
 
 
 async def seed_casino_bankroll(db_path, *, guild_id, actor_id, active_members):
     if not await is_casino_authorized(db_path, guild_id, actor_id, "CASINO_FINANCIAL"):
         return EconomyResult(False, "unauthorized", "CASINO_FINANCIAL diperlukan untuk seed Casino.")
-    members = max(0, int(active_members))
+    members = max(0, int(active_members)
     amount = max(25_000_000, 100_000 * members)
-    async with _pool.acquire() as db:
-        
+    async with aiosqlite.connect(db_path) as db:
+        await configure_connection(db)
         if not await phase5_capability(db):
             return EconomyResult(False, "schema_unavailable", "Schema Casino Phase 5 belum siap.")
         await ensure_system_accounts(db, guild_id, utc_now())
         async with db.execute(
-            "SELECT currency,accountClass,allowNegative FROM EconomySystemAccount WHERE guildId=$1 AND accountCode='ECY_ISSUANCE'",
-            (str(guild_id),),
+            "SELECT currency,accountClass,allowNegative FROM EconomySystemAccount WHERE guildId=$1 AND accountCode='ECY_ISSUANCE'", str(guild_id),),
         )
         await db.commit()
     if issuance != ("ECY", "ISSUANCE", 1):
@@ -818,26 +766,20 @@ async def adjust_casino_bankroll(db_path, *, guild_id, actor_id, amount, directi
     async def marker(db, context):
         if direction == "withdraw":
             paused = await db.fetchrow(
-                "SELECT balance FROM EconomySystemAccount WHERE guildId=$1 AND accountCode='ECY_CASINO'",
-                (str(guild_id),),
-            ) as cursor:
-                remaining = int((await cursor.fetchone())[0])
+                "SELECT balance FROM EconomySystemAccount WHERE guildId=$1 AND accountCode='ECY_CASINO'", str(guild_id),),
+                remaining = int((await cursor.fetchone()[0])
             async with db.execute(
                 "SELECT COALESCE(SUM(liabilityEcy),0) FROM CasinoBankrollReservation "
-                "WHERE guildId=$1 AND status IN ('ACTIVE','REVIEW_REQUIRED')",
-                (str(guild_id),),
-            ) as cursor:
-                reserved = int((await cursor.fetchone())[0])
+                "WHERE guildId=$1 AND status IN ('ACTIVE','REVIEW_REQUIRED')", str(guild_id),),
+                reserved = int((await cursor.fetchone()[0])
             if remaining < reserved:
                 raise EconomyMutationError(
                     "reserved_exposure", "Withdrawal akan mengurangi bankroll di bawah liability yang masih ditahan."
-                )
         receipt = {"direction": direction, "amountEcy": amount, "source": source, "target": target}
         await db.execute(
             "INSERT INTO CasinoBankrollDistribution "
             "(distributionId,guildId,transactionId,operationType,amountEcy,actorId,reasonCode,receiptJson,createdAt) "
-            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
-            (str(uuid.uuid4()), str(guild_id), context.transaction_id,
+            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)", str(uuid.uuid4(), str(guild_id), context.transaction_id,
              "ADJUST_TOP_UP" if direction == "top-up" else "ADJUST_WITHDRAW", amount,
              str(actor_id), str(reason), _json(receipt), context.now),
         )
@@ -846,7 +788,7 @@ async def adjust_casino_bankroll(db_path, *, guild_id, actor_id, amount, directi
         db_path, guild_id=guild_id, idempotency_key=f"casino:adjust:{request_id}",
         operation="CASINO_BANKROLL_ADJUST", source="CASINO_STAFF", actor_id=actor_id,
         reason=reason, reason_code="casino_bankroll_adjust", reference_id=request_id,
-        deltas=(AccountDelta("SYSTEM", source, "ECY", -amount), AccountDelta("SYSTEM", target, "ECY", amount)),
+        deltas=(AccountDelta("SYSTEM", source, "ECY", -amount), AccountDelta("SYSTEM", target, "ECY", amount),
         feature=None, require_spendable_system_debits=True, before_commit=marker,
         success_code="adjusted", success_message="Bankroll Casino berhasil disesuaikan.",
     )
@@ -863,10 +805,10 @@ async def distribute_casino_excess(db_path, *, guild_id, actor_id, active_member
     general = amount * 60 // 100
     reserve = amount * 20 // 100
     burn = amount - general - reserve
-    async with _pool.acquire() as db:
-        
+    async with aiosqlite.connect(db_path) as db:
+        await configure_connection(db)
         async with db.execute(
-            "SELECT paused FROM EconomyFeatureState WHERE guildId=$1 AND feature='casino'", (str(guild_id),),
+            "SELECT paused FROM EconomyFeatureState WHERE guildId=$1 AND feature='casino'", str(guild_id),),
         )
     if not paused or not int(paused[0]):
         return EconomyResult(False, "not_paused", "Distribusi excess hanya dapat dilakukan saat Casino dijeda.")
@@ -874,21 +816,18 @@ async def distribute_casino_excess(db_path, *, guild_id, actor_id, active_member
         async with db.execute(
             "SELECT balance FROM EconomySystemAccount WHERE guildId=$1 AND accountCode='ECY_CASINO'",
             (str(guild_id),),
-        ) as cursor:
-            remaining = int((await cursor.fetchone())[0])
+            remaining = int((await cursor.fetchone()[0])
         async with db.execute(
             "SELECT COALESCE(SUM(liabilityEcy),0) FROM CasinoBankrollReservation "
-            "WHERE guildId=$1 AND status IN ('ACTIVE','REVIEW_REQUIRED')", (str(guild_id),),
-        ) as cursor:
-            reserved = int((await cursor.fetchone())[0])
+            "WHERE guildId=$1 AND status IN ('ACTIVE','REVIEW_REQUIRED')", str(guild_id),),
+            reserved = int((await cursor.fetchone()[0])
         if remaining < safe_requirement + reserved:
             raise EconomyMutationError("unsafe_distribution", "Distribusi akan melewati safe bankroll requirement.")
         receipt = {"amountEcy": amount, "generalEcy": general, "reserveEcy": reserve, "burnEcy": burn}
         await db.execute(
             "INSERT INTO CasinoBankrollDistribution "
             "(distributionId,guildId,transactionId,operationType,amountEcy,generalEcy,reserveEcy,burnEcy,actorId,reasonCode,receiptJson,createdAt) "
-            "VALUES ($1,$2,$3,'EXCESS_DISTRIBUTION',?,?,?,?,?,?,?,?)",
-            (str(uuid.uuid4()), str(guild_id), context.transaction_id, amount, general, reserve, burn,
+            "VALUES ($1,$2,$3,'EXCESS_DISTRIBUTION',$4,$5,$6,$7,$8,$9,$10,$11)", str(uuid.uuid4(), str(guild_id), context.transaction_id, amount, general, reserve, burn,
              str(actor_id), str(reason), _json(receipt), context.now),
         )
         return receipt

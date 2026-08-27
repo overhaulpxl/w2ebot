@@ -71,7 +71,6 @@ def _format_rigs(rows):
     return "\n".join(
         f"`{row[0]}` | {row[1]} | {row[2]} | {row[3]} | maintenance: {row[4] or '-'}"
         for row in rows
-    )
 
 
 def setup(tree, client):

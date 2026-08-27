@@ -265,7 +265,6 @@ async def _handle_stale_view_interaction(interaction: discord.Interaction, view_
         interaction, 
         f"Button tidak tersedia. {view_name} ini sudah kadaluarsa setelah bot restart. Silakan refresh atau buat transaksi baru.",
         ephemeral=True
-    )
 
 
 def _interaction_custom_id(interaction: discord.Interaction) -> str:
@@ -908,7 +907,6 @@ def _has_payment_instruction_metadata(deal):
     return bool(
         str(deal.get("paymentInstructionSentAt") or "").strip()
         and str(deal.get("paymentInstructionPayloadHash") or "").strip()
-    )
 
 
 def _has_payment_instruction_recovery_owner(deal):
@@ -1384,7 +1382,6 @@ def _manual_vouch_panel_embed():
             "Gunakan tombol di bawah untuk mengirim vouch manual kepada member lain.\n\n"
             "Manual vouch wajib memiliki proof dan akan direview oleh staff terlebih dahulu.\n"
             "Vouch yang belum di-approve tidak akan masuk reputasi."
-        ),
         color=0xFFD700,
     )
     embed.set_footer(text="W2E Manual Vouch")
@@ -1414,7 +1411,6 @@ async def _warning_embed(deal, guild=None, bot=None):
             "Harap baca ketentuan fee, delay, dan aturan middleman dengan menekan tombol “Ketentuan” sebelum melanjutkan transaksi.\n\n"
             "Jika sudah paham, tekan tombol “Form” untuk mengisi data transaksi.\n\n"
             "Jangan kirim payment, password, email recovery, OTP, atau data sensitif sebelum middleman memberi arahan."
-        ),
         color=0xFEE75C,
     )
     embed.add_field(name="Deal ID", value=deal.get("dealId") or "-", inline=False)
@@ -1447,7 +1443,6 @@ def _terms_embed(deal=None):
             "QRIS ALL PAYMENT\n"
             "✦ Max 500K / 1x Scan\n\n"
             "✦ Cancel = Fee hangus / cari seller baru"
-        ),
         color=0x5865F2,
     )
     if deal:
@@ -1504,7 +1499,6 @@ async def _payment_instruction_embed(deal, profile, guild=None, bot=None, *, war
         elif profile and profile.get("imageUrl"):
             description_parts.append(
                 "Silakan scan QRIS/payment image di bawah, lalu upload bukti pembayaran melalui tombol/fitur yang tersedia."
-            )
         if profile and profile.get("qrisNote"):
             description_parts.append(profile["qrisNote"])
         if profile and profile.get("note"):
@@ -1513,7 +1507,6 @@ async def _payment_instruction_embed(deal, profile, guild=None, bot=None, *, war
             title=(profile.get("title") if profile else None) or "Instruksi Pembayaran",
             description=_clamp_payment_instruction_description(
                 "\n\n".join(part for part in description_parts if str(part or "").strip())
-            ),
             color=0x57F287,
         )
         if profile and profile.get("imageUrl"):
@@ -1650,7 +1643,6 @@ def _has_seller_payout_info(deal):
     return all(
         _clean_payout_value(deal.get(field))
         for field in ("sellerPayoutPlatform", "sellerPayoutAccount", "sellerPayoutName")
-    )
 
 
 def _payout_display_warning(deal, field_name, warning_type):
@@ -1719,7 +1711,6 @@ async def _buyer_confirm_embed(deal, guild=None, bot=None):
             "Buyer telah mengonfirmasi bahwa item/data sudah diterima sesuai deal.\n\n"
             "Seller sekarang diminta untuk mengirim data pencairan dana.\n"
             "Middleman dapat melanjutkan transfer setelah data pencairan seller diterima."
-        ),
         color=0x57F287,
     )
     embed.add_field(name="Deal ID", value=deal.get("dealId") or "-", inline=False)
@@ -1740,7 +1731,6 @@ def _seller_payout_instruction_embed(deal=None):
             "✦ PLATFORM               : (Dana / OVO / Gopay / BCA / dll)\n"
             "✦ NO REK / NO HP / EMAIL  : (E-WALLET / M-BANKING)\n"
             "✦ ATAS NAMA              : (Nama pemilik rekening)"
-        ),
         color=0x5865F2,
     )
     if deal:
@@ -1770,7 +1760,6 @@ async def _seller_transfer_stage_embed(deal, guild=None, bot=None, *, include_pr
             "Data pencairan seller sudah diterima.\n\n"
             "Middleman silakan melakukan transfer dana ke seller menggunakan data pencairan di bawah ini.\n"
             "Setelah transfer selesai, upload bukti transfer lalu tekan Done & Transfer Sukses."
-        ),
         color=0x57F287,
     )
     embed.add_field(name="Deal ID", value=deal.get("dealId") or "-", inline=False)
@@ -1970,7 +1959,6 @@ async def _reputation_profile_embed(user: discord.Member, rep, latest_vouches, b
             f"> 📝 **Admin Approved Vouches:** {rep.get('manualApprovedVouches', 0)}\n"
             f"> 📈 **Trust Score:** {format_score(rep['trustScore'])}\n"
             f"> 🏷️ **Trust Level:** {rep['trustLevel']}"
-        ),
         inline=False,
     )
     safety = []
@@ -1986,7 +1974,6 @@ async def _reputation_profile_embed(user: discord.Member, rep, latest_vouches, b
             f"> 🛒 Buyer Vouches: {rep['buyerVouches']}\n"
             f"> 🏪 Seller Vouches: {rep['sellerVouches']}\n"
             f"> 🛡️ Middleman Vouches: {rep['middlemanVouches']}"
-        ),
         inline=False,
     )
     if latest_vouches:
@@ -2099,7 +2086,6 @@ async def _vouch_leaderboard_embed(guild, bot, reps):
                 f"> ✅ **Verified Vouches:** {rep['verifiedVouches']}\n"
                 f"> 📝 **Admin Approved:** {rep.get('manualApprovedVouches', 0)}\n"
                 f"> 📈 **Trust Score:** {format_score(rep['trustScore'])}"
-            )
         else:
             value = (
                 f"> 🏷️ Trust Level: {rep['trustLevel']}\n"
@@ -2107,7 +2093,6 @@ async def _vouch_leaderboard_embed(guild, bot, reps):
                 f"> ✅ Verified Vouches: {rep['verifiedVouches']}\n"
                 f"> 📝 Admin Approved: {rep.get('manualApprovedVouches', 0)}\n"
                 f"> 📈 Trust Score: {format_score(rep['trustScore'])}"
-            )
         embed.add_field(name=f"{prefix} **{user_display}**", value=value, inline=False)
     return embed
 
@@ -2189,7 +2174,6 @@ class VouchesListView(discord.ui.View):
                 f"> **Review:** {truncate_review(v['review'], 180)}\n"
                 f"> **Proof:** {proof_text}\n"
                 f"> **Date:** {format_discord_timestamp(v.get('createdAt'))}"
-            )
             if approved_by:
                 value += f"\n> **Approved By:** {approved_by}"
             embed.add_field(
@@ -2426,7 +2410,6 @@ class RejectManualVouchModal(discord.ui.Modal, title="Reject Manual Vouch"):
     async def on_submit(self, interaction: discord.Interaction):
         invocation, deferred = await _begin_deal_modal_invocation(
             interaction, "manual vouch rejection modal submit", "manual_vouch_reject_modal_submit", deal_row_id=self.vouch_id
-        )
         if not deferred:
             await _finalize_deal_invocation(
                 interaction, invocation, "Modal review vouch gagal direspons. Vouch belum diubah.",
@@ -2500,7 +2483,6 @@ async def _collect_manual_vouch_proofs(client_obj, channel, key):
             and str(message.guild.id) == key[0]
             and str(message.channel.id) == key[1]
             and str(message.author.id) == key[2]
-        )
 
     end_at = datetime.utcnow().timestamp() + 300
     try:
@@ -2670,7 +2652,6 @@ class ManualVouchSubmitModal(discord.ui.Modal, title="Submit Manual Vouch"):
     async def on_submit(self, interaction: discord.Interaction):
         invocation, deferred = await _begin_deal_modal_invocation(
             interaction, "manual vouch modal submit", "manual_vouch_modal_submit"
-        )
         if not deferred:
             await _finalize_deal_invocation(
                 interaction, invocation,
@@ -2682,7 +2663,6 @@ class ManualVouchSubmitModal(discord.ui.Modal, title="Submit Manual Vouch"):
         async def finish(content, code="validation_failed", *, view=None):
             return await _finalize_deal_invocation(
                 interaction, invocation, content, result_code=code, view=view, ephemeral=True
-            )
 
         try:
             target_text = str(self.target_user.value or "").strip()
@@ -2702,7 +2682,6 @@ class ManualVouchSubmitModal(discord.ui.Modal, title="Submit Manual Vouch"):
                 return await finish("Review terlalu pendek.")
             guard_error = await manual_vouch_submit_guard(
                 interaction.guild.id, interaction.user.id, str(target_member.id) if target_member else None
-            )
             if guard_error == "cooldown":
                 return await finish("Terlalu cepat mengirim vouch manual. Coba lagi sebentar lagi.")
             if guard_error == "too_many_pending":
@@ -2715,7 +2694,6 @@ class ManualVouchSubmitModal(discord.ui.Modal, title="Submit Manual Vouch"):
                 await record_rate_limit_event(
                     interaction.guild.id, interaction.user.id, "proof_upload_session_start",
                     target_id="manual_vouch", event_key=f"manual_vouch_session_active:{interaction.channel.id}:{interaction.user.id}"
-                )
                 return await finish("Sesi upload proof vouch masih aktif.", "lock_held")
             MANUAL_VOUCH_PROOF_SESSIONS[key] = {
                 "data": {
@@ -2753,7 +2731,6 @@ class ManualVouchSubmitModal(discord.ui.Modal, title="Submit Manual Vouch"):
         await _finalize_deal_modal_error(
             interaction, "manual vouch modal error", "manual_vouch_modal_error",
             "Terjadi kesalahan saat membuat sesi vouch. Silakan coba lagi.", error=error
-        )
 
 
 class ManualVouchPanelView(discord.ui.View):
@@ -2788,7 +2765,6 @@ def _scam_report_panel_embed():
             "- profile / username pelaku\n\n"
             "Laporan tidak langsung membuat user blacklist.\n"
             "Semua laporan akan direview oleh staff terlebih dahulu."
-        ),
         color=0xED4245,
     )
     embed.set_footer(text="W2E Scammer Report")
@@ -2946,7 +2922,6 @@ class ScammerReportActionModal(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction):
         invocation, deferred = await _begin_deal_modal_invocation(
             interaction, "scam review modal submit", "scam_review_modal_submit", deal_row_id=self.report_id
-        )
         if not deferred:
             await _finalize_deal_invocation(
                 interaction, invocation,
@@ -3110,7 +3085,6 @@ async def _collect_scam_report_proofs(client_obj, channel, key):
             and str(message.guild.id) == key[0]
             and str(message.channel.id) == key[1]
             and str(message.author.id) == key[2]
-        )
 
     end_at = datetime.utcnow().timestamp() + 300
     try:
@@ -3274,7 +3248,6 @@ class ReportScammerModal(discord.ui.Modal, title="Report Scammer"):
     async def on_submit(self, interaction: discord.Interaction):
         invocation, deferred = await _begin_deal_modal_invocation(
             interaction, "scam report modal submit", "scam_report_modal_submit"
-        )
         if not deferred:
             await _finalize_deal_invocation(
                 interaction, invocation,
@@ -3286,7 +3259,6 @@ class ReportScammerModal(discord.ui.Modal, title="Report Scammer"):
         async def finish(content, code="validation_failed", *, view=None):
             return await _finalize_deal_invocation(
                 interaction, invocation, content, result_code=code, view=view, ephemeral=True
-            )
 
         try:
             target_text = str(self.reported_user.value or "").strip()
@@ -3303,7 +3275,6 @@ class ReportScammerModal(discord.ui.Modal, title="Report Scammer"):
                 return await finish("Kronologi terlalu pendek.")
             guard_error = await scam_report_submit_guard(
                 interaction.guild.id, interaction.user.id, str(target_member.id) if target_member else None
-            )
             if guard_error == "cooldown":
                 return await finish("Terlalu cepat mengirim report scammer. Coba lagi sebentar lagi.")
             if guard_error == "duplicate_pending":
@@ -3314,7 +3285,6 @@ class ReportScammerModal(discord.ui.Modal, title="Report Scammer"):
                 await record_rate_limit_event(
                     interaction.guild.id, interaction.user.id, "proof_upload_session_start",
                     target_id="scam_report", event_key=f"scam_report_session_active:{interaction.channel.id}:{interaction.user.id}"
-                )
                 return await finish("Sesi upload proof report scammer masih aktif.", "lock_held")
             SCAM_REPORT_PROOF_SESSIONS[key] = {
                 "data": {
@@ -3352,7 +3322,6 @@ class ReportScammerModal(discord.ui.Modal, title="Report Scammer"):
         await _finalize_deal_modal_error(
             interaction, "scam report modal error", "scam_report_modal_error",
             "Terjadi kesalahan saat membuat sesi report. Silakan coba lagi.", error=error
-        )
 
 
 class ScamReportPanelView(discord.ui.View):
@@ -3384,7 +3353,6 @@ async def _vouch_progress_embed(deal):
             f"Deal `{deal['dealId']}` has been completed.\n"
             "Participants can now leave verified vouches.\n\n"
             "**Progress**\n" + "\n".join(lines)
-        ),
         color=0xFFD700,
     )
     embed.set_footer(text=f"Progress {len(completed)}/6 • Only locked deal participants can vouch")
@@ -3544,7 +3512,6 @@ def _deal_config_embed(guild: discord.Guild, config):
         value=(
             f"Payment proof: {'Wajib' if config.get('requirePaymentProof') else 'Tidak wajib'}\n"
             f"Transfer proof: {'Wajib' if config.get('requireTransferProof') else 'Tidak wajib'}"
-        ),
         inline=False,
     )
     embed.add_field(
@@ -3555,7 +3522,6 @@ def _deal_config_embed(guild: discord.Guild, config):
             f"Dana Masuk belum confirm: {intervals.get('funds_no_confirm_seconds', 86400)}s\n"
             f"Disputed: {intervals.get('disputed_seconds', 86400)}s\n"
             f"Timeout: {intervals.get('timeout_seconds', 604800)}s"
-        ),
         inline=False,
     )
     embed.add_field(name="User cancel request", value="Aktif" if config.get("allowUserCancelRequest") else "Nonaktif", inline=True)
@@ -3595,7 +3561,6 @@ class DealListView(discord.ui.View):
                     f"Channel: <#{deal['ticketChannelId']}>\n"
                     f"Buyer: {buyer} | Seller: {seller}\n"
                     f"Middleman: {middleman}"
-                ),
                 inline=False,
             )
         max_page = max(0, (len(self.deals) - 1) // self.page_size)
@@ -3664,13 +3629,11 @@ async def _can_configure_audit_log(interaction: discord.Interaction):
         interaction.user.guild_permissions.administrator
         or member_has_deal_role(interaction.user, config)
         or member_can_admin_override(interaction.user, config)
-    )
 
 
 DISPUTE_OPEN_STAFF_ONLY_MESSAGE = (
     "Dispute hanya bisa dibuka oleh middleman/staff. Jika ada kendala, "
     "silakan jelaskan masalahnya di ticket agar middleman bisa meninjau."
-)
 
 
 def _stage_label(stage):
@@ -3731,7 +3694,6 @@ def _payment_instruction_ready_hint(profile):
         return (
             "Instruksi pembayaran belum dapat dikirim karena payment profile middleman belum siap.\n"
             "Gunakan `/deal payment-config show` atau `/deal payment-config set`."
-        )
     return "Instruksi pembayaran belum terkirim. Gunakan `/deal recover` untuk memperbaiki instruksi di channel deal."
 
 
@@ -3772,8 +3734,7 @@ async def _resolve_deal_for_command(
                 FROM Deal
                 WHERE guildId=$1 AND ticketChannelId=$2 AND status IN ({placeholders})
                 ORDER BY id DESC
-                """,
-                (str(guild.id), str(interaction.channel.id), *DEAL_ACTIVE_STATUSES),
+                """, str(guild.id), str(interaction.channel.id), *DEAL_ACTIVE_STATUSES),
             )
         deals = [_deal_row_to_dict(row) for row in rows]
         if not deals:
@@ -3988,7 +3949,6 @@ def _stage_view_signature(view):
         (str(getattr(child, "custom_id", "") or ""), bool(getattr(child, "disabled", False)))
         for child in getattr(view, "children", []) or []
         if getattr(child, "custom_id", None)
-    )
 
 
 def _message_view_signature(message):
@@ -4200,8 +4160,7 @@ async def _repair_payment_proof_action_message(guild, deal, *, attachment=None, 
         return False, status
     _retired, failed = await _retire_stage_controls(
         channel,
-        deal,
-        (DEAL_MSG_ROLE_SUMMARY, DEAL_MSG_ROLE_FUNDS_RECEIVED, DEAL_MSG_ROLE_PAYOUT),
+        deal, DEAL_MSG_ROLE_SUMMARY, DEAL_MSG_ROLE_FUNDS_RECEIVED, DEAL_MSG_ROLE_PAYOUT),
         active_role=DEAL_MSG_ROLE_PAYMENT_PROOF,
     )
     return (False, "retire_failed") if failed else (True, status)
@@ -4211,7 +4170,7 @@ async def _clear_payment_proof_action_view(guild, deal):
     channel = await _original_deal_channel(guild, deal)
     if not channel:
         return
-    await _retire_stage_controls(channel, deal, (DEAL_MSG_ROLE_PAYMENT_PROOF,))
+    await _retire_stage_controls(channel, deal, (DEAL_MSG_ROLE_PAYMENT_PROOF)
 
 
 async def _repair_terminal_stage_messages(channel, guild, deal, *, recreate=True):
@@ -4309,7 +4268,6 @@ async def _refresh_current_deal_view(guild, deal, *, recreate=True):
         plan.active_role == DEAL_MSG_ROLE_PAYOUT
         and _has_seller_payout_info(deal)
         and _target_channel_allows_private_payout(guild, deal, channel)
-    )
     embed = await _stage_embed_for_role(
         plan.active_role,
         deal,
@@ -4419,7 +4377,6 @@ async def _can_open_dispute(interaction: discord.Interaction, deal):
         interaction.user.guild_permissions.administrator
         or member_has_deal_role(interaction.user, config)
         or member_can_admin_override(interaction.user, config)
-    )
 
 
 def _deal_start_trust_status(row):
@@ -4448,14 +4405,12 @@ def _can_override_under_review_participant(member, config):
     return bool(
         member_can_admin_override(member, config)
         or member_has_deal_role(member, config)
-    )
 
 
 def _can_start_while_middleman_under_review(member, config):
     return bool(
         member_can_admin_override(member, config)
         or _member_has_configured_deal_staff_role(member, config)
-    )
 
 
 async def _audit_deal_start_trust_event(interaction, action, affected, *, deal=None, status=None):
@@ -4482,7 +4437,6 @@ def _under_review_deal_start_embed(interaction, buyer, seller, statuses):
         description=(
             "Salah satu participant dalam deal ini sedang berstatus Under Review.\n"
             "Lanjutkan deal hanya jika staff/middleman sudah memahami risikonya."
-        ),
         color=0xFEE75C,
     )
     embed.add_field(name="Buyer Status", value=_deal_start_status_label(statuses["buyer"]["status"]), inline=True)
@@ -4609,7 +4563,6 @@ async def _deal_archive_list_embed(title, archives, guild=None, bot=None):
             f"Buyer: {buyer}\n"
             f"Seller: {seller}\n"
             f"Archived: {format_discord_timestamp(archive.get('archivedAt'), 'R')}"
-        )
         embed.add_field(name=f"`{archive.get('dealId') or '-'}`", value=value, inline=False)
     embed.set_footer(text="Safe archive summary • Sensitive data hidden")
     return embed
@@ -4648,7 +4601,6 @@ async def _dispute_embed(deal, guild=None, bot=None):
         description=(
             "Deal sedang ditahan sampai middleman/staff menyelesaikan masalah.\n"
             "Jangan lanjut transfer/payment sebelum ada keputusan."
-        ),
         color=0xFEE75C,
     )
     embed.add_field(name="Deal ID", value=deal.get("dealId") or "-", inline=False)
@@ -4669,7 +4621,6 @@ async def _dispute_resolved_embed(deal, resolution, guild=None, bot=None):
         description=(
             "Dispute sudah diselesaikan oleh middleman/staff.\n"
             "Deal dapat dilanjutkan dari status sebelumnya."
-        ),
         color=0x57F287,
     )
     embed.add_field(name="Deal ID", value=deal.get("dealId") or "-", inline=False)
@@ -4755,12 +4706,10 @@ async def _wait_for_proof_upload(interaction, deal, *, proof_type):
         "Silakan kirim screenshot/bukti pembayaran dalam bentuk gambar atau PDF di channel ini."
         if is_payment
         else "Silakan kirim screenshot/bukti transfer ke seller dalam bentuk gambar atau PDF di channel ini."
-    )
     timeout_message = (
         "Upload bukti payment dibatalkan karena timeout."
         if is_payment
         else "Upload bukti transfer dibatalkan karena timeout."
-    )
     expected_user_id = str(deal["buyerId"] if is_payment else interaction.user.id)
     expected_status = DEAL_STATUS_WAITING_FUNDS if is_payment else DEAL_STATUS_BUYER_CONFIRMED
     row_id = int(deal["id"])
@@ -4777,7 +4726,6 @@ async def _wait_for_proof_upload(interaction, deal, *, proof_type):
             and message.guild.id == interaction.guild.id
             and message.channel.id == interaction.channel.id
             and str(message.author.id) == expected_user_id
-        )
 
     try:
         proof_message = await interaction.client.wait_for("message", check=check, timeout=300)
@@ -4831,7 +4779,6 @@ async def _payment_proof_embed(deal, guild=None, bot=None, attachment=None):
         description=(
             "Buyer telah mengirim bukti pembayaran.\n\n"
             "Middleman silakan cek bukti dan pastikan dana benar-benar masuk sebelum menekan tombol “Dana Masuk”."
-        ),
         color=0x5865F2,
     )
     embed.add_field(name="Deal ID", value=f"`{deal.get('dealId')}`", inline=True)
@@ -4852,7 +4799,6 @@ def _funds_received_embed(deal=None):
             "Setelah data/item diterima, buyer harus memeriksa dan mengamankan item terlebih dahulu.\n"
             "Buyer hanya menekan Buyer Confirm setelah item/data benar-benar diterima sesuai deal.\n\n"
             "Buyer Confirm = transaksi dilanjutkan ke proses pencairan seller."
-        ),
         deal=deal,
     )
 
@@ -4988,8 +4934,6 @@ async def _completed_embed(deal, guild=None, bot=None, attachment=None):
             "Silakan cek rekening atau e-wallet kalian masing-masing.\n\n"
             "Setelah transaksi dinyatakan selesai, kedua pihak berada di luar tanggung jawab middleman, "
             "kecuali kasus refund, warranty, atau kesepakatan khusus yang sudah disebutkan sebelum deal selesai."
-        ),
-    )
     embed.add_field(name="Deal ID", value=f"`{deal.get('dealId')}`", inline=True)
     embed.add_field(name="Buyer", value=await format_user_display(bot, guild, deal.get("buyerId")), inline=True)
     embed.add_field(name="Seller", value=await format_user_display(bot, guild, deal.get("sellerId")), inline=True)
@@ -5065,7 +5009,6 @@ def _same_payout_payload(deal, platform, account, account_name):
         _clean_payout_value(deal.get("sellerPayoutPlatform")) == _clean_payout_value(platform)
         and _clean_payout_value(deal.get("sellerPayoutAccount")) == _clean_payout_value(account)
         and _clean_payout_value(deal.get("sellerPayoutName")) == _clean_payout_value(account_name)
-    )
 
 
 async def _post_transition_ui(guild, deal, *, interaction=None, source=None, started_at=None, invocation=None):
@@ -5909,7 +5852,6 @@ def _open_force_edit_confirmation(token, deal_row_id, guild_id, actor_id, reason
         and data.get("guild_id") == int(guild_id)
         and data.get("actor_id") == int(actor_id)
         and data.get("reason_hash") == _force_edit_reason_hash(reason)
-    )
     if not valid:
         return False
     data["state"] = "modal_opened"
@@ -5928,7 +5870,6 @@ def _consume_force_edit_confirmation(token, deal_row_id, guild_id, actor_id, rea
         and data.get("guild_id") == int(guild_id)
         and data.get("actor_id") == int(actor_id)
         and data.get("reason_hash") == _force_edit_reason_hash(reason)
-    )
 
 
 def _normal_edit_stage_allowed(deal):
@@ -6257,7 +6198,6 @@ class CancelDealModal(discord.ui.Modal, title="Cancel Deal"):
     async def on_submit(self, interaction: discord.Interaction):
         invocation, deferred = await _begin_deal_modal_invocation(
             interaction, "deal cancel modal submit", "cancel_modal_submit", deal_row_id=self.deal_row_id
-        )
         if not deferred:
             await _finalize_deal_invocation(
                 interaction,
@@ -6317,7 +6257,6 @@ class DisputeDealModal(discord.ui.Modal, title="Dispute Deal"):
     async def on_submit(self, interaction: discord.Interaction):
         invocation, deferred = await _begin_deal_modal_invocation(
             interaction, "deal dispute modal submit", "dispute_modal_submit", deal_row_id=self.deal_row_id
-        )
         if not deferred:
             await _finalize_deal_invocation(
                 interaction,
@@ -6381,7 +6320,6 @@ class ResolveDisputeModal(discord.ui.Modal, title="Resolve Dispute"):
     async def on_submit(self, interaction: discord.Interaction):
         invocation, deferred = await _begin_deal_modal_invocation(
             interaction, "resolve dispute modal submit", "resolve_modal_submit", deal_row_id=self.deal_row_id
-        )
         if not deferred:
             await _finalize_deal_invocation(
                 interaction,
@@ -6440,7 +6378,6 @@ class AddDealNoteModal(discord.ui.Modal, title="Add Deal Note"):
     async def on_submit(self, interaction: discord.Interaction):
         invocation, deferred = await _begin_deal_modal_invocation(
             interaction, "deal note modal submit", "note_modal_submit", deal_row_id=self.deal_row_id
-        )
         if not deferred:
             await _finalize_deal_invocation(
                 interaction,
@@ -6966,7 +6903,6 @@ class VouchModal(discord.ui.Modal, title="Verified Deal Vouch"):
     async def on_submit(self, interaction: discord.Interaction):
         invocation, deferred = await _begin_deal_modal_invocation(
             interaction, "verified vouch modal submit", "vouch_modal_submit", deal_row_id=self.deal_row_id
-        )
         if not deferred:
             await _finalize_deal_invocation(
                 interaction,
@@ -6982,7 +6918,6 @@ class VouchModal(discord.ui.Modal, title="Verified Deal Vouch"):
             if not deal:
                 return await _finalize_deal_invocation(
                     interaction, invocation, "Data deal tidak ditemukan.", result_code="validation_failed", ephemeral=True
-                )
             if deal.get("status") == DEAL_STATUS_DISPUTED:
                 return await _finalize_deal_invocation(
                     interaction, invocation, "Deal ini sedang dalam status dispute. Selesaikan dispute terlebih dahulu sebelum melanjutkan.",
@@ -7148,7 +7083,6 @@ class DealFormModal(discord.ui.Modal, title="Form Middleman Deal"):
     async def on_submit(self, interaction: discord.Interaction):
         invocation, deferred = await _begin_deal_modal_invocation(
             interaction, "deal form modal submit", "deal_form_modal_submit", deal_row_id=self.deal_row_id
-        )
         if not deferred:
             await _finalize_deal_invocation(
                 interaction, invocation,
@@ -7385,7 +7319,6 @@ class ForceEditConfirmationView(discord.ui.View):
                     force_actor_id=self.actor_id,
                     force_token=self.token,
                 )
-            )
         except (discord.HTTPException, discord.InteractionResponded):
             _invalidate_force_edit_confirmation(self.token)
             await _safe_respond(interaction, "Modal force-edit gagal dibuka. Jalankan command force-edit lagi.", ephemeral=True)
@@ -7583,8 +7516,7 @@ async def _recover_active_deal_messages(guild):
             WHERE guildId=$1 AND status=$2
               AND vouchProgressMessageId IS NOT NULL AND vouchProgressMessageId!=''
             ORDER BY updatedAt DESC, id DESC
-            """,
-            (str(guild.id), DEAL_STATUS_COMPLETED),
+            """, str(guild.id), DEAL_STATUS_COMPLETED),
         )
     for row in rows:
         try:
@@ -7602,7 +7534,7 @@ async def _recover_active_deal_messages(guild):
     for deal in deals:
         if not deal or deal.get("id") in seen:
             continue
-        seen.add(deal.get("id"))
+        seen.add(deal.get("id")
         try:
             _merge_recovery_counts(counts, await _recover_single_active_deal(guild, deal))
         except Exception as exc:
@@ -7624,7 +7556,6 @@ async def _send_or_update_manual_vouch_panel_recovery(guild, channel):
         try:
             old_message = await asyncio.wait_for(
                 channel.fetch_message(int(config["messageId"])), timeout=DEAL_REST_TIMEOUT_SECONDS
-            )
             await asyncio.wait_for(old_message.edit(embed=embed, view=view), timeout=DEAL_REST_TIMEOUT_SECONDS)
             await set_manual_vouch_panel_config(guild.id, channel.id, old_message.id, enabled=True)
             return old_message
@@ -7632,7 +7563,6 @@ async def _send_or_update_manual_vouch_panel_recovery(guild, channel):
             pass
     message = await asyncio.wait_for(
         channel.send(embed=embed, view=view), timeout=DEAL_REST_TIMEOUT_SECONDS
-    )
     await set_manual_vouch_panel_config(guild.id, channel.id, message.id, enabled=True)
     return message
 
@@ -7645,7 +7575,6 @@ async def _send_or_update_scam_report_panel_recovery(guild, channel):
         try:
             old_message = await asyncio.wait_for(
                 channel.fetch_message(int(config["messageId"])), timeout=DEAL_REST_TIMEOUT_SECONDS
-            )
             await asyncio.wait_for(old_message.edit(embed=embed, view=view), timeout=DEAL_REST_TIMEOUT_SECONDS)
             await set_scam_report_panel_config(guild.id, channel.id, old_message.id, enabled=True)
             return old_message
@@ -7653,7 +7582,6 @@ async def _send_or_update_scam_report_panel_recovery(guild, channel):
             pass
     message = await asyncio.wait_for(
         channel.send(embed=embed, view=view), timeout=DEAL_REST_TIMEOUT_SECONDS
-    )
     await set_scam_report_panel_config(guild.id, channel.id, message.id, enabled=True)
     return message
 
@@ -7732,8 +7660,7 @@ async def _recover_scam_review_messages(guild):
             WHERE guildId=$1 AND reviewChannelId IS NOT NULL AND reviewChannelId!=''
               AND reviewMessageId IS NOT NULL AND reviewMessageId!=''
             ORDER BY updatedAt DESC, id DESC
-            """,
-            (str(guild.id),),
+            """, str(guild.id),),
         )
     for row in rows:
         try:
@@ -7771,7 +7698,7 @@ async def _recover_scam_review_messages(guild):
 def _extract_embed_int_field(message, field_name):
     for embed in getattr(message, "embeds", []) or []:
         for field in getattr(embed, "fields", []) or []:
-            if str(getattr(field, "name", "")).strip().lower() == field_name.lower():
+            if str(getattr(field, "name", "").strip().lower() == field_name.lower():
                 return _parse_positive_int(getattr(field, "value", None))
     return None
 
@@ -7886,7 +7813,6 @@ async def _deal_status_lines(interaction, deal):
         profile_hint = (
             "Instruksi pembayaran pernah terkirim, tetapi metadata owner kosong. "
             "Staff perlu memperbaiki paymentInstructionOwnerId sebelum recover. Data payment tidak ditampilkan."
-        )
     if stage == DEAL_STAGE_WAITING_PAYMENT_INSTRUCTION:
         profile = await _deal_payment_profile_for_stage(deal)
         profile_ready = bool(profile and profile.get("enabled") and deal_payment_profile_is_valid(profile))
@@ -8017,7 +7943,6 @@ async def _process_refresh_or_recover(interaction, deal, *, recover=False, invoc
                         "Gunakan `/deal payment-config show` atau `/deal payment-config set`. "
                         "Data payment tidak ditampilkan. "
                         f"Refreshed: `{counts['refreshed']}`, Recovered: `{counts['recovered']}`, Skipped: `{counts['skipped']}`, Missing: `{counts['missing']}`, Failed: `{counts['failed']}`"
-                    )
                     return _result("validation_failed", message, deal=latest, ui_updated=ui_updated)
                 elif payment_result == "missing_owner":
                     counts["failed"] += 1
@@ -8039,7 +7964,6 @@ async def _process_refresh_or_recover(interaction, deal, *, recover=False, invoc
                         "Staff perlu memperbaiki paymentInstructionOwnerId atau setup payment profile middleman sebelum recover. "
                         "Data payment tidak ditampilkan. "
                         f"Refreshed: `{counts['refreshed']}`, Recovered: `{counts['recovered']}`, Skipped: `{counts['skipped']}`, Missing: `{counts['missing']}`, Failed: `{counts['failed']}`"
-                    )
                     return _result("validation_failed", message, deal=latest, ui_updated=ui_updated)
             except Exception:
                 logging.error(
@@ -9605,7 +9529,6 @@ def setup(tree, client):
             action == DEAL_ACTION_PAYOUT
             or (action in (DEAL_ACTION_CANCEL, DEAL_ACTION_DISPUTE, DEAL_ACTION_ADD_NOTE) and not str(reason or "").strip())
             or action == DEAL_ACTION_DONE
-        )
         if not modal_or_session:
             deferred = await _safe_defer_deal_interaction(interaction, invocation, ephemeral=True)
             if not deferred:
@@ -9948,8 +9871,6 @@ def setup(tree, client):
                 str(archive.get("buyerId")),
                 str(archive.get("sellerId")),
                 str(archive.get("middlemanId"))
-            )
-        )
         if not (is_participant or await _can_configure_audit_log(interaction)):
             await interaction.response.send_message("Kamu tidak punya permission untuk melihat archive deal.", ephemeral=True)
             return

@@ -1,3 +1,4 @@
+import aiosqlite
 
 from .database import configure_connection
 from .rewards import recover_stale_work_rolls
@@ -6,12 +7,11 @@ from .phase4_recovery import recover_phase4_runtime
 
 async def inspect_recovery_state(db_path):
     """Return startup safety state without mutating migration records."""
-    async with _pool.acquire() as db:
-        
+    async with aiosqlite.connect(db_path) as db:
+        await configure_connection(db)
         rows = await db.fetch(
             "SELECT runId,status,mode,errorCode FROM EconomyMigrationRun "
             "WHERE status IN ('RUNNING','FAILED') ORDER BY startedAt DESC"
-        )
     return {
         "safe_to_enable": not rows,
         "unfinished": [

@@ -100,7 +100,7 @@ def _legacy_entries(parsed):
 def _record_legacy(connection, *, user_id, symbol, tier_text, ordinal, raw_value,
                    source_hash, guild_id, rig_id, status, error_code, now):
     existing = connection.execute(
-        "SELECT sourceHash FROM MiningLegacyRigMigration WHERE sourceUserId=? AND sourceSymbol=? AND sourceTierText=? AND sourceOrdinal=?",
+        "SELECT sourceHash FROM MiningLegacyRigMigration WHERE sourceUserId=$1 AND sourceSymbol=$2 AND sourceTierText=$3 AND sourceOrdinal=$4",
         (user_id, symbol, tier_text, ordinal),
     ).fetchone()
     if existing:
@@ -108,7 +108,7 @@ def _record_legacy(connection, *, user_id, symbol, tier_text, ordinal, raw_value
             connection.execute(
                 "INSERT OR IGNORE INTO MiningRecoveryReview "
                 "(reviewId,guildId,entityType,entityId,errorCode,status,sanitizedMetadataJson,firstDetectedAt,lastAttemptedAt) "
-                "VALUES (?,?,?,?,?,'OPEN','{}',?,?)",
+                "VALUES ($1,$2,$3,$4,$5,'OPEN','{}',$6,$7)",
                 (str(uuid.uuid4()), guild_id, "LEGACY_RIG", f"{user_id}:{symbol}:{tier_text}:{ordinal}",
                  "changed_source_hash", now, now),
             )
@@ -118,7 +118,7 @@ def _record_legacy(connection, *, user_id, symbol, tier_text, ordinal, raw_value
     connection.execute(
         "INSERT INTO MiningLegacyRigMigration "
         "(sourceUserId,sourceSymbol,sourceTierText,sourceOrdinal,sourceHash,targetGuildId,rigInstanceId,status,errorCode,rawSourceJson,sanitizedMetadataJson,migratedAt) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
         (user_id, symbol, tier_text, ordinal, source_hash, guild_id, rig_id, status,
          error_code, raw_json, json.dumps({"ordinal": ordinal}, separators=(",", ":")), now),
     )
@@ -159,7 +159,7 @@ def _migrate_legacy_rigs(connection, *, guild_id, users_json_path, now):
             error = "unsupported_legacy_tier"
             totals["unsupportedTiers"] += 1
         profile = None if guild_id is None else connection.execute(
-            "SELECT level FROM RpgProfile WHERE guildId=? AND userId=?", (guild_id, user_id)
+            "SELECT level FROM RpgProfile WHERE guildId=$1 AND userId=$2", (guild_id, user_id)
         ).fetchone()
         if not error and (not profile or not 1 <= int(profile[0]) <= 100):
             error = "missing_or_invalid_profile"
@@ -186,7 +186,7 @@ def _migrate_legacy_rigs(connection, *, guild_id, users_json_path, now):
         connection.execute(
             "INSERT INTO MiningRigInstance "
             "(rigInstanceId,guildId,userId,rigDefinitionId,catalogVersion,targetSymbol,status,durabilityBps,paidThrough,accruedThrough,migrationSourceHash,version,createdAt,updatedAt) "
-            "VALUES (?,?,?,?,?,?,'MAINTENANCE_DUE',10000,NULL,?,?,0,?,?)",
+            "VALUES ($1,$2,$3,$4,$5,$6,'MAINTENANCE_DUE',10000,NULL,$7,$8,0,$9,$10)",
             (rig_id, guild_id, user_id, definition, PHASE7_CATALOG_VERSION, symbol, now, source_hash, now, now),
         )
         created_by_user[user_id] = count + 1
@@ -199,7 +199,7 @@ def verify_phase7_staging(db_path):
     try:
         connection.execute("PRAGMA foreign_keys=ON")
         marker = connection.execute(
-            "SELECT name,checksum,status FROM EconomySchemaMigration WHERE version=?",
+            "SELECT name,checksum,status FROM EconomySchemaMigration WHERE version=$1",
             (ECONOMY_PHASE7_MIGRATION_VERSION,),
         ).fetchone()
         counts = {}
@@ -229,7 +229,7 @@ def phase7_dry_run(db_path):
     try:
         prereqs = phase3_profile_capability_sync(connection) and phase6_capability_sync(connection)
         marker = connection.execute(
-            "SELECT checksum,status FROM EconomySchemaMigration WHERE version=?",
+            "SELECT checksum,status FROM EconomySchemaMigration WHERE version=$1",
             (ECONOMY_PHASE7_MIGRATION_VERSION,),
         ).fetchone()
         already_applied = bool(marker and phase7_capability_sync(connection))
@@ -262,7 +262,7 @@ def apply_phase7_staging(target_db, *, production_db, guild_id=None, users_json_
         now = datetime.now(timezone.utc).isoformat()
         resolved_guild, observed_guilds = _phase1_target_guild(connection, guild_id)
         connection.execute(
-            "INSERT INTO EconomySchemaMigration (version,name,checksum,status,startedAt,detailsJson) VALUES (?,?,?,'RUNNING',?,'{}')",
+            "INSERT INTO EconomySchemaMigration (version,name,checksum,status,startedAt,detailsJson) VALUES ($1,$2,$3,'RUNNING',$4,'{}')",
             (ECONOMY_PHASE7_MIGRATION_VERSION, PHASE7_MIGRATION_NAME, PHASE7_SCHEMA_CHECKSUM, now),
         )
         if failure_stage == "after_marker":
@@ -279,7 +279,7 @@ def apply_phase7_staging(target_db, *, production_db, guild_id=None, users_json_
             raise RuntimeError("Injected Phase 7 migration failure")
         for rig_id, (name, price, gross, maintenance) in MINING_RIG_CATALOG.items():
             connection.execute(
-                "INSERT INTO MiningRigCatalog (rigDefinitionId,name,purchasePriceEcy,grossEquivalentPerDay,maintenancePriceEcy,catalogVersion,createdAt) VALUES (?,?,?,?,?,?,?)",
+                "INSERT INTO MiningRigCatalog (rigDefinitionId,name,purchasePriceEcy,grossEquivalentPerDay,maintenancePriceEcy,catalogVersion,createdAt) VALUES ($1,$2,$3,$4,$5,$6,$7)",
                 (rig_id, name, price, gross, maintenance, PHASE7_CATALOG_VERSION, now),
             )
         legacy = _migrate_legacy_rigs(
@@ -288,7 +288,7 @@ def apply_phase7_staging(target_db, *, production_db, guild_id=None, users_json_
         details = {"legacy": legacy, "phase1TargetGuilds": observed_guilds,
                    "resolvedTargetGuild": resolved_guild, "financialSeedApplied": False}
         connection.execute(
-            "UPDATE EconomySchemaMigration SET status='COMPLETED',completedAt=?,detailsJson=? WHERE version=?",
+            "UPDATE EconomySchemaMigration SET status='COMPLETED',completedAt=$1,detailsJson=$2 WHERE version=$3",
             (now, json.dumps(details, sort_keys=True, separators=(",", ":")), ECONOMY_PHASE7_MIGRATION_VERSION),
         )
         if not phase7_capability_sync(connection):

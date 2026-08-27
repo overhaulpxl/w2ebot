@@ -55,7 +55,7 @@ def _snapshot_legacy(connection, now):
                 status = "REVIEW_REQUIRED" if not int(payload.get("ended") or 0) else "READ_ONLY"
                 connection.execute(
                     "INSERT OR IGNORE INTO GiveawayLegacySnapshot "
-                    "(snapshotId,sourceType,sourceIdentity,sourceHash,rawSourceJson,status,createdAt) VALUES (?,?,?,?,?,?,?)",
+                    "(snapshotId,sourceType,sourceIdentity,sourceHash,rawSourceJson,status,createdAt) VALUES ($1,$2,$3,$4,$5,$6,$7)",
                     (str(uuid.uuid4()), "GIVEAWAY", source_id, hashlib.sha256(raw.encode()).hexdigest(), raw, status, now),
                 )
                 counts["giveaways"] += 1
@@ -74,7 +74,7 @@ def _snapshot_legacy(connection, now):
                 unresolved = True
             connection.execute(
                 "INSERT OR IGNORE INTO GiveawayLegacySnapshot "
-                "(snapshotId,sourceType,sourceIdentity,sourceHash,rawSourceJson,status,createdAt) VALUES (?,?,?,?,?,?,?)",
+                "(snapshotId,sourceType,sourceIdentity,sourceHash,rawSourceJson,status,createdAt) VALUES ($1,$2,$3,$4,$5,$6,$7)",
                 (str(uuid.uuid4()), "BINOMO", "binomo.json", hashlib.sha256(raw.encode()).hexdigest(), raw,
                  "REVIEW_REQUIRED" if unresolved else "READ_ONLY", now),
             )
@@ -87,7 +87,7 @@ def phase8_dry_run(db_path):
     connection = sqlite3.connect(db_path)
     try:
         marker = connection.execute(
-            "SELECT name,checksum,status FROM EconomySchemaMigration WHERE version=?",
+            "SELECT name,checksum,status FROM EconomySchemaMigration WHERE version=$1",
             (ECONOMY_PHASE8_MIGRATION_VERSION,),
         ).fetchone()
         return {
@@ -129,7 +129,7 @@ def apply_phase8_staging(target_db, *, production_db, backup_path=None, failure_
                 or not phase6_capability_sync(connection)):
             raise RuntimeError("Migration Phase 8 memerlukan Activity Phase 2 serta capability Phase 5 dan Phase 6.")
         marker = connection.execute(
-            "SELECT name,checksum,status FROM EconomySchemaMigration WHERE version=?",
+            "SELECT name,checksum,status FROM EconomySchemaMigration WHERE version=$1",
             (ECONOMY_PHASE8_MIGRATION_VERSION,),
         ).fetchone()
         if marker:
@@ -143,7 +143,7 @@ def apply_phase8_staging(target_db, *, production_db, backup_path=None, failure_
         now = datetime.now(timezone.utc).isoformat()
         connection.execute(
             "INSERT INTO EconomySchemaMigration (version,name,checksum,status,startedAt,detailsJson) "
-            "VALUES (?,?,?,'RUNNING',?,'{}')",
+            "VALUES ($1,$2,$3,'RUNNING',$4,'{}')",
             (ECONOMY_PHASE8_MIGRATION_VERSION, PHASE8_MIGRATION_NAME, PHASE8_SCHEMA_CHECKSUM, now),
         )
         if failure_stage == "after_marker":
@@ -160,7 +160,7 @@ def apply_phase8_staging(target_db, *, production_db, backup_path=None, failure_
             raise RuntimeError("Injected Phase 8 migration failure")
         legacy = _snapshot_legacy(connection, now)
         connection.execute(
-            "UPDATE EconomySchemaMigration SET status='COMPLETED',completedAt=?,detailsJson=? WHERE version=?",
+            "UPDATE EconomySchemaMigration SET status='COMPLETED',completedAt=$1,detailsJson=$2 WHERE version=$3",
             (now, json.dumps({"legacySnapshots": legacy, "financialSeedApplied": False},
                              sort_keys=True, separators=(",", ":")), ECONOMY_PHASE8_MIGRATION_VERSION),
         )

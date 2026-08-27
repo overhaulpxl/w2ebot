@@ -91,7 +91,6 @@ SYSTEM_ACCOUNT_DEFINITIONS = {
 
 EMERGENCY_FEATURES = (
     "economy", "casino", "crypto", "exchange", "giveaway", "options", "mining", "marketplace"
-)
 
 MARKETPLACE_MIN_PRICE_ETM = 10_000
 MARKETPLACE_MAX_PRICE_ETM = 2_000_000_000

@@ -3,9 +3,10 @@ import discord
 import logging
 import uuid
 import json
+import aiosqlite
 from discord import app_commands
 
-from core import ALLOWED_SERVER_ID,  get_announce_channel, register_ready_startup_task
+from core import ALLOWED_SERVER_ID, DB_PATH, get_announce_channel, register_ready_startup_task
 from economy.amounts import AmountParseError, format_economy_amount, parse_economy_amount
 from economy.constants import (
     CURRENCIES,
@@ -170,11 +171,14 @@ async def _deliver_phase6_news(client, *, limit=100):
 async def _deliver_phase9b_notifications(client, *, limit=100):
     lease_owner = f"phase9b-discord:{uuid.uuid4()}"
     async with _pool.acquire() as db:
-        async with db.transaction():
-            if not await phase9b_capability(db):
-                return {"scanned": 0, "delivered": 0, "failed": 0, "reviewRequired": 0}
-            await reserve_crypto_news_outbox(db, limit=limit)
-            rows = await claim_deliveries(db, lease_owner=lease_owner, limit=limit)
+        await configure_connection(db)
+        await db.execute("BEGIN IMMEDIATE")
+        if not await phase9b_capability(db):
+            await db.rollback()
+            return {"scanned": 0, "delivered": 0, "failed": 0, "reviewRequired": 0}
+        await reserve_crypto_news_outbox(db, limit=limit)
+        rows = await claim_deliveries(db, lease_owner=lease_owner, limit=limit)
+        await db.commit()
 
     delivered = failed = review = 0
     for row in rows:
@@ -223,16 +227,18 @@ async def _deliver_phase9b_notifications(client, *, limit=100):
             logger.exception("Phase 9B delivery worker failed delivery=%s", row.get("deliveryId"))
             outcome, failure_code = "REVIEW_REQUIRED", "unexpected_delivery_state"
         async with _pool.acquire() as db:
-            async with db.transaction():
-                try:
-                    await finalize_delivery(
-                        db, delivery_id=row["deliveryId"], lease_owner=lease_owner, outcome=outcome,
-                        message_id=message_id, failure_code=failure_code, marker_inspected=marker_inspected,
-                    )
-                except Exception:
-                    logger.exception("Phase 9B finalization failed delivery=%s", row.get("deliveryId"))
-                    review += 1
-                    continue
+            await configure_connection(db); await db.execute("BEGIN IMMEDIATE")
+            try:
+                await finalize_delivery(
+                    db, delivery_id=row["deliveryId"], lease_owner=lease_owner, outcome=outcome,
+                    message_id=message_id, failure_code=failure_code, marker_inspected=marker_inspected,
+                )
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                logger.exception("Phase 9B finalization failed delivery=%s", row.get("deliveryId"))
+                review += 1
+                continue
         if outcome == "SENT": delivered += 1
         elif outcome == "FAILED": failed += 1
         else: review += 1
@@ -271,7 +277,6 @@ async def _deliver_phase4_watch_notifications(client, *, limit=100):
                     channel.send(
                         "Listing marketplace yang kamu pantau telah diperbarui. "
                         f"Listing ID: `{row['listingId']}`.\n-# `{marker}`"
-                    ),
                     timeout=8,
                 )
             updated = await finalize_notification_event(
@@ -387,17 +392,16 @@ def setup(tree, client):
 
     async def _active_member_count(interaction):
         from datetime import datetime, timedelta, timezone
+        import aiosqlite
         eligible_members = {str(member.id) for member in interaction.guild.members if not member.bot}
         cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
         async with _pool.acquire() as db:
-            rows = await db.fetch(
+            async with db.execute(
                 "SELECT DISTINCT userId FROM EconomyActivityEvent WHERE guildId=$1 AND occurredAt>=$2 "
                 "AND transactionId IS NOT NULL AND eventType IN "
                 "('DAILY_CLAIM','WEEKLY_CLAIM','WORK_SUCCESS','HUNT_COMPLETED','DUNGEON_COMPLETED',"
-                "'BOSS_ATTACK','BOSS_PARTICIPATION','DAILY_QUEST_COMPLETED','WEEKLY_QUEST_COMPLETED')",
-                str(interaction.guild_id), cutoff
-            )
-            active = {str(row['userid']) for row in rows}
+                "'BOSS_ATTACK','BOSS_PARTICIPATION','DAILY_QUEST_COMPLETED','WEEKLY_QUEST_COMPLETED')", str(interaction.guild_id), cutoff),
+                active = {str(row[0]) for row in await cursor.fetchall()}
         return len(active & eligible_members)
 
     async def _stage(interaction, action, target, currency, amount, reason, account_code=None):
@@ -573,7 +577,6 @@ def setup(tree, client):
             lines.append(
                 f"**{currency}** net={data['net_issued_supply']:,} circulating={data['circulating_supply']:,} "
                 f"reserve={data['non_circulating_supply']:,} burned={data['burned_supply']:,}"
-            )
         await _reply(interaction, "\n".join(lines))
 
     @whitelist_group.command(name="add", description="Tambah whitelist ekonomi (bot owner only)")
@@ -665,8 +668,7 @@ def setup(tree, client):
             f"Reserved: **{data['reservedLiabilityEcy']:,} ECY**",
             f"Available: **{data['availableBankrollEcy']:,} ECY**",
             f"Exposure cap: **{data['exposureCapEcy']:,} ECY**",
-            f"Unresolved/review: **{data['unresolvedSessions']}/{data['reviewRequired']}**",
-        )))
+            f"Unresolved/review: **{data['unresolvedSessions']}/{data['reviewRequired']}**"))
 
     @economy_group.command(name="casino-seed", description="Seed awal Casino staging")
     async def casino_seed_command(interaction: discord.Interaction):
@@ -1012,7 +1014,7 @@ def setup(tree, client):
 
     async def _start_phase9b_delivery_worker():
         async with _pool.acquire() as db:
-            
+            await configure_connection(db)
             if not await phase9b_capability(db):
                 return
         existing = getattr(client, "_phase9b_delivery_worker", None)

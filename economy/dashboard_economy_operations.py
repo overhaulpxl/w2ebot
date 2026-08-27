@@ -34,8 +34,7 @@ async def _begin(db, *, guild_id, actor_id, permission, operation_type, target_t
     await db.execute(
         "INSERT INTO DashboardControlledOperation (operationId,requestId,guildId,actorId,permissionClass,"
         "operationType,targetType,targetId,payloadHash,expectedVersion,status,createdAt) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,'PENDING',?)",
-        (operation_id, request_id, *identity[:7], identity[7], iso(now)),
+        "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'PENDING',$11)", operation_id, request_id, *identity[:7], identity[7], iso(now),
     )
     return operation_id, None, digest
 
@@ -45,17 +44,16 @@ async def _complete(db, *, operation_id, guild_id, actor_id, permission, operati
                     digest, receipt, source_route, source_ip_hash, now):
     receipt_json = canonical_json(receipt); receipt_digest = _receipt_hash(receipt)
     cursor = await db.execute(
-        "UPDATE DashboardControlledOperation SET status='COMMITTED',resultingVersion=?,receiptJson=?,"
-        "receiptHash=?,settledAt=? WHERE operationId=? AND status='PENDING'",
-        (int(resulting_version), receipt_json, receipt_digest, iso(now), operation_id),
+        "UPDATE DashboardControlledOperation SET status='COMMITTED',resultingVersion=$1,receiptJson=$2,"
+        "receiptHash=$1,settledAt=$2 WHERE operationId=$3 AND status='PENDING'", int(resulting_version), receipt_json, receipt_digest, iso(now), operation_id),
     )
     if cursor.rowcount != 1:
         raise DashboardSecurityError("version_conflict", 409)
     await db.execute(
         "INSERT INTO DashboardOperatorAudit (auditId,guildId,executorUserId,permissionClass,operationType,"
         "targetType,targetId,requestId,previousVersion,resultingVersion,resultStatus,payloadHash,receiptHash,"
-        "metadataJson,sourceRoute,sourceIpHash,createdAt) VALUES (?,?,?,?,?,?,?,?,?,?,'COMMITTED',?,?,?,?,?,?)",
-        (str(uuid.uuid4()), str(guild_id), str(actor_id), permission, operation_type, target_type,
+        "metadataJson,sourceRoute,sourceIpHash,createdAt) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'COMMITTED',$11,$12,$13,$14,$15,$16)",
+        (str(uuid.uuid4(), str(guild_id), str(actor_id), permission, operation_type, target_type,
          str(target_id), request_id, int(expected_version), int(resulting_version), digest, receipt_digest,
          "{}", source_route, source_ip_hash, iso(now)),
     )
@@ -107,17 +105,14 @@ async def controlled_feature_pause(db, *, guild_id, actor_id, request_id, featur
     )
     if replay is not None:
         return replay
-    async with db.execute("SELECT version FROM EconomyFeatureState WHERE guildId=? AND feature=?",
-                          (str(guild_id), feature)) as cursor:
-        current = await cursor.fetchone()
+    current = await db.fetchrow("SELECT version FROM EconomyFeatureState WHERE guildId=$1 AND feature=$2", str(guild_id), feature)
     expected = int(expected_version)
     if (current and int(current[0]) != expected) or (not current and expected != 0):
         raise DashboardSecurityError("version_conflict", 409)
     if current:
         cursor = await db.execute(
-            "UPDATE EconomyFeatureState SET paused=?,reasonCode=?,changedById=?,changedAt=?,version=version+1 "
-            "WHERE guildId=? AND feature=? AND version=?",
-            (1 if paused else 0, reason, str(actor_id), iso(moment), str(guild_id), feature, expected),
+            "UPDATE EconomyFeatureState SET paused=$1,reasonCode=$2,changedById=$3,changedAt=$4,version=version+1 "
+            "WHERE guildId=$1 AND feature=$2 AND version=$3", 1 if paused else 0, reason, str(actor_id), iso(moment), str(guild_id), feature, expected),
         )
         if cursor.rowcount != 1:
             raise DashboardSecurityError("version_conflict", 409)
@@ -125,7 +120,7 @@ async def controlled_feature_pause(db, *, guild_id, actor_id, request_id, featur
     else:
         await db.execute(
             "INSERT INTO EconomyFeatureState (guildId,feature,paused,reasonCode,changedById,changedAt,version) "
-            "VALUES (?,?,?,?,?,?,0)", (str(guild_id), feature, 1 if paused else 0, reason, str(actor_id), iso(moment)),
+            "VALUES ($1,$2,$3,$4,$5,$6,0)", (str(guild_id), feature, 1 if paused else 0, reason, str(actor_id), iso(moment),
         )
         resulting = 0
     receipt = {"requestId": request_id, "status": "COMMITTED", "feature": feature,

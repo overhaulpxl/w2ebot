@@ -72,7 +72,7 @@ def _insert_route_snapshots(connection, now):
     for method, route, disposition in rows:
         connection.execute(
             "INSERT INTO DashboardLegacyRouteSnapshot "
-            "(snapshotId,method,route,disposition,sourceHash,createdAt) VALUES (?,?,?,?,?,?)",
+            "(snapshotId,method,route,disposition,sourceHash,createdAt) VALUES ($1,$2,$3,$4,$5,$6)",
             (str(uuid.uuid5(uuid.NAMESPACE_URL, f"w2e:phase9a-route:{method}:{route}")), method, route,
              disposition, _route_source_hash(method, route, disposition), now),
         )
@@ -82,7 +82,7 @@ def phase9a_dry_run(db_path):
     connection = sqlite3.connect(db_path)
     try:
         marker = connection.execute(
-            "SELECT name,checksum,status FROM EconomySchemaMigration WHERE version=?",
+            "SELECT name,checksum,status FROM EconomySchemaMigration WHERE version=$1",
             (PHASE9A_BACKEND_SAFETY_MIGRATION_VERSION,),
         ).fetchone()
         return {
@@ -122,7 +122,7 @@ def apply_phase9a_staging(target_db, *, production_db, backup_path=None, failure
     try:
         connection.execute("BEGIN IMMEDIATE")
         marker = connection.execute(
-            "SELECT name,checksum,status FROM EconomySchemaMigration WHERE version=?",
+            "SELECT name,checksum,status FROM EconomySchemaMigration WHERE version=$1",
             (PHASE9A_BACKEND_SAFETY_MIGRATION_VERSION,),
         ).fetchone()
         if marker:
@@ -136,7 +136,7 @@ def apply_phase9a_staging(target_db, *, production_db, backup_path=None, failure
         now = datetime.now(timezone.utc).isoformat()
         connection.execute(
             "INSERT INTO EconomySchemaMigration (version,name,checksum,status,startedAt,detailsJson) "
-            "VALUES (?,?,?,'RUNNING',?,'{}')",
+            "VALUES ($1,$2,$3,'RUNNING',$4,'{}')",
             (PHASE9A_BACKEND_SAFETY_MIGRATION_VERSION, PHASE9A_MIGRATION_NAME,
              PHASE9A_SCHEMA_CHECKSUM, now),
         )
@@ -160,7 +160,7 @@ def apply_phase9a_staging(target_db, *, production_db, backup_path=None, failure
         details = json.dumps({"rawSecretsStored": False, "phase1To8DataChanged": False},
                             sort_keys=True, separators=(",", ":"))
         connection.execute(
-            "UPDATE EconomySchemaMigration SET status='COMPLETED',completedAt=?,detailsJson=? WHERE version=?",
+            "UPDATE EconomySchemaMigration SET status='COMPLETED',completedAt=$1,detailsJson=$2 WHERE version=$3",
             (now, details, PHASE9A_BACKEND_SAFETY_MIGRATION_VERSION),
         )
         if not phase9a_capability_sync(connection):
@@ -233,21 +233,20 @@ def register_signing_key(db_path, *, key_id, purpose, fingerprint_sha256, actor_
         if not phase9a_capability_sync(connection):
             raise RuntimeError("Capability Phase 9A belum tersedia.")
         connection.execute(
-            "UPDATE DashboardSigningKeyVersion SET status='RETIRED',retiredAt=? "
-            "WHERE purpose=? AND status='ACTIVE'", (now, purpose),
+            "UPDATE DashboardSigningKeyVersion SET status='RETIRED',retiredAt=$1 "
+            "WHERE purpose=$1 AND status='ACTIVE'", (now, purpose),
         )
         connection.execute(
             "INSERT INTO DashboardSigningKeyVersion "
-            "(keyId,purpose,fingerprintSha256,status,activatedAt,createdById) VALUES (?,?,?,'ACTIVE',?,?)",
+            "(keyId,purpose,fingerprintSha256,status,activatedAt,createdById) VALUES ($1,$2,$3,'ACTIVE',$4,$5)",
             (key_id, purpose, fingerprint_sha256.lower(), now, str(actor_id)),
         )
         connection.execute(
-            "UPDATE DashboardSession SET status='REVOKED',revokedAt=?,revokeReasonCode='SIGNING_KEY_ROTATED',version=version+1 "
+            "UPDATE DashboardSession SET status='REVOKED',revokedAt=$1,revokeReasonCode='SIGNING_KEY_ROTATED',version=version+1 "
             "WHERE status='ACTIVE'", (now,),
         )
         connection.execute(
             "UPDATE DashboardCsrfToken SET status='REVOKED' WHERE status='ACTIVE'"
-        )
         connection.commit()
     except Exception:
         connection.rollback()
@@ -265,13 +264,13 @@ def bootstrap_admin(db_path, *, guild_id, user_id, actor_id="STAGING_BOOTSTRAP")
             raise RuntimeError("Capability Phase 9A belum tersedia.")
         connection.execute(
             "INSERT OR IGNORE INTO DashboardIdentity (guildId,userId,status,createdAt,updatedAt) "
-            "VALUES (?,?,'ACTIVE',?,?)", (str(guild_id), str(user_id), now, now),
+            "VALUES ($1,$2,'ACTIVE',$3,$4)", (str(guild_id), str(user_id), now, now),
         )
         created = []
         for permission in ("DASHBOARD_VIEW", "OPERATOR_AUDIT_READ", "DASHBOARD_SECURITY_ADMIN"):
             existing = connection.execute(
-                "SELECT assignmentId FROM DashboardOperatorPermission WHERE guildId=? AND userId=? "
-                "AND permissionClass=? AND status='ACTIVE'",
+                "SELECT assignmentId FROM DashboardOperatorPermission WHERE guildId=$1 AND userId=$2 "
+                "AND permissionClass=$1 AND status='ACTIVE'",
                 (str(guild_id), str(user_id), permission),
             ).fetchone()
             if existing:
@@ -281,14 +280,14 @@ def bootstrap_admin(db_path, *, guild_id, user_id, actor_id="STAGING_BOOTSTRAP")
             connection.execute(
                 "INSERT INTO DashboardOperatorPermission "
                 "(assignmentId,guildId,userId,permissionClass,status,grantedById,grantedAt) "
-                "VALUES (?,?,?,?,'ACTIVE',?,?)",
+                "VALUES ($1,$2,$3,$4,'ACTIVE',$5,$6)",
                 (assignment_id, str(guild_id), str(user_id), permission, str(actor_id), now),
             )
             receipt_hash = hashlib.sha256(f"{assignment_id}:{permission}:BOOTSTRAP".encode()).hexdigest()
             connection.execute(
                 "INSERT INTO DashboardAuthorizationAudit "
                 "(auditId,guildId,targetUserId,permissionClass,action,executorUserId,requestId,assignmentId,"
-                "resultingVersion,receiptHash,createdAt) VALUES (?,?,?,?,?,?,?,?,0,?,?)",
+                "resultingVersion,receiptHash,createdAt) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,0,$9,$10)",
                 (str(uuid.uuid4()), str(guild_id), str(user_id), permission, "BOOTSTRAP",
                  str(actor_id), request_id, assignment_id, receipt_hash, now),
             )

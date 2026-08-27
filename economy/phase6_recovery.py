@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import uuid
 
+import aiosqlite
 
 from .crypto_market import commit_market_tick, utc_now
 from .database import configure_connection
@@ -14,23 +15,22 @@ async def _review_trade(db, row, error_code, now):
     trade_id, guild_id, user_id = row[0], row[1], row[2]
     await db.execute(
         "UPDATE CryptoTrade SET status='REVIEW_REQUIRED',retryCount=retryCount+1,"
-        "lastErrorCode=? WHERE tradeId=? AND status='PENDING'",
-        (error_code, trade_id),
+        "lastErrorCode=$1 WHERE tradeId=$2 AND status='PENDING'", error_code, trade_id),
     )
     await db.execute(
         "INSERT OR IGNORE INTO CryptoRecoveryReview "
         "(reviewId,guildId,entityType,entityId,errorCode,status,sanitizedMetadataJson,firstDetectedAt,lastAttemptedAt) "
-        "VALUES ($1,$2,$3,$4,$5,'OPEN',$1,$2,$3)",
-        (str(uuid.uuid4()), guild_id, "TRADE", trade_id, error_code,
+        "VALUES ($1,$2,$3,$4,$5,'OPEN',$6,$7,$8)",
+        (str(uuid.uuid4(), guild_id, "TRADE", trade_id, error_code,
          json.dumps({"userId": user_id}, sort_keys=True, separators=(",", ":")), now, now),
     )
 
 
 async def recover_pending_trades(db_path):
     counts = {"committed_receipts_adopted": 0, "review_required": 0}
-    async with _pool.acquire() as db:
-        
-        async with db.transaction():
+    async with aiosqlite.connect(db_path) as db:
+        await configure_connection(db)
+        await db.execute("BEGIN IMMEDIATE")
         if not await phase6_capability(db):
             await db.rollback()
             return counts
@@ -40,7 +40,6 @@ async def recover_pending_trades(db_path):
             "(SELECT COALESCE(SUM(amount),0) FROM EconomyLedger l WHERE l.transactionId=c.transactionId) "
             "FROM CryptoTrade c LEFT JOIN EconomyTransaction t ON t.transactionId=c.transactionId "
             "WHERE c.status='PENDING' ORDER BY c.createdAt"
-        )
         now = utc_now()
         for row in rows:
             transaction_status, metadata_text, ledger_count, ledger_sum = row[4:]
@@ -53,8 +52,7 @@ async def recover_pending_trades(db_path):
             if isinstance(receipt, dict) and receipt.get("tradeId") == row[0]:
                 updated = await db.execute(
                     "UPDATE CryptoTrade SET status='COMMITTED',receiptJson=$1,settledAt=$2,"
-                    "retryCount=retryCount+1,lastErrorCode=NULL WHERE tradeId=? AND status='PENDING'",
-                    (json.dumps(receipt, sort_keys=True, separators=(",", ":")), now, row[0]),
+                    "retryCount=retryCount+1,lastErrorCode=NULL WHERE tradeId=$1 AND status='PENDING'", json.dumps(receipt, sort_keys=True, separators=(",", ":"), now, row[0]),
                 )
                 counts["committed_receipts_adopted"] += int(updated.rowcount == 1)
                 continue
@@ -74,27 +72,27 @@ async def claim_crypto_news_outbox(db_path, *, lease_owner, limit=100, lease_sec
     now_dt = datetime.now(timezone.utc)
     now = now_dt.isoformat()
     expires = (now_dt + timedelta(seconds=int(lease_seconds))).isoformat()
-    async with _pool.acquire() as db:
-        
-        async with db.transaction():
+    async with aiosqlite.connect(db_path) as db:
+        await configure_connection(db)
+        await db.execute("BEGIN IMMEDIATE")
         if not await phase6_capability(db):
             await db.rollback()
             return []
         await db.execute(
             "UPDATE CryptoNewsOutbox SET status='FAILED',leaseOwner=NULL,leaseExpiresAt=NULL,"
-            "lastErrorCode='expired_lease' WHERE status='CLAIMED' AND leaseExpiresAt<$1", (now,),
+            "lastErrorCode='expired_lease' WHERE status='CLAIMED' AND leaseExpiresAt<$1", now,),
         )
         rows = await db.fetch(
             "SELECT o.outboxId,o.newsId,o.guildId,n.eventKey,n.symbol,n.previousPriceEcy,"
             "n.currentPriceEcy,n.changeBps,n.newsType FROM CryptoNewsOutbox o "
             "JOIN CryptoNewsEvent n ON n.newsId=o.newsId "
-            "WHERE o.status IN ('PENDING','FAILED') ORDER BY o.createdAt LIMIT $1", (int(limit),),
+            "WHERE o.status IN ('PENDING','FAILED') ORDER BY o.createdAt LIMIT $1", int(limit),),
         )
         claimed = []
         for row in rows:
             updated = await db.execute(
                 "UPDATE CryptoNewsOutbox SET status='CLAIMED',leaseOwner=$1,leaseExpiresAt=$2,"
-                "attemptCount=attemptCount+1 WHERE outboxId=? AND status IN ('PENDING','FAILED')",
+                "attemptCount=attemptCount+1 WHERE outboxId=$1 AND status IN ('PENDING','FAILED')",
                 (str(lease_owner), expires, row[0]),
             )
             if updated.rowcount == 1:
@@ -109,16 +107,16 @@ async def claim_crypto_news_outbox(db_path, *, lease_owner, limit=100, lease_sec
 
 async def finalize_crypto_news_outbox(db_path, *, outbox_id, lease_owner, sent,
                                       message_id=None, error_code=None, review_required=False):
-    async with _pool.acquire() as db:
-        
-        async with db.transaction():
+    async with aiosqlite.connect(db_path) as db:
+        await configure_connection(db)
+        await db.execute("BEGIN IMMEDIATE")
         status = "SENT" if sent else ("REVIEW_REQUIRED" if review_required else "FAILED")
         updated = await db.execute(
             "UPDATE CryptoNewsOutbox SET status=$1,messageId=$2,lastErrorCode=$3,sentAt=$4,"
-            "leaseOwner=NULL,leaseExpiresAt=NULL WHERE outboxId=$1 AND status='CLAIMED' AND leaseOwner=$1",
+            "leaseOwner=NULL,leaseExpiresAt=NULL WHERE outboxId=$1 AND status='CLAIMED' AND leaseOwner=$2",
             (status, str(message_id) if message_id is not None else None,
              None if sent else str(error_code or "delivery_failed"), utc_now() if sent else None,
-             str(outbox_id), str(lease_owner)),
+             str(outbox_id), str(lease_owner),
         )
         await db.commit()
         return updated.rowcount == 1
@@ -127,14 +125,13 @@ async def finalize_crypto_news_outbox(db_path, *, outbox_id, lease_owner, sent,
 async def recover_phase6_runtime(db_path):
     result = {"ticks_committed": 0, "ticks_failed": 0}
     try:
-        async with _pool.acquire() as db:
-            
+        async with aiosqlite.connect(db_path) as db:
+            await configure_connection(db)
             if not await phase6_capability(db):
                 return {**result, "schema_ready": False}
             async with db.execute(
                 "SELECT tickId FROM CryptoMarketTick WHERE status IN ('RESERVED','REVIEW_REQUIRED') "
                 "ORDER BY scheduledAt"
-            ) as cursor:
                 tick_ids = [row[0] for row in await cursor.fetchall()]
         for tick_id in tick_ids:
             try:
@@ -142,7 +139,7 @@ async def recover_phase6_runtime(db_path):
                 result["ticks_committed"] += 1
             except (RuntimeError, ValueError, aiosqlite.Error):
                 result["ticks_failed"] += 1
-        result.update(await recover_pending_trades(db_path))
+        result.update(await recover_pending_trades(db_path)
         result["schema_ready"] = True
         return result
     except aiosqlite.OperationalError:

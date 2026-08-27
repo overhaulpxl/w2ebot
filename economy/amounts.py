@@ -8,7 +8,7 @@ class AmountParseError(ValueError):
 
 
 _DIGITS = re.compile(r"^[0-9]+$")
-_GROUPED = re.compile(r"^[0-9]{1,3}(?:\.[0-9]{3})+$")
+_GROUPED = re.compile(r"^[0-9]{1,3}($1:\.[0-9]{3})+$")
 _SUFFIXED = re.compile(r"^([0-9]+)([km])$", re.IGNORECASE)
 
 

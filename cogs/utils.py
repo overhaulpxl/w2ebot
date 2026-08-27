@@ -33,7 +33,6 @@ def setup(tree, client):
             title="Tentang Way 2 Eternal Bot",
             description="Bot Discord serbaguna dengan AI Gemini, RPG, Economy, dan Web Dashboard terintegrasi.",
             color=discord.Color.blue()
-        )
         embed.add_field(name="Developer", value="W2E Dev Team", inline=True)
         embed.add_field(name="Library", value="discord.py, asyncpg", inline=True)
         embed.add_field(name="Database", value="PostgreSQL (Supabase)", inline=True)
@@ -118,7 +117,7 @@ def setup(tree, client):
                 self.stop()
                 
         view = ConfirmMarriage()
-        msg = await send_embed(interaction, f"💍 {target.mention}, apakah kamu mau menikah dengan {interaction.user.display_name}?", view=view)
+        msg = await send_embed(interaction, f"💍 {target.mention}, apakah kamu mau menikah dengan {interaction.user.display_name}$1", view=view)
         await view.wait()
         
         if view.value is None:
@@ -138,7 +137,7 @@ def setup(tree, client):
         marriages = await load_json('marriages.json')
         
         if uid not in marriages:
-            await send_embed(interaction, "❌ Kamu saja belum menikah, mau cerai dari mana?")
+            await send_embed(interaction, "❌ Kamu saja belum menikah, mau cerai dari mana$1")
             return
             
         tid = marriages[uid]
@@ -196,7 +195,7 @@ def setup(tree, client):
                 self.stop()
                 
         view = ConfirmAdopt()
-        msg = await send_embed(interaction, f"👶 {target.mention}, apakah kamu mau diadopsi oleh {interaction.user.display_name}?", view=view)
+        msg = await send_embed(interaction, f"👶 {target.mention}, apakah kamu mau diadopsi oleh {interaction.user.display_name}$1", view=view)
         await view.wait()
         
         if view.value is None:
@@ -283,7 +282,7 @@ def setup(tree, client):
     async def slash_valo(interaction: discord.Interaction, target: discord.Role = None):
         await interaction.response.defer()
         mention = target.mention if target else "@here"
-        await send_embed(interaction, f"🎮 {mention} **Main Valorant yuk!**\nAda yang mau join? Ping dari {interaction.user.mention}.")
+        await send_embed(interaction, f"🎮 {mention} **Main Valorant yuk!**\nAda yang mau join$1 Ping dari {interaction.user.mention}.")
     
     @tree.command(name="remindme", description="Buat pengingat/alarm")
     async def slash_remindme(interaction: discord.Interaction, menit: int, pesan: str):

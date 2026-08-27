@@ -195,8 +195,7 @@ async def record_security_event(db, *, event_type, code, route, guild_id=None, a
     await db.execute(
         "INSERT INTO DashboardSecurityEvent "
         "(eventId,guildId,actorId,eventType,safeErrorCode,requestId,route,sourceIpHash,metadataJson,createdAt) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?)",
-        (str(uuid.uuid4()), guild_id, actor_id, str(event_type)[:80], code if code in SAFE_ERROR_CODES else "internal_error",
+        "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)", str(uuid.uuid4(), guild_id, actor_id, str(event_type)[:80], code if code in SAFE_ERROR_CODES else "internal_error",
          request_id, str(route)[:240], source_ip_hash,
          canonical_json(sanitized_metadata(metadata)), iso(now or utc_now())),
     )
@@ -208,9 +207,8 @@ async def consume_internal_nonce(db, envelope, *, now=None):
     try:
         await db.execute(
             "INSERT INTO DashboardInternalNonce "
-            "(keyId,nonceHash,requestId,canonicalRoute,createdAt,expiresAt,consumedAt) VALUES (?,?,?,?,?,?,?)",
-            (envelope.key_id, nonce_hash, envelope.request_id, envelope.canonical_route,
-             iso(moment), iso(datetime.fromtimestamp(envelope.expires_at, timezone.utc)), iso(moment)),
+            "(keyId,nonceHash,requestId,canonicalRoute,createdAt,expiresAt,consumedAt) VALUES ($1,$2,$3,$4,$5,$6,$7)", envelope.key_id, nonce_hash, envelope.request_id, envelope.canonical_route,
+             iso(moment), iso(datetime.fromtimestamp(envelope.expires_at, timezone.utc), iso(moment)),
         )
     except Exception as exc:
         if "UNIQUE" in str(exc).upper():
@@ -226,14 +224,12 @@ async def enforce_rate_limit(db, *, scope_hash, route_group, limit, window_secon
     expires = iso(datetime.fromtimestamp(start + int(window_seconds), timezone.utc))
     await db.execute(
         "INSERT INTO DashboardRateLimitBucket (scopeHash,routeGroup,windowStartedAt,requestCount,expiresAt) "
-        "VALUES (?,?,?,1,?) ON CONFLICT(scopeHash,routeGroup,windowStartedAt) "
-        "DO UPDATE SET requestCount=requestCount+1",
-        (scope_hash, route_group, start_iso, expires),
+        "VALUES ($1,$2,$3,1,$4) ON CONFLICT(scopeHash,routeGroup,windowStartedAt) "
+        "DO UPDATE SET requestCount=requestCount+1", scope_hash, route_group, start_iso, expires),
     )
     async with db.execute(
-        "SELECT requestCount FROM DashboardRateLimitBucket WHERE scopeHash=? AND routeGroup=? AND windowStartedAt=?",
+        "SELECT requestCount FROM DashboardRateLimitBucket WHERE scopeHash=$1 AND routeGroup=$2 AND windowStartedAt=$3",
         (scope_hash, route_group, start_iso),
-    ) as cursor:
-        count = (await cursor.fetchone())[0]
+        count = (await cursor.fetchone()[0]
     if count > int(limit):
         raise DashboardSecurityError("rate_limited", 429)

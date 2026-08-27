@@ -1,9 +1,10 @@
 """Adapter Discord untuk Eternal Marketplace Phase 4."""
 
+import aiosqlite
 import discord
 from discord import app_commands
 
-from core import  register_prefix_command_handler
+from core import DB_PATH, register_prefix_command_handler
 from economy.amounts import AmountParseError, parse_economy_amount
 from economy.constants import (
     ECONOMY_PHASE2_ENABLED, ECONOMY_PHASE3_ENABLED, ECONOMY_PHASE4_ENABLED,
@@ -93,7 +94,7 @@ async def _listing_choices(interaction, current, *, seller_only=False, include_t
             clauses = ["guildId=$1"]
             params = [str(interaction.guild_id)]
             if seller_only:
-                clauses.extend(("sellerId=$2", "status IN ('ACTIVE','PARTIALLY_FILLED')"))
+                clauses.extend(("sellerId=$1", "status IN ('ACTIVE','PARTIALLY_FILLED')"))
                 params.append(str(interaction.user.id))
             elif not include_terminal:
                 clauses.append("status IN ('ACTIVE','PARTIALLY_FILLED')")
@@ -123,9 +124,7 @@ async def _catalog_version_choices(interaction, current):
                 return []
             async with db.execute(
                 "SELECT DISTINCT catalogVersion FROM MarketplaceListing "
-                "WHERE guildId=$1 ORDER BY catalogVersion LIMIT 25",
-                (str(interaction.guild_id),),
-            ) as cursor:
+                "WHERE guildId=$1 ORDER BY catalogVersion LIMIT 25", str(interaction.guild_id),),
                 versions = [row[0] for row in await cursor.fetchall()]
         needle = str(current or "").lower()
         return [
@@ -145,7 +144,6 @@ def _listing_lines(rows):
         lines.append(
             f"`{row['listingId']}` | `{asset}` | {row['remainingQuantity']} x "
             f"{int(row['unitPriceEtm']):,} ETM | {row['status']}"
-        )
     return "\n".join(lines)
 
 
@@ -211,15 +209,11 @@ class MarketGroup(app_commands.Group):
                 rows = []
                 async with db.execute(
                     "SELECT equipmentInstanceId,itemId FROM RpgEquipmentInstance "
-                    "WHERE guildId=$1 AND ownerId=$2 AND status='OWNED' LIMIT 25",
-                    (str(interaction.guild_id), str(interaction.user.id)),
-                ) as cursor:
+                    "WHERE guildId=$1 AND ownerId=$2 AND status='OWNED' LIMIT 25", str(interaction.guild_id), str(interaction.user.id),
                     rows.extend((f"{row[1]} ({row[0][:8]})", f"equipment:{row[0]}") for row in await cursor.fetchall())
                 async with db.execute(
                     "SELECT itemId,catalogVersion,bindingStatus,quantity FROM RpgInventoryStack "
-                    "WHERE guildId=$1 AND userId=$2 AND bindingStatus='UNBOUND' AND status='ACTIVE' AND quantity>0 LIMIT 25",
-                    (str(interaction.guild_id), str(interaction.user.id)),
-                ) as cursor:
+                    "WHERE guildId=$1 AND userId=$2 AND bindingStatus='UNBOUND' AND status='ACTIVE' AND quantity>0 LIMIT 25", str(interaction.guild_id), str(interaction.user.id),
                     rows.extend((f"{row[0]} x{row[3]}", f"stack:|{row[0]}|{row[1]}|{row[2]}") for row in await cursor.fetchall())
             needle = str(current).lower()
             return [app_commands.Choice(name=name[:100], value=value[:100]) for name, value in rows
@@ -456,7 +450,7 @@ class MarketAdminGroup(app_commands.Group):
     async def reports(self, interaction: discord.Interaction):
         if not await _staff_allowed(interaction, self.client) or not await _require_marketplace(interaction): return
         async with _pool.acquire() as db:
-            async with db.execute("SELECT reportId,listingId,reasonCategory,status FROM MarketplaceReport WHERE guildId=$1 ORDER BY createdAt DESC LIMIT 20", str(interaction.guild_id)) as cursor: rows=await cursor.fetchall()
+            async with db.execute("SELECT reportId,listingId,reasonCategory,status FROM MarketplaceReport WHERE guildId=$1 ORDER BY createdAt DESC LIMIT 20", str(interaction.guild_id) as cursor: rows=await cursor.fetchall()
         await _reply(interaction, "\n".join(f"`{r[0]}` | `{r[1]}` | {r[2]} | {r[3]}" for r in rows) or "Tidak ada report.", ephemeral=True)
 
     @app_commands.command(name="resolve-report", description="Selesaikan report")

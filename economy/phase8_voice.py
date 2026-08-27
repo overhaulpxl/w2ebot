@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta, timezone
 import uuid
 
+import aiosqlite
 
 from .database import configure_connection
 from .phase8_schema import phase8_capability
@@ -44,22 +45,19 @@ async def _checkpoint_locked(db, row, observed):
         await db.execute(
             "INSERT OR IGNORE INTO EconomyActivityEvent "
             "(eventId,guildId,userId,eventType,eventKey,points,metricValue,transactionId,referenceId,occurredAt,createdAt) "
-            "VALUES ($1,$2,$3,'VOICE_ACTIVITY_30M',$1,2,1,NULL,$2,$3,$4)",
-            (event_id, guild_id, user_id, identity, identity, block_end.isoformat(), observed.isoformat()),
+            "VALUES ($1,$2,$3,'VOICE_ACTIVITY_30M',$4,2,1,NULL,$5,$6,$7)", event_id, guild_id, user_id, identity, identity, block_end.isoformat(), observed.isoformat(),
         )
         await db.execute(
             "INSERT OR IGNORE INTO GiveawayVoiceBlock "
             "(blockId,guildId,userId,channelId,qualifiedStartAt,blockSequence,blockEndAt,activityEventId,createdAt) "
-            "VALUES ($5,$6,$7,$8,$9,$10,$11,$12,$13)",
-            (str(uuid.uuid5(uuid.NAMESPACE_URL, f"w2e:block:{identity}")), guild_id, user_id,
+            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)", str(uuid.uuid5(uuid.NAMESPACE_URL, f"w2e:block:{identity}"), guild_id, user_id,
              channel_id, start.isoformat(), sequence, block_end.isoformat(), event_id, observed.isoformat()),
         )
         awarded, sequence = block_end, int(sequence) + 1
         awarded_count += 1
     cursor = await db.execute(
         "UPDATE GiveawayVoiceQualification SET awardedThroughAt=$1,lastObservedAt=$2,nextBlockSequence=$3,version=version+1 "
-        "WHERE guildId=$14 AND userId=$15 AND version=$16 AND status='ACTIVE'",
-        (awarded.isoformat(), observed.isoformat(), sequence, guild_id, user_id, version),
+        "WHERE guildId=$1 AND userId=$2 AND version=$3 AND status='ACTIVE'", awarded.isoformat(), observed.isoformat(), sequence, guild_id, user_id, version),
     )
     if cursor.rowcount != 1:
         raise RuntimeError("Voice qualification berubah selama checkpoint.")
@@ -71,14 +69,14 @@ async def reconcile_voice_snapshot(db_path, guild_id, qualifying_channels, *, ob
     observed = _dt(observed_at)
     current = {str(user): str(channel) for user, channel in qualifying_channels.items()}
     report = {"started": 0, "closed": 0, "awarded": 0}
-    async with _pool.acquire() as db:
-        
+    async with aiosqlite.connect(db_path) as db:
+        await configure_connection(db)
         if not await phase8_capability(db):
             return {**report, "ready": False}
-        async with db.transaction():
+        await db.execute("BEGIN IMMEDIATE")
         rows = await db.fetch(
             "SELECT guildId,userId,channelId,qualifiedStartAt,awardedThroughAt,lastObservedAt,nextBlockSequence,status,version "
-            "FROM GiveawayVoiceQualification WHERE guildId=$1 AND status='ACTIVE'", (str(guild_id),),
+            "FROM GiveawayVoiceQualification WHERE guildId=$1 AND status='ACTIVE'", str(guild_id),),
         )
         active = {str(row[1]): row for row in rows}
         for user_id, row in active.items():
@@ -100,7 +98,7 @@ async def reconcile_voice_snapshot(db_path, guild_id, qualifying_channels, *, ob
                 "channelId=excluded.channelId,qualifiedStartAt=excluded.qualifiedStartAt,"
                 "awardedThroughAt=excluded.awardedThroughAt,lastObservedAt=excluded.lastObservedAt,"
                 "nextBlockSequence=1,status='ACTIVE',version=GiveawayVoiceQualification.version+1",
-                (str(guild_id), user_id, channel_id, observed.isoformat(), observed.isoformat(), observed.isoformat()),
+                (str(guild_id), user_id, channel_id, observed.isoformat(), observed.isoformat(), observed.isoformat(),
             )
             report["started"] += 1
         await db.commit()
@@ -109,20 +107,19 @@ async def reconcile_voice_snapshot(db_path, guild_id, qualifying_channels, *, ob
 async def close_voice_segments_on_restart(db_path):
     """Tutup segmen pada lastObservedAt tanpa memberi waktu offline."""
     report = {"closed": 0, "awarded": 0}
-    async with _pool.acquire() as db:
-        
+    async with aiosqlite.connect(db_path) as db:
+        await configure_connection(db)
         if not await phase8_capability(db):
             return {**report, "ready": False}
-        async with db.transaction():
+        await db.execute("BEGIN IMMEDIATE")
         rows = await db.fetch(
             "SELECT guildId,userId,channelId,qualifiedStartAt,awardedThroughAt,lastObservedAt,nextBlockSequence,status,version "
             "FROM GiveawayVoiceQualification WHERE status='ACTIVE'"
-        )
         for row in rows:
-            report["awarded"] += await _checkpoint_locked(db, row, _dt(row[5]))
+            report["awarded"] += await _checkpoint_locked(db, row, _dt(row[5])
             await db.execute(
                 "UPDATE GiveawayVoiceQualification SET status='CLOSED',version=version+1 "
-                "WHERE guildId=? AND userId=? AND status='ACTIVE'", (row[0], row[1]),
+                "WHERE guildId=$1 AND userId=$2 AND status='ACTIVE'", (row[0], row[1]),
             )
             report["closed"] += 1
         await db.commit()

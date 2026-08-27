@@ -4,6 +4,7 @@ import json
 import secrets
 import uuid
 
+import aiosqlite
 
 from .catalog import EQUIPMENT, PETS, PET_DUPLICATE_ESSENCE, RPG_PHASE3_CATALOG_VERSION
 from .database import configure_connection
@@ -22,17 +23,16 @@ EGG_RARITY = {
 async def reserve_open_item(db_path, *, guild_id, user_id, item_id, now=None):
     if item_id not in EGG_RARITY and item_id != "item_epic_chest":
         raise ValueError("Item ini tidak dapat dibuka.")
-    async with _pool.acquire() as db:
-        
+    async with aiosqlite.connect(db_path) as db:
+        await configure_connection(db)
         if await inventory_quantity(
             db, guild_id, user_id, item_id, catalog_version=RPG_PHASE3_CATALOG_VERSION,
         ) < 1:
             raise ValueError("Item tidak tersedia di inventory.")
         pending = await db.fetchrow(
             "SELECT operationId,status,outcomeJson FROM RpgOperation WHERE guildId=$1 AND userId=$2 "
-            "AND operationType='OPEN_ITEM' AND sourceResourceId=? "
-            "AND status IN ('RESERVED','AWAITING_FUNDS','REVIEW_REQUIRED')",
-            (str(guild_id), str(user_id), str(item_id)),
+            "AND operationType='OPEN_ITEM' AND sourceResourceId=$1 "
+            "AND status IN ('RESERVED','AWAITING_FUNDS','REVIEW_REQUIRED')", str(guild_id), str(user_id), str(item_id),
         )
     if pending:
         return pending[0], json.loads(pending[2]), True
@@ -55,11 +55,10 @@ async def reserve_open_item(db_path, *, guild_id, user_id, item_id, now=None):
         outcome=outcome, now=now,
     )
     if not replayed:
-        async with _pool.acquire() as db:
-            
+        async with aiosqlite.connect(db_path) as db:
+            await configure_connection(db)
             await db.execute(
-                "INSERT INTO RpgOpenAttempt (operationId,itemId,resultDefinitionId) VALUES ($1,$2,$3)",
-                (operation_id, str(item_id), result_id),
+                "INSERT INTO RpgOpenAttempt (operationId,itemId,resultDefinitionId) VALUES ($1,$2,$3)", operation_id, str(item_id), result_id),
             )
             await db.commit()
     return operation_id, saved, replayed
@@ -67,14 +66,14 @@ async def reserve_open_item(db_path, *, guild_id, user_id, item_id, now=None):
 
 async def settle_open_item(db_path, *, guild_id, user_id, operation_id, now=None):
     timestamp = utc_iso(now)
-    async with _pool.acquire() as db:
-        
-        async with db.transaction():
+    async with aiosqlite.connect(db_path) as db:
+        await configure_connection(db)
+        await db.execute("BEGIN IMMEDIATE")
         try:
             row = await db.fetchrow(
                 "SELECT status,sourceResourceId,outcomeJson,resultJson FROM RpgOperation "
                 "WHERE operationId=$1 AND guildId=$2 AND userId=$3 AND operationType='OPEN_ITEM'",
-                (str(operation_id), str(guild_id), str(user_id)),
+                (str(operation_id), str(guild_id), str(user_id),
             )
             if not row:
                 raise ValueError("Attempt open tidak ditemukan.")
@@ -106,8 +105,7 @@ async def settle_open_item(db_path, *, guild_id, user_id, operation_id, now=None
                     await db.execute(
                         "INSERT INTO RpgPetInstance "
                         "(petInstanceId,guildId,ownerId,petId,catalogVersion,rarity,level,xp,evolutionState,status,acquiredSource,createdAt,updatedAt) "
-                        "VALUES ($1,$2,$3,$4,$5,$6,1,0,'BASE','OWNED','OPEN_ITEM',$1,$2)",
-                        (instance_id, str(guild_id), str(user_id), outcome["definition_id"],
+                        "VALUES ($1,$2,$3,$4,$5,$6,1,0,'BASE','OWNED','OPEN_ITEM',$7,$8)", instance_id, str(guild_id), str(user_id), outcome["definition_id"],
                          outcome["catalog_version"], outcome["rarity"], timestamp, timestamp),
                     )
                     result["pet_instance_id"] = instance_id
@@ -117,15 +115,15 @@ async def settle_open_item(db_path, *, guild_id, user_id, operation_id, now=None
                 await db.execute(
                     "INSERT INTO RpgEquipmentInstance "
                     "(equipmentInstanceId,guildId,ownerId,itemId,catalogVersion,slot,enhancementLevel,pityBps,bindingStatus,status,acquiredSource,createdAt,updatedAt) "
-                    "VALUES ($3,$4,$5,$6,$7,$8,0,0,'BOUND_ON_EQUIP','OWNED','EPIC_CHEST',$1,$2)",
+                    "VALUES ($1,$2,$3,$4,$5,$6,0,0,'BOUND_ON_EQUIP','OWNED','EPIC_CHEST',$7,$8)",
                     (instance_id, str(guild_id), str(user_id), definition["item_id"],
                      outcome["catalog_version"], definition["slot"], timestamp, timestamp),
                 )
                 result["equipment_instance_id"] = instance_id
             cursor = await db.execute(
                 "UPDATE RpgOperation SET status='COMMITTED',reservationKey=NULL,resultJson=$1,updatedAt=$2,settledAt=$3 "
-                "WHERE operationId=? AND status='RESERVED'",
-                (json.dumps(result, sort_keys=True), timestamp, timestamp, str(operation_id)),
+                "WHERE operationId=$1 AND status='RESERVED'",
+                (json.dumps(result, sort_keys=True), timestamp, timestamp, str(operation_id),
             )
             if cursor.rowcount != 1:
                 raise ValueError("Attempt open sudah berubah.")

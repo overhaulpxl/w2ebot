@@ -5,6 +5,7 @@ import json
 import sqlite3
 import uuid
 
+import aiosqlite
 
 from .database import configure_connection
 
@@ -199,7 +200,6 @@ PHASE3_TRIGGER_SQL = (
       (OLD.status='RESERVED' AND NEW.status IN ('COMMITTED','VOID','REVIEW_REQUIRED','AWAITING_FUNDS')) OR
       (OLD.status='AWAITING_FUNDS' AND NEW.status IN ('COMMITTED','VOID','REVIEW_REQUIRED')) OR
       (OLD.status='REVIEW_REQUIRED' AND NEW.status IN ('COMMITTED','VOID') AND NEW.recoveryReviewJson!='{}')
-    )
     BEGIN SELECT RAISE(ABORT,'RpgOperation status transition invalid'); END""",
     """CREATE TRIGGER IF NOT EXISTS trg_rpg_operation_reservation_update
     BEFORE UPDATE ON RpgOperation
@@ -286,7 +286,6 @@ PHASE3_TRIGGER_SQL = (
       NEW.accessoryInstanceId IS NOT OLD.accessoryInstanceId OR
       NEW.petInstanceId IS NOT OLD.petInstanceId OR
       NEW.guildId IS NOT OLD.guildId OR NEW.userId IS NOT OLD.userId
-    )
     BEGIN SELECT RAISE(ABORT,'Starter grant identity is immutable'); END""",
 )
 
@@ -317,8 +316,7 @@ def _split_sql(script):
 
 async def _table_exists(db, table):
     async with db.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=$1", (table,),
-    ) as cursor:
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=$1", table,),
         return await cursor.fetchone() is not None
 
 
@@ -332,13 +330,12 @@ async def _profile_rows(db, table):
         "guildId,userId,level,xp,maxHp,currentHp,attack,defense,critBps,energy,"
         "energyUpdatedAt,activeWeaponInstanceId,activeArmorInstanceId,"
         "activeAccessoryInstanceId,activePetInstanceId,migrationSourceHash,version,createdAt,updatedAt"
-    )
     async with db.execute(f"SELECT {columns} FROM {table} ORDER BY guildId,userId") as cursor:
         return await cursor.fetchall()
 
 
 def _rows_checksum(rows):
-    return hashlib.sha256(json.dumps(rows, separators=(",", ":"), default=str).encode()).hexdigest()
+    return hashlib.sha256(json.dumps(rows, separators=(",", ":"), default=str).encode().hexdigest()
 
 
 def _injected_failure(actual, expected):
@@ -377,15 +374,13 @@ async def _rebuild_profile(db, now, *, failure_stage=None):
             "(guildId,userId,level,xp,maxHp,currentHp,attack,defense,critBps,energy,energyUpdatedAt,"
             "activeWeaponInstanceId,activeArmorInstanceId,activeAccessoryInstanceId,activePetInstanceId,"
             "migrationSourceHash,version,createdAt,updatedAt,starterPackClaimed,starterPackClaimedAt) "
-            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,0,NULL)",
-            (*row[:3], xp, *row[4:]),
+            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,0,NULL)", *row[:3], xp, *row[4:]),
         )
         if int(row[2]) == 100 and int(row[3]) > 0:
             await db.execute(
                 "INSERT OR IGNORE INTO RpgPhase3MigrationReview "
                 "(reviewId,runId,guildId,userId,entityType,sourceKey,warningCode,detailsJson,createdAt) "
-                "VALUES ($20,$21,$22,$23,$24 ,$25,'LEVEL_100_XP_RESET','{}',$1)",
-                (str(uuid.uuid4()), f"schema-{PHASE3_HARDENING_VERSION}", row[0], row[1],
+                "VALUES ($1,$2,$3,$4,$5 ,$6,'LEVEL_100_XP_RESET','{}',$7)", str(uuid.uuid4(), f"schema-{PHASE3_HARDENING_VERSION}", row[0], row[1],
                  "profile", f"{row[0]}:{row[1]}", now),
             )
     _injected_failure("after_copy", failure_stage)
@@ -395,7 +390,7 @@ async def _rebuild_profile(db, now, *, failure_stage=None):
     if {(row[0], row[1]) for row in target_rows} != source_keys:
         raise ValueError("Key profile berubah saat rebuild.")
     # XP level 100 adalah satu-satunya transformasi yang diizinkan.
-    normalized_source = [tuple((*row[:3], 0 if int(row[2]) == 100 and int(row[3]) > 0 else row[3], *row[4:])) for row in source_rows]
+    normalized_source = [tuple((*row[:3], 0 if int(row[2]) == 100 and int(row[3]) > 0 else row[3], *row[4:]) for row in source_rows]
     if _rows_checksum(normalized_source) != _rows_checksum(target_rows):
         raise ValueError("Checksum profile berubah di luar transformasi yang diizinkan.")
     _injected_failure("after_validate", failure_stage)
@@ -409,13 +404,12 @@ async def _rebuild_profile(db, now, *, failure_stage=None):
 
 async def migrate_phase3_schema(db_path, *, rebuild_profile=True, _failure_stage=None):
     """Terapkan schema hanya pada target staging/temporary yang dipilih operator."""
-    async with _pool.acquire() as db:
-        
-        async with db.transaction():
+    async with aiosqlite.connect(db_path) as db:
+        await configure_connection(db)
+        await db.execute("BEGIN IMMEDIATE")
         try:
             async with db.execute(
-                "SELECT checksum,status FROM EconomySchemaMigration WHERE version=$1",
-                (PHASE3_HARDENING_VERSION,),
+                "SELECT checksum,status FROM EconomySchemaMigration WHERE version=$1", PHASE3_HARDENING_VERSION,),
             )
             if migration and migration[1] == "COMPLETED":
                 if migration[0] != PHASE3_HARDENING_CHECKSUM:
@@ -425,7 +419,7 @@ async def migrate_phase3_schema(db_path, *, rebuild_profile=True, _failure_stage
             now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
             await db.execute(
                 "INSERT OR REPLACE INTO EconomySchemaMigration "
-                "(version,name,checksum,status,startedAt,detailsJson) VALUES ($2,$3,$4,$5,$6,'{}')",
+                "(version,name,checksum,status,startedAt,detailsJson) VALUES ($1,$2,$3,$4,$5,'{}')",
                 (PHASE3_HARDENING_VERSION, "phase3-hardening", PHASE3_HARDENING_CHECKSUM,
                  "RUNNING", now),
             )
@@ -434,10 +428,9 @@ async def migrate_phase3_schema(db_path, *, rebuild_profile=True, _failure_stage
                 await db.execute(
                     "ALTER TABLE EconomyActivityEvent ADD COLUMN metricValue "
                     "INTEGER NOT NULL DEFAULT 0 CHECK(metricValue >= 0)"
-                )
             schema_statements = _split_sql(PHASE3_SCHEMA_SQL)
             for statement in schema_statements:
-                if statement.lstrip().upper().startswith(("CREATE INDEX", "CREATE UNIQUE INDEX")):
+                if statement.lstrip().upper().startswith(("CREATE INDEX", "CREATE UNIQUE INDEX"):
                     continue
                 await db.execute(statement)
             await _add_column(db, "RpgOperation", "retryCount", "INTEGER NOT NULL DEFAULT 0 CHECK(retryCount>=0)")
@@ -468,11 +461,9 @@ async def migrate_phase3_schema(db_path, *, rebuild_profile=True, _failure_stage
             await db.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_rpg_starter_grant_user "
                 "ON RpgStarterGrant(guildId,userId)"
-            )
             await db.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_rpg_legacy_source "
                 "ON RpgLegacyAsset(guildId,userId,sourceType,sourceKey)"
-            )
             for statement in schema_statements:
                 if statement.lstrip().upper().startswith(("CREATE INDEX", "CREATE UNIQUE INDEX")):
                     await db.execute(statement)
@@ -480,20 +471,16 @@ async def migrate_phase3_schema(db_path, *, rebuild_profile=True, _failure_stage
             await db.execute(
                 "UPDATE RpgOperation SET reservationKey='recovery:'||guildId||':'||operationId "
                 "WHERE status='REVIEW_REQUIRED' AND reservationKey IS NULL"
-            )
             await db.execute(
                 "UPDATE RpgOperation SET resultJson=COALESCE(resultJson,'{\"code\":\"legacy_void\"}') "
                 "WHERE status='VOID'"
-            )
             await db.execute(
                 "UPDATE RpgOperation SET resultJson=COALESCE(resultJson,'{\"code\":\"legacy_committed\"}') "
                 "WHERE status='COMMITTED'"
-            )
             await db.execute("DROP INDEX IF EXISTS idx_rpg_operation_unresolved_key")
             await db.execute(
                 "CREATE UNIQUE INDEX idx_rpg_operation_unresolved_key ON RpgOperation(guildId,reservationKey) "
                 "WHERE reservationKey IS NOT NULL AND status IN ('RESERVED','AWAITING_FUNDS','REVIEW_REQUIRED')"
-            )
             if rebuild_profile and await _table_exists(db, "RpgProfile"):
                 profile_sql = (await (await db.execute(
                     "SELECT sql FROM sqlite_master WHERE type='table' AND name='RpgProfile'"

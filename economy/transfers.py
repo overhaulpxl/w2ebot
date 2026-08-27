@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 
+import aiosqlite
 
 from .constants import ECONOMY_FEE_BPS, TRANSFER_DAILY_LIMIT_ETM, TRANSFER_MIN_ETM
 from .database import configure_connection
@@ -20,12 +21,11 @@ async def get_daily_usage(db_path, guild_id, user_id, usage_type, *, now=None):
     if usage_type not in ALLOWED_USAGE_TYPES:
         raise ValueError("usageType tidak valid")
     period = jakarta_date(now)
-    async with _pool.acquire() as db:
-        
+    async with aiosqlite.connect(db_path) as db:
+        await configure_connection(db)
         row = await db.fetchrow(
             "SELECT submittedAmount FROM EconomyDailyUsage "
-            "WHERE guildId=? AND userId=? AND periodDate=? AND usageType=?",
-            (str(guild_id), str(user_id), period, usage_type),
+            "WHERE guildId=$1 AND userId=$2 AND periodDate=$3 AND usageType=$4", str(guild_id), str(user_id), period, usage_type),
         )
     return UsageSnapshot(period, int(row[0]) if row else 0)
 
@@ -36,7 +36,7 @@ async def apply_daily_usage(db, context, *, user_id, usage_type, amount, limit):
     period = jakarta_date(context.now)
     row = await db.fetchrow(
         "SELECT submittedAmount,version FROM EconomyDailyUsage "
-        "WHERE guildId=? AND userId=? AND periodDate=? AND usageType=?",
+        "WHERE guildId=$1 AND userId=$2 AND periodDate=$3 AND usageType=$4",
         (context.guild_id, str(user_id), period, usage_type),
     )
     before = int(row[0]) if row else 0
@@ -46,8 +46,7 @@ async def apply_daily_usage(db, context, *, user_id, usage_type, amount, limit):
     if row:
         cursor = await db.execute(
             "UPDATE EconomyDailyUsage SET submittedAmount=$1,version=version+1,updatedAt=$2 "
-            "WHERE guildId=? AND userId=? AND periodDate=? AND usageType=? AND version=?",
-            (after, context.now, context.guild_id, str(user_id), period, usage_type, int(row[1])),
+            "WHERE guildId=$1 AND userId=$2 AND periodDate=$3 AND usageType=$4 AND version=$5", after, context.now, context.guild_id, str(user_id), period, usage_type, int(row[1]),
         )
         if cursor.rowcount != 1:
             raise EconomyMutationError("stale", "Usage harian berubah saat diproses.")
@@ -55,8 +54,7 @@ async def apply_daily_usage(db, context, *, user_id, usage_type, amount, limit):
         await db.execute(
             "INSERT INTO EconomyDailyUsage "
             "(guildId,userId,periodDate,usageType,submittedAmount,version,createdAt,updatedAt) "
-            "VALUES (?,?,?,?,?,0,?,?)",
-            (context.guild_id, str(user_id), period, usage_type, after, context.now, context.now),
+            "VALUES ($1,$2,$3,$4,$5,0,$6,$7)", context.guild_id, str(user_id), period, usage_type, after, context.now, context.now),
         )
     return before, after, period
 
@@ -103,8 +101,8 @@ async def transfer_etm(
         reference_id=request_id,
         feature="economy",
         deltas=(
-            AccountDelta("USER", str(sender_id), "ETM", -amount, str(sender_id)),
-            AccountDelta("USER", str(recipient_id), "ETM", received, str(recipient_id)),
+            AccountDelta("USER", str(sender_id), "ETM", -amount, str(sender_id),
+            AccountDelta("USER", str(recipient_id), "ETM", received, str(recipient_id),
             AccountDelta("SYSTEM", "ETM_GENERAL", "ETM", general),
             AccountDelta("SYSTEM", "ETM_RESERVE", "ETM", reserve),
             AccountDelta("SYSTEM", "ETM_BURN", "ETM", burn),

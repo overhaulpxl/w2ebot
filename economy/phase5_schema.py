@@ -1,10 +1,10 @@
-from core import _pool
 """Schema eksplisit Casino V1 Phase 5; tidak dijalankan saat startup."""
 
 import hashlib
 import re
 import sqlite3
 
+import aiosqlite
 
 from .constants import ECONOMY_PHASE5_MIGRATION_VERSION
 
@@ -316,18 +316,16 @@ def phase5_capability_sync(connection):
 async def phase5_capability(db):
     try:
         marker = await db.fetchrow(
-            "SELECT checksum FROM EconomySchemaMigration WHERE version=$1 AND status='COMPLETED'",
-            (ECONOMY_PHASE5_MIGRATION_VERSION,),
+            "SELECT checksum FROM EconomySchemaMigration WHERE version=$1 AND status='COMPLETED'", ECONOMY_PHASE5_MIGRATION_VERSION,),
         )
         if not marker or marker[0] != PHASE5_SCHEMA_CHECKSUM:
             return False
         async with db.execute(
             "SELECT name,type FROM sqlite_master WHERE type IN ('table','index','trigger')"
-        ) as cursor:
             objects = {row[0]: row[1] for row in await cursor.fetchall()}
         if not (all(objects.get(name) == "table" for name in REQUIRED_PHASE5_TABLES)
                 and all(objects.get(name) == "index" for name in REQUIRED_PHASE5_INDEXES)
-                and all(objects.get(name) == "trigger" for name in REQUIRED_PHASE5_TRIGGERS)):
+                and all(objects.get(name) == "trigger" for name in REQUIRED_PHASE5_TRIGGERS):
             return False
         for table, required in REQUIRED_PHASE5_COLUMNS.items():
             async with db.execute(f'PRAGMA table_info("{table}")') as cursor:
