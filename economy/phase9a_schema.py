@@ -254,7 +254,7 @@ REQUIRED_PHASE9A_TRIGGERS = {
 
 def phase9a_capability_sync(connection) -> bool:
     marker = connection.execute(
-        "SELECT name,checksum,status FROM EconomySchemaMigration WHERE version=$1",
+        "SELECT name,checksum,status FROM EconomySchemaMigration WHERE version=?",
         (PHASE9A_BACKEND_SAFETY_MIGRATION_VERSION,),
     ).fetchone()
     if marker != (PHASE9A_MIGRATION_NAME, PHASE9A_SCHEMA_CHECKSUM, "COMPLETED"):
@@ -266,6 +266,7 @@ def phase9a_capability_sync(connection) -> bool:
         all(objects.get(name) == "table" for name in REQUIRED_PHASE9A_TABLES)
         and all(objects.get(name) == "index" for name in REQUIRED_PHASE9A_INDEXES)
         and all(objects.get(name) == "trigger" for name in REQUIRED_PHASE9A_TRIGGERS)
+    )
 
 
 async def phase9a_capability(db) -> bool:

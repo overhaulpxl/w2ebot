@@ -1,3 +1,4 @@
+import aiosqlite
 
 from .constants import SYSTEM_ACCOUNT_DEFINITIONS
 from .database import configure_connection
@@ -10,11 +11,13 @@ async def treasury_grant(
 ):
     currency = str(currency).upper()
     account_code = str(account_code).upper()
-    async with _pool.acquire() as db:
+    async with aiosqlite.connect(db_path) as db:
         await configure_connection(db)
-        row = await db.fetchrow(
-            "SELECT currency,accountClass,spendable FROM EconomySystemAccount WHERE guildId=$1 AND accountCode=$2", str(guild_id), account_code),
-        )
+        async with db.execute(
+            "SELECT currency,accountClass,spendable FROM EconomySystemAccount WHERE guildId=? AND accountCode=?",
+            (str(guild_id), account_code),
+        ) as cursor:
+            row = await cursor.fetchone()
     if not row or row[0] != currency or row[1] != "TREASURY" or int(row[2]) != 1:
         return EconomyResult(False, "invalid_account", "Treasury account tidak dapat digunakan untuk grant.")
     return await execute_transaction(
@@ -31,7 +34,7 @@ async def treasury_grant(
         require_spendable_system_debits=True,
         deltas=(
             AccountDelta("SYSTEM", account_code, currency, -amount),
-            AccountDelta("USER", str(target_user_id), currency, amount, str(target_user_id),
+            AccountDelta("USER", str(target_user_id), currency, amount, str(target_user_id)),
         ),
         success_code="granted",
         success_message="Treasury grant berhasil diproses.",
@@ -41,19 +44,23 @@ async def treasury_grant(
 async def get_supply_report(db_path, guild_id):
     report = {}
     try:
-        async with _pool.acquire() as db:
+        async with aiosqlite.connect(db_path) as db:
             await configure_connection(db)
             for currency, wallet_column in (("ETM", "etmBalance"), ("ECY", "ecyBalance")):
-                row = await db.fetchrow(
-                    f"SELECT COALESCE(SUM({wallet_column}),0) FROM EconomyWallet WHERE guildId=$1", str(guild_id),),
-                    user_wallets = int((await cursor.fetchone()[0])
+                async with db.execute(
+                    f"SELECT COALESCE(SUM({wallet_column}),0) FROM EconomyWallet WHERE guildId=?",
+                    (str(guild_id),),
+                ) as cursor:
+                    user_wallets = int((await cursor.fetchone())[0])
                 async with db.execute(
                     "SELECT "
                     "COALESCE(SUM(CASE WHEN accountClass='TREASURY' AND spendable=1 THEN balance ELSE 0 END),0),"
                     "COALESCE(SUM(CASE WHEN accountClass='RESERVE' THEN balance ELSE 0 END),0),"
                     "COALESCE(SUM(CASE WHEN accountClass='BURN' THEN balance ELSE 0 END),0),"
                     "COALESCE(SUM(CASE WHEN accountClass='ISSUANCE' THEN balance ELSE 0 END),0) "
-                    "FROM EconomySystemAccount WHERE guildId=$1 AND currency=$2", str(guild_id), currency),
+                    "FROM EconomySystemAccount WHERE guildId=? AND currency=?",
+                    (str(guild_id), currency),
+                ) as cursor:
                     spendable, reserve, burned, issuance = [int(v) for v in await cursor.fetchone()]
                 net_issued = user_wallets + spendable + reserve + burned
                 circulating = user_wallets + spendable
@@ -73,10 +80,11 @@ async def get_supply_report(db_path, guild_id):
                 "SELECT COUNT(*) FROM ("
                 "SELECT l.transactionId,l.currency,SUM(l.amount) total FROM EconomyLedger l "
                 "JOIN EconomyTransaction t ON t.transactionId=l.transactionId "
-                "WHERE t.guildId=$1 AND t.status='COMMITTED' "
+                "WHERE t.guildId=? AND t.status='COMMITTED' "
                 "GROUP BY l.transactionId,l.currency HAVING total<>0)",
                 (str(guild_id),),
-                unbalanced_count = int((await cursor.fetchone()[0])
+            ) as cursor:
+                unbalanced_count = int((await cursor.fetchone())[0])
         report["ledger_zero_sum"] = unbalanced_count == 0
         return report
     except aiosqlite.OperationalError:
@@ -100,13 +108,15 @@ async def system_seed(db_path, *, guild_id, account_code, amount, seed_key, reas
         return EconomyResult(False, "invalid_account", "Seed target harus operational treasury account.")
     if isinstance(amount, bool) or not isinstance(amount, int) or amount <= 0:
         return EconomyResult(False, "invalid_amount", "Seed amount harus lebih dari nol.")
-    async with _pool.acquire() as db:
+    async with aiosqlite.connect(db_path) as db:
         await configure_connection(db)
         async with db.execute(
             "SELECT m.transactionId,t.status FROM EconomySeedMarker m "
             "JOIN EconomyTransaction t ON t.transactionId=m.transactionId "
-            "WHERE m.guildId=$1 AND m.seedKey=$2", str(guild_id), str(seed_key),
-        )
+            "WHERE m.guildId=? AND m.seedKey=?",
+            (str(guild_id), str(seed_key)),
+        ) as cursor:
+            row = await cursor.fetchone()
     if row:
         if row[1] == "COMMITTED":
             return EconomyResult(True, "already_seeded", "System seed ini sudah diproses.", row[0], replayed=True)

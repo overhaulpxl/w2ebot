@@ -239,9 +239,11 @@ def validate_catalog():
 async def seed_catalog(db, *, now=None):
     digest = validate_catalog()
     timestamp = utc_iso(now)
-    existing = await db.fetchrow(
-        "SELECT catalogHash FROM RpgCatalogManifest WHERE catalogVersion=$1", RPG_PHASE3_CATALOG_VERSION,),
-    )
+    async with db.execute(
+        "SELECT catalogHash FROM RpgCatalogManifest WHERE catalogVersion=?",
+        (RPG_PHASE3_CATALOG_VERSION,),
+    ) as cursor:
+        existing = await cursor.fetchone()
     if existing:
         if existing[0] != digest:
             raise ValueError("Hash katalog yang sudah tersimpan tidak cocok.")
@@ -251,16 +253,16 @@ async def seed_catalog(db, *, now=None):
         rows.append((RPG_PHASE3_CATALOG_VERSION, item["item_id"], "EQUIPMENT", item["name"],
                      item["rarity"], item["slot"], item["required_level"], int(item["tradeable"]),
                      json.dumps(item, sort_keys=True, separators=(",", ":"))))
-    for item_id, name, item_type, rarity, tradeable) in STACK_ITEMS.items():
+    for item_id, (name, item_type, rarity, tradeable) in STACK_ITEMS.items():
         rows.append((RPG_PHASE3_CATALOG_VERSION, item_id, item_type, name, rarity, None, 1,
-                     int(tradeable), json.dumps({"item_id": item_id}, separators=(",", ":")))
+                     int(tradeable), json.dumps({"item_id": item_id}, separators=(",", ":"))))
     for pet_id, (name, rarity, level, passive, skill) in PETS.items():
         definition = {"pet_id": pet_id, "passive": passive, "skill": skill}
         rows.append((RPG_PHASE3_CATALOG_VERSION, pet_id, "PET", name, rarity, None, level, 0,
                      json.dumps(definition, sort_keys=True, separators=(",", ":"))))
     await db.executemany(
         "INSERT INTO RpgCatalogItem (catalogVersion,itemId,itemType,name,rarity,slot,requiredLevel,tradeable,definitionJson) "
-        "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)", rows,
+        "VALUES (?,?,?,?,?,?,?,?,?)", rows,
     )
     definition_rows = []
     for section, definitions in catalog_payload().items():
@@ -270,7 +272,8 @@ async def seed_catalog(db, *, now=None):
                     RPG_PHASE3_CATALOG_VERSION,
                     section,
                     str(definition_id),
-                    json.dumps(definition, sort_keys=True, separators=(",", ":")))
+                    json.dumps(definition, sort_keys=True, separators=(",", ":")),
+                ))
         else:
             definition_rows.append((
                 RPG_PHASE3_CATALOG_VERSION, section, section,
@@ -278,11 +281,12 @@ async def seed_catalog(db, *, now=None):
             ))
     await db.executemany(
         "INSERT INTO RpgCatalogDefinition "
-        "(catalogVersion,definitionType,definitionId,definitionJson) VALUES ($1,$2,$3,$4)",
+        "(catalogVersion,definitionType,definitionId,definitionJson) VALUES (?,?,?,?)",
         definition_rows,
     )
     await db.execute(
-        "INSERT INTO RpgCatalogManifest (catalogVersion,catalogHash,seededAt,detailsJson) VALUES ($1,$2,$3,$4)", RPG_PHASE3_CATALOG_VERSION, digest, timestamp,
-         json.dumps({"item_count": len(rows), "definition_count": len(definition_rows)}),
+        "INSERT INTO RpgCatalogManifest (catalogVersion,catalogHash,seededAt,detailsJson) VALUES (?,?,?,?)",
+        (RPG_PHASE3_CATALOG_VERSION, digest, timestamp,
+         json.dumps({"item_count": len(rows), "definition_count": len(definition_rows)})),
     )
     return digest

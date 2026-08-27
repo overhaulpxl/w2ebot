@@ -20,22 +20,25 @@ def normalize_control_reason(reason):
 
 
 async def _write_existing_audit(db, *, action, target_id, detail):
-    rows = await db.fetch(
+    async with db.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='AuditLog'"
+    ) as cursor:
         if not await cursor.fetchone():
             return
     await db.execute(
-        "INSERT INTO AuditLog (ts,action,target_id,detail,source) VALUES ($1,$2,$3,$4,$5)", _now(), action, str(target_id) if target_id is not None else None, detail, "economy_v1"),
+        "INSERT INTO AuditLog (ts,action,target_id,detail,source) VALUES (?,?,?,?,?)",
+        (_now(), action, str(target_id) if target_id is not None else None, detail, "economy_v1"),
     )
 
 
 async def is_whitelisted(db_path, guild_id, user_id):
     async with aiosqlite.connect(db_path) as db:
         await configure_connection(db)
-        row = await db.fetchrow(
-            "SELECT enabled FROM EconomyMintWhitelist WHERE guildId=$1 AND userId=$2",
-            (str(guild_id), str(user_id),
-        )
+        async with db.execute(
+            "SELECT enabled FROM EconomyMintWhitelist WHERE guildId=? AND userId=?",
+            (str(guild_id), str(user_id)),
+        ) as cursor:
+            row = await cursor.fetchone()
     return bool(row and int(row[0]) == 1)
 
 
@@ -46,8 +49,9 @@ async def set_whitelist(db_path, *, guild_id, user_id, enabled, actor_id, reason
         await configure_connection(db)
         await db.execute(
             "INSERT INTO EconomyMintWhitelist (guildId,userId,enabled,addedById,reasonCode,createdAt,updatedAt) "
-            "VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(guildId,userId) DO UPDATE SET "
-            "enabled=excluded.enabled,addedById=excluded.addedById,reasonCode=excluded.reasonCode,updatedAt=excluded.updatedAt", str(guild_id), str(user_id), 1 if enabled else 0, str(actor_id), reason, now, now),
+            "VALUES (?,?,?,?,?,?,?) ON CONFLICT(guildId,userId) DO UPDATE SET "
+            "enabled=excluded.enabled,addedById=excluded.addedById,reasonCode=excluded.reasonCode,updatedAt=excluded.updatedAt",
+            (str(guild_id), str(user_id), 1 if enabled else 0, str(actor_id), reason, now, now),
         )
         await _write_existing_audit(
             db,
@@ -62,8 +66,9 @@ async def list_whitelist(db_path, guild_id):
     async with aiosqlite.connect(db_path) as db:
         await configure_connection(db)
         async with db.execute(
-            "SELECT userId,enabled,addedById,updatedAt FROM EconomyMintWhitelist WHERE guildId=$1 ORDER BY userId",
+            "SELECT userId,enabled,addedById,updatedAt FROM EconomyMintWhitelist WHERE guildId=? ORDER BY userId",
             (str(guild_id),),
+        ) as cursor:
             return await cursor.fetchall()
 
 
@@ -78,7 +83,7 @@ async def bootstrap_whitelist(db_path, guild_id):
         for user_id in ids:
             cursor = await db.execute(
                 "INSERT OR IGNORE INTO EconomyMintWhitelist "
-                "(guildId,userId,enabled,addedById,reasonCode,createdAt,updatedAt) VALUES ($1,$2,1,$3,'environment_bootstrap',$4,$5)",
+                "(guildId,userId,enabled,addedById,reasonCode,createdAt,updatedAt) VALUES (?,?,1,?,'environment_bootstrap',?,?)",
                 (str(guild_id), user_id, user_id, now, now),
             )
             inserted += max(0, cursor.rowcount)
@@ -102,7 +107,7 @@ async def set_feature_paused(db_path, *, guild_id, feature, paused, actor_id, re
         await db.execute("BEGIN IMMEDIATE")
         await db.execute(
             "INSERT INTO EconomyFeatureState (guildId,feature,paused,reasonCode,changedById,changedAt,version) "
-            "VALUES ($1,$2,$3,$4,$5,$6,0) ON CONFLICT(guildId,feature) DO UPDATE SET "
+            "VALUES (?,?,?,?,?,?,0) ON CONFLICT(guildId,feature) DO UPDATE SET "
             "paused=excluded.paused,reasonCode=excluded.reasonCode,changedById=excluded.changedById,"
             "changedAt=excluded.changedAt,version=EconomyFeatureState.version+1",
             (str(guild_id), feature, 1 if paused else 0, reason, str(actor_id), now),
@@ -120,8 +125,9 @@ async def feature_states(db_path, guild_id):
     async with aiosqlite.connect(db_path) as db:
         await configure_connection(db)
         async with db.execute(
-            "SELECT feature,paused,reasonCode,changedById,changedAt FROM EconomyFeatureState WHERE guildId=$1",
+            "SELECT feature,paused,reasonCode,changedById,changedAt FROM EconomyFeatureState WHERE guildId=?",
             (str(guild_id),),
-        )
+        ) as cursor:
+            rows = await cursor.fetchall()
     mapped = {row[0]: row for row in rows}
-    return [mapped.get(feature, (feature, 0, None, None, None) for feature in EMERGENCY_FEATURES]
+    return [mapped.get(feature, (feature, 0, None, None, None)) for feature in EMERGENCY_FEATURES]

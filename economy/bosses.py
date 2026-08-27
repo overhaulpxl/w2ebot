@@ -38,27 +38,32 @@ async def start_boss(db_path, *, guild_id, tier, start_key, authorized, now=None
         await configure_connection(db)
         await db.execute("BEGIN IMMEDIATE")
         try:
-            contributions = await db.fetch(
-                "SELECT raidId,tier,status FROM RpgBossRaid WHERE guildId=$1 "
-                "AND status IN ('ACTIVE','DEFEATED','AWAITING_FUNDS')", str(guild_id),),
+            async with db.execute(
+                "SELECT raidId,tier,status FROM RpgBossRaid WHERE guildId=? "
+                "AND status IN ('ACTIVE','DEFEATED','AWAITING_FUNDS')",
+                (str(guild_id),),
+            ) as cursor:
                 existing = await cursor.fetchone()
             if existing:
                 await db.rollback()
                 return {"raid_id": existing[0], "tier": existing[1], "status": existing[2], "replayed": True}
-            raid_id = str(uuid.uuid4()
+            raid_id = str(uuid.uuid4())
             await db.execute(
                 "INSERT INTO RpgBossRaid "
                 "(raidId,guildId,tier,level,maxHp,currentHp,defense,status,startKey,createdAt,updatedAt) "
-                "VALUES ($1,$2,$3,$4,$5,$6,$7,'ACTIVE',$8,$9,$10)", raid_id, str(guild_id), tier, definition["level"], definition["max_hp"],
+                "VALUES (?,?,?,?,?,?,?,'ACTIVE',?,?,?)",
+                (raid_id, str(guild_id), tier, definition["level"], definition["max_hp"],
                  definition["max_hp"], definition["defense"], str(start_key), timestamp, timestamp),
             )
             await db.commit()
             return {"raid_id": raid_id, "tier": tier, "status": "ACTIVE", "replayed": False}
         except aiosqlite.IntegrityError:
             await db.rollback()
-            existing = await db.fetchrow(
-                "SELECT raidId,tier,status FROM RpgBossRaid WHERE guildId=$1 AND status IN ('ACTIVE','DEFEATED','AWAITING_FUNDS')", str(guild_id),),
-            )
+            async with db.execute(
+                "SELECT raidId,tier,status FROM RpgBossRaid WHERE guildId=? AND status IN ('ACTIVE','DEFEATED','AWAITING_FUNDS')",
+                (str(guild_id),),
+            ) as cursor:
+                existing = await cursor.fetchone()
             if existing:
                 return {"raid_id": existing[0], "tier": existing[1], "status": existing[2], "replayed": True}
             raise
@@ -71,18 +76,22 @@ async def boss_status(db_path, guild_id):
     async with aiosqlite.connect(db_path) as db:
         await configure_connection(db)
         db.row_factory = aiosqlite.Row
-        raid = await db.fetchrow(
+        async with db.execute(
             "SELECT raidId,tier,maxHp,currentHp,status,rewardPlanJson,noValidParticipants,settlementTransactionId "
-            "FROM RpgBossRaid WHERE guildId=$1 ORDER BY createdAt DESC LIMIT 1", str(guild_id),),
-        )
+            "FROM RpgBossRaid WHERE guildId=? ORDER BY createdAt DESC LIMIT 1", (str(guild_id),),
+        ) as cursor:
+            raid = await cursor.fetchone()
         if not raid:
             return None
-        fund = await db.fetchrow(
-            "SELECT COUNT(*) FROM RpgBossContribution WHERE raidId=$1", (raid["raidId"],),
-            participants = int((await cursor.fetchone()[0])
         async with db.execute(
-            "SELECT balance FROM EconomySystemAccount WHERE guildId=$1 AND accountCode='ETM_BOSS_DUNGEON'", str(guild_id),),
-        )
+            "SELECT COUNT(*) FROM RpgBossContribution WHERE raidId=?", (raid["raidId"],),
+        ) as cursor:
+            participants = int((await cursor.fetchone())[0])
+        async with db.execute(
+            "SELECT balance FROM EconomySystemAccount WHERE guildId=? AND accountCode='ETM_BOSS_DUNGEON'",
+            (str(guild_id),),
+        ) as cursor:
+            fund = await cursor.fetchone()
     result = dict(raid)
     result["participant_count"] = participants
     result["treasury_balance"] = int(fund[0]) if fund else 0
@@ -95,24 +104,27 @@ async def reserve_boss_attack(db_path, *, guild_id, user_id, now=None):
     timestamp = utc_datetime(now)
     async with aiosqlite.connect(db_path) as db:
         await configure_connection(db)
-        raid = await db.fetchrow(
-            "SELECT raidId,tier,level,defense,status FROM RpgBossRaid WHERE guildId=$1 AND status='ACTIVE'",
+        async with db.execute(
+            "SELECT raidId,tier,level,defense,status FROM RpgBossRaid WHERE guildId=? AND status='ACTIVE'",
             (str(guild_id),),
-        )
+        ) as cursor:
+            raid = await cursor.fetchone()
         if not raid:
             raise ValueError("Tidak ada Boss aktif.")
-        player = await db.fetchrow(
-            "SELECT level FROM RpgProfile WHERE guildId=$1 AND userId=$2",
-            (str(guild_id), str(user_id),
-        )
+        async with db.execute(
+            "SELECT level FROM RpgProfile WHERE guildId=? AND userId=?",
+            (str(guild_id), str(user_id)),
+        ) as cursor:
+            player = await cursor.fetchone()
         if not player:
             raise ValueError("Profile RPG belum tersedia.")
-        last = await db.fetchrow(
-            "SELECT occurredAt FROM EconomyActivityEvent WHERE guildId=$1 AND userId=$2 AND eventType='BOSS_ATTACK' "
-            "AND referenceId=$1 ORDER BY occurredAt DESC LIMIT 1",
+        async with db.execute(
+            "SELECT occurredAt FROM EconomyActivityEvent WHERE guildId=? AND userId=? AND eventType='BOSS_ATTACK' "
+            "AND referenceId=? ORDER BY occurredAt DESC LIMIT 1",
             (str(guild_id), str(user_id), raid[0]),
-        )
-        if last and (timestamp - utc_datetime(last[0]).total_seconds() < RPG_BOSS_ATTACK_COOLDOWN_SECONDS:
+        ) as cursor:
+            last = await cursor.fetchone()
+        if last and (timestamp - utc_datetime(last[0])).total_seconds() < RPG_BOSS_ATTACK_COOLDOWN_SECONDS:
             raise ValueError("Boss attack masih cooldown.")
     stats = await get_effective_stats(db_path, guild_id, user_id, context="BOSS")
     if not stats:
@@ -137,19 +149,22 @@ async def reserve_boss_attack(db_path, *, guild_id, user_id, now=None):
         async with aiosqlite.connect(db_path) as db:
             await configure_connection(db)
             await db.execute(
-                "INSERT INTO RpgBossAttack (operationId,raidId,committedDamage) VALUES ($1,$2,$3)", operation_id, raid[0], damage),
+                "INSERT INTO RpgBossAttack (operationId,raidId,committedDamage) VALUES (?,?,?)",
+                (operation_id, raid[0], damage),
             )
             await db.commit()
     return operation_id, saved, replayed
 
 
 async def _build_reward_plan(db, raid_id, tier):
-    pet = await db.fetchrow(
-        "SELECT userId,committedDamage FROM RpgBossContribution WHERE raidId=$1 ORDER BY committedDamage DESC,userId ASC", str(raid_id),),
-    )
+    async with db.execute(
+        "SELECT userId,committedDamage FROM RpgBossContribution WHERE raidId=? ORDER BY committedDamage DESC,userId ASC",
+        (str(raid_id),),
+    ) as cursor:
+        contributions = await cursor.fetchall()
     definition = BOSSES[tier]
     minimum = (definition["max_hp"] * definition["minimum_bps"] + 9_999) // 10_000
-    valid = [(str(user_id), int(damage) for user_id, damage in contributions if int(damage) >= minimum]
+    valid = [(str(user_id), int(damage)) for user_id, damage in contributions if int(damage) >= minimum]
     if not valid:
         return {"tier": tier, "catalog_version": RPG_PHASE3_CATALOG_VERSION,
                 "minimum_damage": minimum, "participants": [], "no_valid_participants": True}
@@ -167,7 +182,7 @@ async def _build_reward_plan(db, raid_id, tier):
         spent_prop += share
     for user_id, _ in valid[:proportional_pool - spent_prop]:
         payouts[user_id] += 1
-    top_count = min(10, len(valid)
+    top_count = min(10, len(valid))
     for user_id, _ in valid[:top_count]:
         payouts[user_id] += top_pool // top_count
     for user_id, _ in valid[:top_pool % top_count]:
@@ -175,12 +190,14 @@ async def _build_reward_plan(db, raid_id, tier):
     participants = []
     for rank, (user_id, damage) in enumerate(valid, 1):
         async with db.execute(
-            "SELECT activePetInstanceId FROM RpgProfile WHERE guildId=(SELECT guildId FROM RpgBossRaid WHERE raidId=$1) AND userId=$2", str(raid_id), user_id),
-        )
+            "SELECT activePetInstanceId FROM RpgProfile WHERE guildId=(SELECT guildId FROM RpgBossRaid WHERE raidId=?) AND userId=?",
+            (str(raid_id), user_id),
+        ) as cursor:
+            pet = await cursor.fetchone()
         drop = roll_drops(BOSS_DROPS[tier])
         participants.append({"user_id": user_id, "damage": damage, "rank": rank,
                              "etm": payouts[user_id], "drop": drop,
-                             "equipment_instance_id": str(uuid.uuid4() if drop.get("equipment") else None,
+                             "equipment_instance_id": str(uuid.uuid4()) if drop.get("equipment") else None,
                              "pet_instance_id": pet[0] if pet else None,
                              "pet_xp": definition["pet_xp"]})
     return {"tier": tier, "catalog_version": RPG_PHASE3_CATALOG_VERSION,
@@ -196,9 +213,11 @@ async def commit_boss_attack(db_path, *, guild_id, user_id, operation_id, now=No
         await configure_connection(db)
         await db.execute("BEGIN IMMEDIATE")
         try:
-            operation = await db.fetchrow(
-                "SELECT status,outcomeJson,resultJson FROM RpgOperation WHERE operationId=$1 AND guildId=$2 AND userId=$3 AND operationType='BOSS_ATTACK'", str(operation_id), str(guild_id), str(user_id),
-            )
+            async with db.execute(
+                "SELECT status,outcomeJson,resultJson FROM RpgOperation WHERE operationId=? AND guildId=? AND userId=? AND operationType='BOSS_ATTACK'",
+                (str(operation_id), str(guild_id), str(user_id)),
+            ) as cursor:
+                operation = await cursor.fetchone()
             if not operation:
                 raise ValueError("Boss attack tidak ditemukan.")
             if operation[0] == "COMMITTED":
@@ -208,21 +227,24 @@ async def commit_boss_attack(db_path, *, guild_id, user_id, operation_id, now=No
                 raise ValueError("Boss attack tidak dapat diproses.")
             outcome = json.loads(operation[1])
             raid_id = outcome["raid_id"]
-            raid = await db.fetchrow(
-                "SELECT tier,currentHp,status FROM RpgBossRaid WHERE raidId=$1 AND guildId=$2", raid_id, str(guild_id),
-            )
+            async with db.execute(
+                "SELECT tier,currentHp,status FROM RpgBossRaid WHERE raidId=? AND guildId=?",
+                (raid_id, str(guild_id)),
+            ) as cursor:
+                raid = await cursor.fetchone()
             if not raid or raid[2] != "ACTIVE":
                 raise ValueError("Status Boss sudah berubah.")
-            damage = min(int(outcome["damage"]), int(raid[1])
+            damage = min(int(outcome["damage"]), int(raid[1]))
             next_hp = int(raid[1]) - damage
             await db.execute(
                 "INSERT INTO RpgBossContribution (guildId,raidId,userId,committedDamage,attackCount,updatedAt) "
-                "VALUES ($1,$2,$3,0,0,$4) ON CONFLICT(guildId,raidId,userId) DO NOTHING", str(guild_id), raid_id, str(user_id), timestamp),
+                "VALUES (?,?,?,0,0,?) ON CONFLICT(guildId,raidId,userId) DO NOTHING",
+                (str(guild_id), raid_id, str(user_id), timestamp),
             )
             await db.execute(
-                "UPDATE RpgBossContribution SET committedDamage=committedDamage+$1,attackCount=attackCount+1,updatedAt=$2 "
-                "WHERE guildId=$1 AND raidId=$2 AND userId=$3",
-                (damage, timestamp, str(guild_id), raid_id, str(user_id),
+                "UPDATE RpgBossContribution SET committedDamage=committedDamage+?,attackCount=attackCount+1,updatedAt=? "
+                "WHERE guildId=? AND raidId=? AND userId=?",
+                (damage, timestamp, str(guild_id), raid_id, str(user_id)),
             )
             await append_activity_event(
                 db, guild_id=guild_id, user_id=user_id, event_type="BOSS_ATTACK",
@@ -234,18 +256,19 @@ async def commit_boss_attack(db_path, *, guild_id, user_id, operation_id, now=No
                 plan = await _build_reward_plan(db, raid_id, raid[0])
                 status = "DEFEATED"
                 await db.execute(
-                    "UPDATE RpgBossRaid SET currentHp=0,status='DEFEATED',lastHitUserId=$1,rewardPlanJson=$2,defeatedAt=$3,updatedAt=$4 WHERE raidId=$5 AND status='ACTIVE'", str(user_id), json.dumps(plan, sort_keys=True), timestamp, timestamp, raid_id),
+                    "UPDATE RpgBossRaid SET currentHp=0,status='DEFEATED',lastHitUserId=?,rewardPlanJson=?,defeatedAt=?,updatedAt=? WHERE raidId=? AND status='ACTIVE'",
+                    (str(user_id), json.dumps(plan, sort_keys=True), timestamp, timestamp, raid_id),
                 )
                 should_settle = True
             else:
                 await db.execute(
-                    "UPDATE RpgBossRaid SET currentHp=$1,updatedAt=$2 WHERE raidId=$3 AND status='ACTIVE'",
+                    "UPDATE RpgBossRaid SET currentHp=?,updatedAt=? WHERE raidId=? AND status='ACTIVE'",
                     (next_hp, timestamp, raid_id),
                 )
             result = {"raid_id": raid_id, "damage": damage, "boss_hp": next_hp, "raid_status": status}
             await db.execute(
-                "UPDATE RpgOperation SET status='COMMITTED',reservationKey=NULL,resultJson=$1,updatedAt=$2,settledAt=$3 "
-                "WHERE operationId=$1 AND status='RESERVED'",
+                "UPDATE RpgOperation SET status='COMMITTED',reservationKey=NULL,resultJson=?,updatedAt=?,settledAt=? "
+                "WHERE operationId=? AND status='RESERVED'",
                 (json.dumps(result, sort_keys=True), timestamp, timestamp, operation_id),
             )
             await db.commit()
@@ -262,13 +285,14 @@ async def settle_boss(db_path, *, guild_id, raid_id=None, authorized=False, now=
         raise PermissionError("Hanya Administrator atau internal API yang dapat settle Boss.")
     async with aiosqlite.connect(db_path) as db:
         await configure_connection(db)
-        query = "SELECT raidId,tier,status,rewardPlanJson,lastHitUserId,settlementTransactionId,noValidParticipants FROM RpgBossRaid WHERE guildId=$1"
+        query = "SELECT raidId,tier,status,rewardPlanJson,lastHitUserId,settlementTransactionId,noValidParticipants FROM RpgBossRaid WHERE guildId=?"
         params = [str(guild_id)]
         if raid_id:
-            query += " AND raidId=$1"
-            params.append(str(raid_id)
+            query += " AND raidId=?"
+            params.append(str(raid_id))
         query += " ORDER BY createdAt DESC LIMIT 1"
-        raid = await db.fetchrow(query, tuple(params))
+        async with db.execute(query, tuple(params)) as cursor:
+            raid = await cursor.fetchone()
     if not raid:
         return EconomyResult(False, "not_found", "Boss raid tidak ditemukan.")
     raid_id, tier, status, raw_plan, last_hit, transaction_id, no_valid = raid
@@ -282,8 +306,9 @@ async def settle_boss(db_path, *, guild_id, raid_id=None, authorized=False, now=
         async with aiosqlite.connect(db_path) as db:
             await configure_connection(db)
             cursor = await db.execute(
-                "UPDATE RpgBossRaid SET status='SETTLED',noValidParticipants=1,settledAt=$1,updatedAt=$2 "
-                "WHERE raidId=$1 AND status IN ('DEFEATED','AWAITING_FUNDS')", utc_iso(now), utc_iso(now), raid_id),
+                "UPDATE RpgBossRaid SET status='SETTLED',noValidParticipants=1,settledAt=?,updatedAt=? "
+                "WHERE raidId=? AND status IN ('DEFEATED','AWAITING_FUNDS')",
+                (utc_iso(now), utc_iso(now), raid_id),
             )
             await db.commit()
         return EconomyResult(True, "boss_settled_no_participants", "Boss selesai tanpa peserta valid.")
@@ -297,9 +322,10 @@ async def settle_boss(db_path, *, guild_id, raid_id=None, authorized=False, now=
     deltas.extend(AccountDelta("USER", row["user_id"], "ETM", int(row["etm"]), row["user_id"]) for row in participants)
 
     async def extension(db, context):
-        latest = await db.fetchrow(
-            "SELECT status,rewardPlanJson FROM RpgBossRaid WHERE raidId=$1", raid_id,),
-        )
+        async with db.execute(
+            "SELECT status,rewardPlanJson FROM RpgBossRaid WHERE raidId=?", (raid_id,),
+        ) as cursor:
+            latest = await cursor.fetchone()
         if not latest or latest[0] not in ("DEFEATED", "AWAITING_FUNDS") or latest[1] != raw_plan:
             raise EconomyMutationError("stale", "Reward plan Boss sudah berubah.")
         for row in participants:
@@ -309,13 +335,13 @@ async def settle_boss(db_path, *, guild_id, raid_id=None, authorized=False, now=
                     pet_instance_id=row.get("pet_instance_id"), amount=int(row["pet_xp"]), now=context.now,
                 )
             except ValueError as exc:
-                raise EconomyMutationError("pet_snapshot_invalid", str(exc) from exc
+                raise EconomyMutationError("pet_snapshot_invalid", str(exc)) from exc
             await append_activity_event(
                 db, guild_id=guild_id, user_id=row["user_id"], event_type="BOSS_PARTICIPATION",
                 event_key=f"boss-participation:{raid_id}:{row['user_id']}", points=5, metric_value=1,
                 occurred_at=context.now, transaction_id=context.transaction_id, reference_id=raid_id,
             )
-            for item_id in row.get("drop", {}).get("stacks", ():
+            for item_id in row.get("drop", {}).get("stacks", ()):
                 from .inventory import adjust_stack
                 await adjust_stack(
                     db, guild_id, row["user_id"], item_id, 1, context.now,
@@ -327,25 +353,28 @@ async def settle_boss(db_path, *, guild_id, raid_id=None, authorized=False, now=
                 await db.execute(
                     "INSERT INTO RpgEquipmentInstance "
                     "(equipmentInstanceId,guildId,ownerId,itemId,catalogVersion,slot,enhancementLevel,pityBps,bindingStatus,status,acquiredSource,createdAt,updatedAt) "
-                    "VALUES ($1,$2,$3,$4,$5,$6,0,0,'BOUND_ON_EQUIP','OWNED','BOSS',$7,$8)", str(row["equipment_instance_id"]), str(guild_id), row["user_id"], equipment_item_id,
+                    "VALUES (?,?,?,?,?,?,0,0,'BOUND_ON_EQUIP','OWNED','BOSS',?,?)",
+                    (str(row["equipment_instance_id"]), str(guild_id), row["user_id"], equipment_item_id,
                      plan["catalog_version"], definition["slot"], context.now, context.now),
                 )
             await db.execute(
                 "INSERT INTO RpgBossParticipantReward "
                 "(raidId,userId,rank,eligible,damage,etmAmount,dropJson,activePetInstanceId,petXp,status,transactionId) "
-                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'COMMITTED',$10) "
+                "VALUES (?,?,?,?,?,?,?,?,?,'COMMITTED',?) "
                 "ON CONFLICT(raidId,userId) DO UPDATE SET status='COMMITTED',"
                 "transactionId=excluded.transactionId",
                 (raid_id, row["user_id"], row["rank"], 1, row["damage"], row["etm"],
-                 json.dumps(row.get("drop", {}), row.get("pet_instance_id"), row["pet_xp"], context.transaction_id),
+                 json.dumps(row.get("drop", {})), row.get("pet_instance_id"), row["pet_xp"], context.transaction_id),
             )
         if last_hit:
             await db.execute(
-                "INSERT OR IGNORE INTO RpgAchievementGrant (grantId,guildId,userId,achievementId,referenceId,grantedAt) VALUES ($1,$2,$3,$4,$5,$6)", str(uuid.uuid4(), str(guild_id), str(last_hit), ACHIEVEMENTS[tier], raid_id, context.now),
+                "INSERT OR IGNORE INTO RpgAchievementGrant (grantId,guildId,userId,achievementId,referenceId,grantedAt) VALUES (?,?,?,?,?,?)",
+                (str(uuid.uuid4()), str(guild_id), str(last_hit), ACHIEVEMENTS[tier], raid_id, context.now),
             )
         await db.execute(
-            "UPDATE RpgBossRaid SET status='SETTLED',settlementTransactionId=$1,settledAt=$2,updatedAt=$3 "
-            "WHERE raidId=$1 AND status IN ('DEFEATED','AWAITING_FUNDS')", context.transaction_id, context.now, context.now, raid_id),
+            "UPDATE RpgBossRaid SET status='SETTLED',settlementTransactionId=?,settledAt=?,updatedAt=? "
+            "WHERE raidId=? AND status IN ('DEFEATED','AWAITING_FUNDS')",
+            (context.transaction_id, context.now, context.now, raid_id),
         )
         return {"raid_id": raid_id, "participant_count": len(participants)}
 
@@ -370,9 +399,9 @@ async def settle_boss(db_path, *, guild_id, raid_id=None, authorized=False, now=
                 await db.execute(
                     "INSERT OR IGNORE INTO RpgBossParticipantReward "
                     "(raidId,userId,rank,eligible,damage,etmAmount,dropJson,activePetInstanceId,petXp,status) "
-                    "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'REVIEW_REQUIRED')",
+                    "VALUES (?,?,?,?,?,?,?,?,?,'REVIEW_REQUIRED')",
                     (raid_id, row["user_id"], row["rank"], 1, row["damage"], row["etm"],
-                     json.dumps(row.get("drop", {}), row.get("pet_instance_id"), row["pet_xp"]),
+                     json.dumps(row.get("drop", {})), row.get("pet_instance_id"), row["pet_xp"]),
                 )
             await db.commit()
     return result
@@ -386,20 +415,24 @@ async def _mark_boss_awaiting_if_underfunded(
         await configure_connection(db)
         await db.execute("BEGIN IMMEDIATE")
         try:
-            raid = await db.fetchrow(
-                "SELECT status,rewardPlanJson FROM RpgBossRaid WHERE raidId=$1 AND guildId=$2", str(raid_id), str(guild_id),
-            )
-            fund = await db.fetchrow(
-                "SELECT balance FROM EconomySystemAccount WHERE guildId=$1 "
+            async with db.execute(
+                "SELECT status,rewardPlanJson FROM RpgBossRaid WHERE raidId=? AND guildId=?",
+                (str(raid_id), str(guild_id)),
+            ) as cursor:
+                raid = await cursor.fetchone()
+            async with db.execute(
+                "SELECT balance FROM EconomySystemAccount WHERE guildId=? "
                 "AND accountCode='ETM_BOSS_DUNGEON'",
                 (str(guild_id),),
-            )
+            ) as cursor:
+                fund = await cursor.fetchone()
             underfunded = not fund or int(fund[0]) < int(required_amount)
             if (raid and raid[0] in ("DEFEATED", "AWAITING_FUNDS")
                     and raid[1] == expected_plan and underfunded):
                 await db.execute(
-                    "UPDATE RpgBossRaid SET status='AWAITING_FUNDS',updatedAt=$1 "
-                    "WHERE raidId=$1 AND status IN ('DEFEATED','AWAITING_FUNDS')", utc_iso(now), str(raid_id),
+                    "UPDATE RpgBossRaid SET status='AWAITING_FUNDS',updatedAt=? "
+                    "WHERE raidId=? AND status IN ('DEFEATED','AWAITING_FUNDS')",
+                    (utc_iso(now), str(raid_id)),
                 )
             await db.commit()
             return bool(underfunded)

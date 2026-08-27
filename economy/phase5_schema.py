@@ -294,7 +294,7 @@ REQUIRED_PHASE5_COLUMNS = {
 
 def phase5_capability_sync(connection):
     marker = connection.execute(
-        "SELECT checksum FROM EconomySchemaMigration WHERE version=$1 AND status='COMPLETED'",
+        "SELECT checksum FROM EconomySchemaMigration WHERE version=? AND status='COMPLETED'",
         (ECONOMY_PHASE5_MIGRATION_VERSION,),
     ).fetchone()
     if not marker or marker[0] != PHASE5_SCHEMA_CHECKSUM:
@@ -315,17 +315,20 @@ def phase5_capability_sync(connection):
 
 async def phase5_capability(db):
     try:
-        marker = await db.fetchrow(
-            "SELECT checksum FROM EconomySchemaMigration WHERE version=$1 AND status='COMPLETED'", ECONOMY_PHASE5_MIGRATION_VERSION,),
-        )
+        async with db.execute(
+            "SELECT checksum FROM EconomySchemaMigration WHERE version=? AND status='COMPLETED'",
+            (ECONOMY_PHASE5_MIGRATION_VERSION,),
+        ) as cursor:
+            marker = await cursor.fetchone()
         if not marker or marker[0] != PHASE5_SCHEMA_CHECKSUM:
             return False
         async with db.execute(
             "SELECT name,type FROM sqlite_master WHERE type IN ('table','index','trigger')"
+        ) as cursor:
             objects = {row[0]: row[1] for row in await cursor.fetchall()}
         if not (all(objects.get(name) == "table" for name in REQUIRED_PHASE5_TABLES)
                 and all(objects.get(name) == "index" for name in REQUIRED_PHASE5_INDEXES)
-                and all(objects.get(name) == "trigger" for name in REQUIRED_PHASE5_TRIGGERS):
+                and all(objects.get(name) == "trigger" for name in REQUIRED_PHASE5_TRIGGERS)):
             return False
         for table, required in REQUIRED_PHASE5_COLUMNS.items():
             async with db.execute(f'PRAGMA table_info("{table}")') as cursor:

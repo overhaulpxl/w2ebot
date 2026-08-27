@@ -45,19 +45,22 @@ async def _checkpoint_locked(db, row, observed):
         await db.execute(
             "INSERT OR IGNORE INTO EconomyActivityEvent "
             "(eventId,guildId,userId,eventType,eventKey,points,metricValue,transactionId,referenceId,occurredAt,createdAt) "
-            "VALUES ($1,$2,$3,'VOICE_ACTIVITY_30M',$4,2,1,NULL,$5,$6,$7)", event_id, guild_id, user_id, identity, identity, block_end.isoformat(), observed.isoformat(),
+            "VALUES (?,?,?,'VOICE_ACTIVITY_30M',?,2,1,NULL,?,?,?)",
+            (event_id, guild_id, user_id, identity, identity, block_end.isoformat(), observed.isoformat()),
         )
         await db.execute(
             "INSERT OR IGNORE INTO GiveawayVoiceBlock "
             "(blockId,guildId,userId,channelId,qualifiedStartAt,blockSequence,blockEndAt,activityEventId,createdAt) "
-            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)", str(uuid.uuid5(uuid.NAMESPACE_URL, f"w2e:block:{identity}"), guild_id, user_id,
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (str(uuid.uuid5(uuid.NAMESPACE_URL, f"w2e:block:{identity}")), guild_id, user_id,
              channel_id, start.isoformat(), sequence, block_end.isoformat(), event_id, observed.isoformat()),
         )
         awarded, sequence = block_end, int(sequence) + 1
         awarded_count += 1
     cursor = await db.execute(
-        "UPDATE GiveawayVoiceQualification SET awardedThroughAt=$1,lastObservedAt=$2,nextBlockSequence=$3,version=version+1 "
-        "WHERE guildId=$1 AND userId=$2 AND version=$3 AND status='ACTIVE'", awarded.isoformat(), observed.isoformat(), sequence, guild_id, user_id, version),
+        "UPDATE GiveawayVoiceQualification SET awardedThroughAt=?,lastObservedAt=?,nextBlockSequence=?,version=version+1 "
+        "WHERE guildId=? AND userId=? AND version=? AND status='ACTIVE'",
+        (awarded.isoformat(), observed.isoformat(), sequence, guild_id, user_id, version),
     )
     if cursor.rowcount != 1:
         raise RuntimeError("Voice qualification berubah selama checkpoint.")
@@ -74,17 +77,18 @@ async def reconcile_voice_snapshot(db_path, guild_id, qualifying_channels, *, ob
         if not await phase8_capability(db):
             return {**report, "ready": False}
         await db.execute("BEGIN IMMEDIATE")
-        rows = await db.fetch(
+        async with db.execute(
             "SELECT guildId,userId,channelId,qualifiedStartAt,awardedThroughAt,lastObservedAt,nextBlockSequence,status,version "
-            "FROM GiveawayVoiceQualification WHERE guildId=$1 AND status='ACTIVE'", str(guild_id),),
-        )
+            "FROM GiveawayVoiceQualification WHERE guildId=? AND status='ACTIVE'", (str(guild_id),),
+        ) as cursor:
+            rows = await cursor.fetchall()
         active = {str(row[1]): row for row in rows}
         for user_id, row in active.items():
             report["awarded"] += await _checkpoint_locked(db, row, observed)
             if user_id not in current or current[user_id] != str(row[2]):
                 await db.execute(
-                    "UPDATE GiveawayVoiceQualification SET status='CLOSED',lastObservedAt=$1,version=version+1 "
-                    "WHERE guildId=$1 AND userId=$2 AND status='ACTIVE'",
+                    "UPDATE GiveawayVoiceQualification SET status='CLOSED',lastObservedAt=?,version=version+1 "
+                    "WHERE guildId=? AND userId=? AND status='ACTIVE'",
                     (observed.isoformat(), str(guild_id), user_id),
                 )
                 report["closed"] += 1
@@ -94,11 +98,11 @@ async def reconcile_voice_snapshot(db_path, guild_id, qualifying_channels, *, ob
             await db.execute(
                 "INSERT INTO GiveawayVoiceQualification "
                 "(guildId,userId,channelId,qualifiedStartAt,awardedThroughAt,lastObservedAt,nextBlockSequence,status,version) "
-                "VALUES ($1,$2,$3,$4,$5,$6,1,'ACTIVE',0) ON CONFLICT(guildId,userId) DO UPDATE SET "
+                "VALUES (?,?,?,?,?,?,1,'ACTIVE',0) ON CONFLICT(guildId,userId) DO UPDATE SET "
                 "channelId=excluded.channelId,qualifiedStartAt=excluded.qualifiedStartAt,"
                 "awardedThroughAt=excluded.awardedThroughAt,lastObservedAt=excluded.lastObservedAt,"
                 "nextBlockSequence=1,status='ACTIVE',version=GiveawayVoiceQualification.version+1",
-                (str(guild_id), user_id, channel_id, observed.isoformat(), observed.isoformat(), observed.isoformat(),
+                (str(guild_id), user_id, channel_id, observed.isoformat(), observed.isoformat(), observed.isoformat()),
             )
             report["started"] += 1
         await db.commit()
@@ -112,14 +116,16 @@ async def close_voice_segments_on_restart(db_path):
         if not await phase8_capability(db):
             return {**report, "ready": False}
         await db.execute("BEGIN IMMEDIATE")
-        rows = await db.fetch(
+        async with db.execute(
             "SELECT guildId,userId,channelId,qualifiedStartAt,awardedThroughAt,lastObservedAt,nextBlockSequence,status,version "
             "FROM GiveawayVoiceQualification WHERE status='ACTIVE'"
+        ) as cursor:
+            rows = await cursor.fetchall()
         for row in rows:
-            report["awarded"] += await _checkpoint_locked(db, row, _dt(row[5])
+            report["awarded"] += await _checkpoint_locked(db, row, _dt(row[5]))
             await db.execute(
                 "UPDATE GiveawayVoiceQualification SET status='CLOSED',version=version+1 "
-                "WHERE guildId=$1 AND userId=$2 AND status='ACTIVE'", (row[0], row[1]),
+                "WHERE guildId=? AND userId=? AND status='ACTIVE'", (row[0], row[1]),
             )
             report["closed"] += 1
         await db.commit()

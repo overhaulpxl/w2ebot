@@ -46,10 +46,12 @@ async def claim_reward(db_path, *, guild_id, user_id, claim_type, request_id, no
     etm, ecy, cooldown, points = CLAIM_CONFIG[claim_type]
 
     async def state_extension(db, context):
-        state = await db.fetchrow(
+        async with db.execute(
             "SELECT nextEligibleAt,version FROM EconomyClaimState "
-            "WHERE guildId=$1 AND userId=$2 AND claimType=$3", context.guild_id, str(user_id), claim_type),
-        )
+            "WHERE guildId=? AND userId=? AND claimType=?",
+            (context.guild_id, str(user_id), claim_type),
+        ) as cursor:
+            state = await cursor.fetchone()
         if state and state[0]:
             try:
                 remaining = remaining_seconds(state[0], context.now)
@@ -57,12 +59,13 @@ async def claim_reward(db_path, *, guild_id, user_id, claim_type, request_id, no
                 raise EconomyMutationError("invalid_state", "State cooldown claim tidak valid.")
             if remaining > 0:
                 raise EconomyMutationError("cooldown", f"Claim belum tersedia. Tunggu {remaining} detik lagi.")
-        next_eligible = utc_iso(utc_datetime(context.now) + timedelta(seconds=cooldown)
+        next_eligible = utc_iso(utc_datetime(context.now) + timedelta(seconds=cooldown))
         if state:
             cursor = await db.execute(
-                "UPDATE EconomyClaimState SET lastClaimAt=$1,nextEligibleAt=$2,lastTransactionId=$3,"
-                "version=version+1,updatedAt=$1 WHERE guildId=$2 AND userId=$3 AND claimType=$4 AND version=$5", context.now, next_eligible, context.transaction_id, context.now,
-                 context.guild_id, str(user_id), claim_type, int(state[1]),
+                "UPDATE EconomyClaimState SET lastClaimAt=?,nextEligibleAt=?,lastTransactionId=?,"
+                "version=version+1,updatedAt=? WHERE guildId=? AND userId=? AND claimType=? AND version=?",
+                (context.now, next_eligible, context.transaction_id, context.now,
+                 context.guild_id, str(user_id), claim_type, int(state[1])),
             )
             if cursor.rowcount != 1:
                 raise EconomyMutationError("stale", "Claim berubah saat diproses.")
@@ -70,7 +73,8 @@ async def claim_reward(db_path, *, guild_id, user_id, claim_type, request_id, no
             await db.execute(
                 "INSERT INTO EconomyClaimState "
                 "(guildId,userId,claimType,lastClaimAt,nextEligibleAt,lastTransactionId,version,createdAt,updatedAt) "
-                "VALUES ($1,$2,$3,$4,$5,$6,0,$7,$8)", context.guild_id, str(user_id), claim_type, context.now, next_eligible,
+                "VALUES (?,?,?,?,?,?,0,?,?)",
+                (context.guild_id, str(user_id), claim_type, context.now, next_eligible,
                  context.transaction_id, context.now, context.now),
             )
         await append_activity_event(
@@ -94,13 +98,14 @@ async def claim_reward(db_path, *, guild_id, user_id, claim_type, request_id, no
         feature="economy",
         deltas=(
             AccountDelta("SYSTEM", "ETM_ISSUANCE", "ETM", -etm),
-            AccountDelta("USER", str(user_id), "ETM", etm, str(user_id),
+            AccountDelta("USER", str(user_id), "ETM", etm, str(user_id)),
             AccountDelta("SYSTEM", "ECY_ISSUANCE", "ECY", -ecy),
             AccountDelta("USER", str(user_id), "ECY", ecy, str(user_id)),
         ),
         success_code=f"{claim_type.lower()}_claimed",
         success_message=(
             f"{claim_type.title()} berhasil diklaim: {etm:,} ETM dan {ecy:,} ECY."
+        ),
         before_commit=state_extension,
         now_override=now,
     )
@@ -110,7 +115,8 @@ async def _ensure_work_state(db, guild_id, user_id, now):
     await db.execute(
         "INSERT OR IGNORE INTO EconomyWorkState "
         "(guildId,userId,periodDate,successCount,lastSuccessAt,pendingRollId,version,createdAt,updatedAt) "
-        "VALUES ($1,$2,NULL,0,NULL,NULL,0,$3,$4)", str(guild_id), str(user_id), now, now),
+        "VALUES (?,?,NULL,0,NULL,NULL,0,?,?)",
+        (str(guild_id), str(user_id), now, now),
     )
 
 
@@ -124,27 +130,31 @@ async def reserve_work_roll(db_path, *, guild_id, user_id, now=None):
         await db.execute("BEGIN IMMEDIATE")
         try:
             await _ensure_work_state(db, guild_id, user_id, now_iso)
-            state = await db.fetchrow(
+            async with db.execute(
                 "SELECT periodDate,successCount,lastSuccessAt,pendingRollId,version "
-                "FROM EconomyWorkState WHERE guildId=$1 AND userId=$2", str(guild_id), str(user_id),
-            )
+                "FROM EconomyWorkState WHERE guildId=? AND userId=?",
+                (str(guild_id), str(user_id)),
+            ) as cursor:
+                state = await cursor.fetchone()
             period_date, count, last_success, pending_roll, _ = state
             effective_count = int(count) if period_date == today else 0
             if pending_roll:
-                roll = await db.fetchrow(
-                    "SELECT amount,status,createdAt FROM EconomyRewardRoll WHERE rollId=$1 AND guildId=$2 AND userId=$3",
-                    (pending_roll, str(guild_id), str(user_id),
-                )
+                async with db.execute(
+                    "SELECT amount,status,createdAt FROM EconomyRewardRoll WHERE rollId=? AND guildId=? AND userId=?",
+                    (pending_roll, str(guild_id), str(user_id)),
+                ) as cursor:
+                    roll = await cursor.fetchone()
                 if not roll:
                     raise EconomyMutationError("invalid_state", "Pending Work roll tidak ditemukan.")
                 amount, status, created_at = int(roll[0]), roll[1], utc_datetime(roll[2])
                 if status == "RESERVED" and created_at <= cutoff:
                     await db.execute(
-                        "UPDATE EconomyRewardRoll SET status='VOID',voidedAt=$1 WHERE rollId=$2 AND status='RESERVED'", now_iso, pending_roll),
+                        "UPDATE EconomyRewardRoll SET status='VOID',voidedAt=? WHERE rollId=? AND status='RESERVED'",
+                        (now_iso, pending_roll),
                     )
                     await db.execute(
-                        "UPDATE EconomyWorkState SET pendingRollId=NULL,version=version+1,updatedAt=$1 "
-                        "WHERE guildId=$1 AND userId=$2 AND pendingRollId=$3",
+                        "UPDATE EconomyWorkState SET pendingRollId=NULL,version=version+1,updatedAt=? "
+                        "WHERE guildId=? AND userId=? AND pendingRollId=?",
                         (now_iso, str(guild_id), str(user_id), pending_roll),
                     )
                     await db.commit()
@@ -155,7 +165,7 @@ async def reserve_work_roll(db_path, *, guild_id, user_id, now=None):
                 await db.rollback()
                 return RewardRollResult(False, "invalid_roll", "Work roll ini tidak dapat digunakan lagi.")
             if last_success:
-                remaining = WORK_COOLDOWN_SECONDS - int((current - utc_datetime(last_success).total_seconds())
+                remaining = WORK_COOLDOWN_SECONDS - int((current - utc_datetime(last_success)).total_seconds())
                 if remaining > 0:
                     await db.rollback()
                     return RewardRollResult(False, "cooldown", f"Work tersedia lagi dalam {remaining} detik.")
@@ -167,12 +177,13 @@ async def reserve_work_roll(db_path, *, guild_id, user_id, now=None):
             await db.execute(
                 "INSERT INTO EconomyRewardRoll "
                 "(rollId,guildId,userId,rewardType,currency,amount,status,createdAt) "
-                "VALUES ($1,$2,$3,'WORK','ETM',$4,'RESERVED',$5)", roll_id, str(guild_id), str(user_id), amount, now_iso),
+                "VALUES (?,?,?,'WORK','ETM',?,'RESERVED',?)",
+                (roll_id, str(guild_id), str(user_id), amount, now_iso),
             )
             cursor = await db.execute(
-                "UPDATE EconomyWorkState SET pendingRollId=$1,version=version+1,updatedAt=$2 "
-                "WHERE guildId=$1 AND userId=$2 AND pendingRollId IS NULL",
-                (roll_id, now_iso, str(guild_id), str(user_id),
+                "UPDATE EconomyWorkState SET pendingRollId=?,version=version+1,updatedAt=? "
+                "WHERE guildId=? AND userId=? AND pendingRollId IS NULL",
+                (roll_id, now_iso, str(guild_id), str(user_id)),
             )
             if cursor.rowcount != 1:
                 raise EconomyMutationError("stale", "Work state berubah saat roll dibuat.")
@@ -193,10 +204,12 @@ async def settle_work_roll(db_path, *, guild_id, user_id, roll_id, now=None):
         await configure_connection(db)
         await db.execute("BEGIN IMMEDIATE")
         try:
-            roll = await db.fetchrow(
+            async with db.execute(
                 "SELECT amount,status,createdAt,transactionId FROM EconomyRewardRoll "
-                "WHERE rollId=$1 AND guildId=$2 AND userId=$3", str(roll_id), str(guild_id), str(user_id),
-            )
+                "WHERE rollId=? AND guildId=? AND userId=?",
+                (str(roll_id), str(guild_id), str(user_id)),
+            ) as cursor:
+                roll = await cursor.fetchone()
             if not roll:
                 await db.rollback()
                 return EconomyResult(False, "not_found", "Work roll tidak ditemukan.")
@@ -210,11 +223,13 @@ async def settle_work_roll(db_path, *, guild_id, user_id, roll_id, now=None):
             if created_at <= cutoff:
                 now_iso = utc_iso(current)
                 await db.execute(
-                    "UPDATE EconomyRewardRoll SET status='VOID',voidedAt=$1 WHERE rollId=$2 AND status='RESERVED'", now_iso, str(roll_id),
+                    "UPDATE EconomyRewardRoll SET status='VOID',voidedAt=? WHERE rollId=? AND status='RESERVED'",
+                    (now_iso, str(roll_id)),
                 )
                 await db.execute(
-                    "UPDATE EconomyWorkState SET pendingRollId=NULL,version=version+1,updatedAt=$1 "
-                    "WHERE guildId=$1 AND userId=$2 AND pendingRollId=$3", now_iso, str(guild_id), str(user_id), str(roll_id),
+                    "UPDATE EconomyWorkState SET pendingRollId=NULL,version=version+1,updatedAt=? "
+                    "WHERE guildId=? AND userId=? AND pendingRollId=?",
+                    (now_iso, str(guild_id), str(user_id), str(roll_id)),
                 )
                 await db.commit()
                 return EconomyResult(False, "roll_expired", "Work roll sudah kedaluwarsa dan dibatalkan.")
@@ -224,17 +239,21 @@ async def settle_work_roll(db_path, *, guild_id, user_id, roll_id, now=None):
             raise
 
     async def state_extension(db, context):
-        latest_roll = await db.fetchrow(
-            "SELECT amount,status,createdAt FROM EconomyRewardRoll WHERE rollId=$1 AND guildId=$2 AND userId=$3", str(roll_id), context.guild_id, str(user_id),
-        )
+        async with db.execute(
+            "SELECT amount,status,createdAt FROM EconomyRewardRoll WHERE rollId=? AND guildId=? AND userId=?",
+            (str(roll_id), context.guild_id, str(user_id)),
+        ) as cursor:
+            latest_roll = await cursor.fetchone()
         if not latest_roll or latest_roll[1] != "RESERVED":
             raise EconomyMutationError("invalid_roll", "Work roll tidak lagi dapat diproses.")
         if utc_datetime(latest_roll[2]) <= utc_datetime(context.now) - timedelta(seconds=WORK_ROLL_STALE_SECONDS):
             raise EconomyMutationError("roll_expired", "Work roll sudah kedaluwarsa.")
-        state = await db.fetchrow(
+        async with db.execute(
             "SELECT periodDate,successCount,lastSuccessAt,pendingRollId,version FROM EconomyWorkState "
-            "WHERE guildId=$1 AND userId=$2", context.guild_id, str(user_id),
-        )
+            "WHERE guildId=? AND userId=?",
+            (context.guild_id, str(user_id)),
+        ) as cursor:
+            state = await cursor.fetchone()
         if not state or state[3] != str(roll_id):
             raise EconomyMutationError("stale", "Pending Work roll berubah.")
         period_date, count, last_success, _, version = state
@@ -247,15 +266,17 @@ async def settle_work_roll(db_path, *, guild_id, user_id, roll_id, now=None):
         if effective_count >= WORK_DAILY_LIMIT:
             raise EconomyMutationError("daily_limit", "Batas Work harian sudah tercapai.")
         cursor = await db.execute(
-            "UPDATE EconomyWorkState SET periodDate=$1,successCount=$2,lastSuccessAt=$3,pendingRollId=NULL,"
-            "version=version+1,updatedAt=$1 WHERE guildId=$2 AND userId=$3 AND version=$4 AND pendingRollId=$5", today, effective_count + 1, context.now, context.now, context.guild_id,
-             str(user_id), int(version), str(roll_id),
+            "UPDATE EconomyWorkState SET periodDate=?,successCount=?,lastSuccessAt=?,pendingRollId=NULL,"
+            "version=version+1,updatedAt=? WHERE guildId=? AND userId=? AND version=? AND pendingRollId=?",
+            (today, effective_count + 1, context.now, context.now, context.guild_id,
+             str(user_id), int(version), str(roll_id)),
         )
         if cursor.rowcount != 1:
             raise EconomyMutationError("stale", "Work state berubah saat pembayaran.")
         cursor = await db.execute(
-            "UPDATE EconomyRewardRoll SET status='COMMITTED',transactionId=$1,settledAt=$2 "
-            "WHERE rollId=$1 AND status='RESERVED'", context.transaction_id, context.now, str(roll_id),
+            "UPDATE EconomyRewardRoll SET status='COMMITTED',transactionId=?,settledAt=? "
+            "WHERE rollId=? AND status='RESERVED'",
+            (context.transaction_id, context.now, str(roll_id)),
         )
         if cursor.rowcount != 1:
             raise EconomyMutationError("stale", "Work roll berubah saat pembayaran.")
@@ -298,21 +319,22 @@ async def recover_stale_work_rolls(db_path, *, now=None):
         await db.execute("BEGIN IMMEDIATE")
         try:
             async with db.execute(
-                "SELECT rollId FROM EconomyRewardRoll WHERE status='RESERVED' AND createdAt<=$1 ORDER BY createdAt",
+                "SELECT rollId FROM EconomyRewardRoll WHERE status='RESERVED' AND createdAt<=? ORDER BY createdAt",
                 (cutoff,),
+            ) as cursor:
                 roll_ids = [row[0] for row in await cursor.fetchall()]
             voided = 0
             for roll_id in roll_ids:
                 cursor = await db.execute(
-                    "UPDATE EconomyRewardRoll SET status='VOID',voidedAt=$1 "
-                    "WHERE rollId=$1 AND status='RESERVED' AND createdAt<=$2",
+                    "UPDATE EconomyRewardRoll SET status='VOID',voidedAt=? "
+                    "WHERE rollId=? AND status='RESERVED' AND createdAt<=?",
                     (now_iso, roll_id, cutoff),
                 )
                 if cursor.rowcount != 1:
                     continue
                 await db.execute(
-                    "UPDATE EconomyWorkState SET pendingRollId=NULL,version=version+1,updatedAt=$1 "
-                    "WHERE pendingRollId=$1",
+                    "UPDATE EconomyWorkState SET pendingRollId=NULL,version=version+1,updatedAt=? "
+                    "WHERE pendingRollId=?",
                     (now_iso, roll_id),
                 )
                 voided += 1

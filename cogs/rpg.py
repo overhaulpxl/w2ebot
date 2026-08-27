@@ -160,16 +160,18 @@ def setup(tree, client):
     register_prefix_command_handler("rank", rpg_rank_prefix_dispatcher)
 
     async def _rpg_level_leaderboard_embed(guild):
-        async with _pool.acquire() as db:
-            rows = await db.fetch(
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
                 "SELECT id, xp, level FROM DiscordStat ORDER BY level DESC, xp DESC LIMIT 10"
+            ) as cursor:
+                rows = await cursor.fetchall()
         embed = discord.Embed(
             title="🏆 RPG Level Leaderboard",
             description="Top users ranked by level and experience." if rows else "No RPG level data yet.\nStart chatting or using RPG features to appear on the leaderboard.",
             color=discord.Color.gold(),
         )
         medals = ["🥇", "🥈", "🥉"]
-        for idx, uid, xp, level) in enumerate(rows, start=1):
+        for idx, (uid, xp, level) in enumerate(rows, start=1):
             name = await format_leaderboard_user(client, guild, uid)
             current_xp = int(xp or 0)
             current_level = int(level or 1)
@@ -180,11 +182,13 @@ def setup(tree, client):
                     f"> 🧬 **Level:** {current_level}\n"
                     f"> ✨ **XP:** {current_xp:,}\n"
                     f"> 📈 **Progress:** {current_xp:,}/{needed:,} XP"
+                )
             else:
                 value = (
                     f"> 🧬 Level: {current_level}\n"
                     f"> ✨ XP: {current_xp:,}\n"
                     f"> 📈 Progress: {current_xp:,}/{needed:,} XP"
+                )
             embed.add_field(name=f"{prefix} **{name}**", value=value, inline=False)
         return embed
 
@@ -240,6 +244,7 @@ def setup(tree, client):
                     f"Armor: `{profile.active_armor_instance_id or '-'}`\n"
                     f"Accessory: `{profile.active_accessory_instance_id or '-'}`\n"
                     f"Pet: `{profile.active_pet_instance_id or '-'}`"
+                ),
                 inline=False,
             )
             await interaction.followup.send(embed=embed)
@@ -486,6 +491,7 @@ def setup(tree, client):
                 profile = await get_profile_snapshot(DB_PATH, interaction.guild_id, str(interaction.user.id))
                 area_id = "abyss_realm" if profile.level >= 45 else (
                     "eternal_ruins" if profile.level >= 25 else ("dark_cave" if profile.level >= 10 else "green_forest")
+                )
                 operation_id, _, _ = await reserve_hunt(
                     DB_PATH, guild_id=interaction.guild_id, user_id=str(interaction.user.id), area_id=area_id,
                 )
@@ -604,7 +610,7 @@ def setup(tree, client):
                            f"-# ID: `{row['equipmentInstanceId']}`"), inline=False,
                 )
             for row in data["stacks"]:
-                definition = STACK_ITEMS.get(row["itemId"], row["itemId"])
+                definition = STACK_ITEMS.get(row["itemId"], (row["itemId"],))
                 embed.add_field(
                     name=definition[0], value=f"Qty: **{row['quantity']}**\n-# ID: `{row['itemId']}`", inline=False,
                 )
@@ -707,7 +713,7 @@ def setup(tree, client):
 
         await record_game(uid, 'slot', win > 0)
         from w2e_views import SlotView
-        await send_embed(interaction, msg, view=SlotView(interaction.user, bet)
+        await send_embed(interaction, msg, view=SlotView(interaction.user, bet))
     
     
     
@@ -812,8 +818,9 @@ def setup(tree, client):
     @tree.command(name="top", description="Lihat peringkat member terkaya dan tertinggi")
     async def slash_top(interaction: discord.Interaction):
         await interaction.response.defer()
-        async with _pool.acquire() as db:
-            rows = await db.fetch("SELECT id, displayName, coins, level FROM DiscordStat ORDER BY level DESC, coins DESC LIMIT 10")
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT id, displayName, coins, level FROM DiscordStat ORDER BY level DESC, coins DESC LIMIT 10") as cursor:
+                rows = await cursor.fetchall()
         
         embed = discord.Embed(title="🏆 W2E Leaderboard 🏆", color=discord.Color.gold())
         for i, row in enumerate(rows):
@@ -1053,6 +1060,7 @@ def setup(tree, client):
              if k.lower() == item_name.lower()
              or SHOP_ITEMS.get(k, {}).get('name', '').lower() == item_name.lower()),
             None
+        )
         if not item_key or user_items.get(item_key, 0) <= 0:
             await send_embed(interaction, f"❌ Kamu tidak punya item **{item_name}** di tas.")
             return
@@ -1465,7 +1473,7 @@ def setup(tree, client):
             rates = MINING_RATES.get(symbol, {})
             lines = []
             for tier, count in tier_map.items():
-                lo, hi = rates.get(str(tier), 0, 0)
+                lo, hi = rates.get(str(tier), (0, 0))
                 lines.append(f"Tier {tier}: **{count}** unit ({lo}-{hi} {symbol}/jam per unit)")
             embed.add_field(name=f"⛏️ {symbol}", value="\n".join(lines), inline=False)
 

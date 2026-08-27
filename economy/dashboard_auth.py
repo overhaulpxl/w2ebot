@@ -21,16 +21,19 @@ CSRF_MINUTES = 10
 async def has_permission(db, guild_id, user_id, permission_class):
     if permission_class not in PERMISSION_CLASSES:
         return False
-    row = await db.fetchrow(
-        "SELECT 1 FROM DashboardOperatorPermission WHERE guildId=$1 AND userId=$2 "
-        "AND permissionClass=$1 AND status='ACTIVE'", str(guild_id), str(user_id), permission_class),
+    async with db.execute(
+        "SELECT 1 FROM DashboardOperatorPermission WHERE guildId=? AND userId=? "
+        "AND permissionClass=? AND status='ACTIVE'",
+        (str(guild_id), str(user_id), permission_class),
+    ) as cursor:
         return await cursor.fetchone() is not None
 
 
 async def list_permissions(db, guild_id, user_id):
     async with db.execute(
-        "SELECT permissionClass FROM DashboardOperatorPermission WHERE guildId=$1 AND userId=$2 "
-        "AND status='ACTIVE' ORDER BY permissionClass", str(guild_id), str(user_id),
+        "SELECT permissionClass FROM DashboardOperatorPermission WHERE guildId=? AND userId=? "
+        "AND status='ACTIVE' ORDER BY permissionClass", (str(guild_id), str(user_id)),
+    ) as cursor:
         return [row[0] for row in await cursor.fetchall()]
 
 
@@ -44,8 +47,9 @@ async def create_oauth_attempt(db, *, state_hash, pkce_challenge, ip_hash, retur
     await db.execute(
         "INSERT INTO DashboardOAuthAttempt "
         "(attemptId,stateHash,pkceChallenge,returnPath,ipHash,status,createdAt,expiresAt) "
-        "VALUES ($1,$2,$3,$4,$5,'PENDING',$6,$7)", attempt_id, state_hash, pkce_challenge, return_path, ip_hash, iso(moment),
-         iso(moment + timedelta(minutes=OAUTH_ATTEMPT_MINUTES)),
+        "VALUES (?,?,?,?,?,'PENDING',?,?)",
+        (attempt_id, state_hash, pkce_challenge, return_path, ip_hash, iso(moment),
+         iso(moment + timedelta(minutes=OAUTH_ATTEMPT_MINUTES))),
     )
     return attempt_id
 
@@ -54,18 +58,20 @@ async def consume_oauth_attempt(db, *, state_hash, pkce_challenge, now=None):
     moment = now or utc_now()
     async with db.execute(
         "SELECT attemptId,pkceChallenge,returnPath,expiresAt,status,ipHash "
-        "FROM DashboardOAuthAttempt WHERE stateHash=$1", state_hash,),
-    )
+        "FROM DashboardOAuthAttempt WHERE stateHash=?",
+        (state_hash,),
+    ) as cursor:
+        row = await cursor.fetchone()
     if not row or row[4] != "PENDING" or row[1] != pkce_challenge:
         raise DashboardSecurityError("unauthenticated", 401)
     if parse_iso(row[3]) <= moment:
         await db.execute(
-            "UPDATE DashboardOAuthAttempt SET status='EXPIRED',consumedAt=$1 WHERE attemptId=$2 AND status='PENDING'",
+            "UPDATE DashboardOAuthAttempt SET status='EXPIRED',consumedAt=? WHERE attemptId=? AND status='PENDING'",
             (iso(moment), row[0]),
         )
         raise DashboardSecurityError("expired", 401)
     cursor = await db.execute(
-        "UPDATE DashboardOAuthAttempt SET status='CONSUMED',consumedAt=$1 WHERE attemptId=$2 AND status='PENDING'",
+        "UPDATE DashboardOAuthAttempt SET status='CONSUMED',consumedAt=? WHERE attemptId=? AND status='PENDING'",
         (iso(moment), row[0]),
     )
     if cursor.rowcount != 1:
@@ -86,16 +92,17 @@ async def establish_session(db, *, guild_id, user_id, token_hash, session_key_id
         raise DashboardSecurityError("forbidden", 403)
     moment = now or utc_now()
     await db.execute(
-        "INSERT INTO DashboardIdentity (guildId,userId,status,createdAt,updatedAt) VALUES ($1,$2,'ACTIVE',$3,$4) "
+        "INSERT INTO DashboardIdentity (guildId,userId,status,createdAt,updatedAt) VALUES (?,?,'ACTIVE',?,?) "
         "ON CONFLICT(guildId,userId) DO UPDATE SET status='ACTIVE',updatedAt=excluded.updatedAt,version=version+1",
-        (guild_id, user_id, iso(moment), iso(moment),
+        (guild_id, user_id, iso(moment), iso(moment)),
     )
     session_id = str(uuid.uuid4())
     await db.execute(
         "INSERT INTO DashboardSession "
         "(sessionId,tokenHash,guildId,userId,signingKeyId,status,createdAt,lastSeenAt,idleExpiresAt,absoluteExpiresAt) "
-        "VALUES ($1,$2,$3,$4,$5,'ACTIVE',$6,$7,$8,$9)", session_id, token_hash, guild_id, user_id, session_key_id, iso(moment), iso(moment),
-         iso(moment + timedelta(minutes=SESSION_IDLE_MINUTES),
+        "VALUES (?,?,?,?,?,'ACTIVE',?,?,?,?)",
+        (session_id, token_hash, guild_id, user_id, session_key_id, iso(moment), iso(moment),
+         iso(moment + timedelta(minutes=SESSION_IDLE_MINUTES)),
          iso(moment + timedelta(hours=SESSION_ABSOLUTE_HOURS))),
     )
     return session_id
@@ -107,18 +114,19 @@ async def validate_session(db, *, token_hash, required_permission="DASHBOARD_VIE
     if not await phase9a_capability(db):
         raise DashboardSecurityError("capability_unavailable", 503)
     moment = now or utc_now()
-    row = await db.fetchrow(
+    async with db.execute(
         "SELECT sessionId,guildId,userId,status,idleExpiresAt,absoluteExpiresAt,version,signingKeyId "
-        "FROM DashboardSession WHERE tokenHash=$1", token_hash,),
-    )
+        "FROM DashboardSession WHERE tokenHash=?", (token_hash,),
+    ) as cursor:
+        row = await cursor.fetchone()
     if not row or row[3] != "ACTIVE":
         raise DashboardSecurityError("unauthenticated", 401)
     if expected_version is not None and row[6] != int(expected_version):
         raise DashboardSecurityError("unauthenticated", 401)
     if parse_iso(row[4]) <= moment or parse_iso(row[5]) <= moment:
         await db.execute(
-            "UPDATE DashboardSession SET status='EXPIRED',revokedAt=$1,revokeReasonCode='SESSION_EXPIRED',version=version+1 "
-            "WHERE sessionId=$1 AND status='ACTIVE'", iso(moment), row[0]),
+            "UPDATE DashboardSession SET status='EXPIRED',revokedAt=?,revokeReasonCode='SESSION_EXPIRED',version=version+1 "
+            "WHERE sessionId=? AND status='ACTIVE'", (iso(moment), row[0]),
         )
         raise DashboardSecurityError("expired", 401)
     if not discord_member:
@@ -130,10 +138,11 @@ async def validate_session(db, *, token_hash, required_permission="DASHBOARD_VIE
     if required_permission != "DASHBOARD_VIEW" and required_permission not in permissions:
         raise DashboardSecurityError("forbidden", 403)
     if touch:
-        idle_expiry = min(moment + timedelta(minutes=SESSION_IDLE_MINUTES), parse_iso(row[5])
+        idle_expiry = min(moment + timedelta(minutes=SESSION_IDLE_MINUTES), parse_iso(row[5]))
         cursor = await db.execute(
-            "UPDATE DashboardSession SET lastSeenAt=$1,idleExpiresAt=$2 "
-            "WHERE sessionId=$1 AND status='ACTIVE' AND version=$2", iso(moment), iso(idle_expiry), row[0], row[6]),
+            "UPDATE DashboardSession SET lastSeenAt=?,idleExpiresAt=? "
+            "WHERE sessionId=? AND status='ACTIVE' AND version=?",
+            (iso(moment), iso(idle_expiry), row[0], row[6]),
         )
         if cursor.rowcount != 1:
             raise DashboardSecurityError("unauthenticated", 401)
@@ -141,45 +150,50 @@ async def validate_session(db, *, token_hash, required_permission="DASHBOARD_VIE
     else:
         version = row[6]
     return {"sessionId": row[0], "guildId": row[1], "userId": row[2], "permissions": permissions,
-            "version": version, "idleExpiresAt": iso(min(moment + timedelta(minutes=SESSION_IDLE_MINUTES), parse_iso(row[5]),
+            "version": version, "idleExpiresAt": iso(min(moment + timedelta(minutes=SESSION_IDLE_MINUTES), parse_iso(row[5]))),
             "absoluteExpiresAt": row[5], "signingKeyId": row[7]}
 
 
 async def revoke_session(db, *, session_id, reason_code, now=None, expected_version=None):
     moment = now or utc_now()
-    sql = ("UPDATE DashboardSession SET status='REVOKED',revokedAt=$1,revokeReasonCode=$2,version=version+1 "
-           "WHERE sessionId=$1 AND status='ACTIVE'")
+    sql = ("UPDATE DashboardSession SET status='REVOKED',revokedAt=?,revokeReasonCode=?,version=version+1 "
+           "WHERE sessionId=? AND status='ACTIVE'")
     params = [iso(moment), str(reason_code)[:64], str(session_id)]
     if expected_version is not None:
-        sql += " AND version=$1"
+        sql += " AND version=?"
         params.append(int(expected_version))
     cursor = await db.execute(sql, tuple(params))
     if cursor.rowcount != 1:
         raise DashboardSecurityError("version_conflict", 409)
     await db.execute(
-        "UPDATE DashboardCsrfToken SET status='REVOKED' WHERE sessionId=$1 AND status='ACTIVE'", str(session_id),),
+        "UPDATE DashboardCsrfToken SET status='REVOKED' WHERE sessionId=? AND status='ACTIVE'",
+        (str(session_id),),
     )
 
 
 async def rotate_session(db, *, session_id, new_token_hash, expected_version, now=None):
-    if len(str(new_token_hash) != 64:
+    if len(str(new_token_hash)) != 64:
         raise DashboardSecurityError("invalid_request", 400)
     moment = now or utc_now()
-    row = await db.fetchrow(
-        "SELECT absoluteExpiresAt FROM DashboardSession WHERE sessionId=$1 AND status='ACTIVE' AND version=$2", str(session_id), int(expected_version),
-    )
+    async with db.execute(
+        "SELECT absoluteExpiresAt FROM DashboardSession WHERE sessionId=? AND status='ACTIVE' AND version=?",
+        (str(session_id), int(expected_version)),
+    ) as cursor:
+        row = await cursor.fetchone()
     if not row:
         raise DashboardSecurityError("version_conflict", 409)
     idle_expiry = min(moment + timedelta(minutes=SESSION_IDLE_MINUTES), parse_iso(row[0]))
     cursor = await db.execute(
-        "UPDATE DashboardSession SET tokenHash=$1,lastSeenAt=$2,idleExpiresAt=$3,version=version+1 "
-        "WHERE sessionId=$1 AND status='ACTIVE' AND version=$2", str(new_token_hash), iso(moment), iso(idle_expiry),
-         str(session_id), int(expected_version),
+        "UPDATE DashboardSession SET tokenHash=?,lastSeenAt=?,idleExpiresAt=?,version=version+1 "
+        "WHERE sessionId=? AND status='ACTIVE' AND version=?",
+        (str(new_token_hash), iso(moment), iso(idle_expiry),
+         str(session_id), int(expected_version)),
     )
     if cursor.rowcount != 1:
         raise DashboardSecurityError("version_conflict", 409)
     await db.execute(
-        "UPDATE DashboardCsrfToken SET status='REVOKED' WHERE sessionId=$1 AND status='ACTIVE'", str(session_id),),
+        "UPDATE DashboardCsrfToken SET status='REVOKED' WHERE sessionId=? AND status='ACTIVE'",
+        (str(session_id),),
     )
     return int(expected_version) + 1
 
@@ -190,12 +204,13 @@ async def issue_csrf(db, *, session_id, method, canonical_route, request_id, ses
     moment = now or utc_now()
     raw = secrets.token_urlsafe(32)
     token_hash = keyed_hash(session_hash_key, raw)
-    csrf_id = str(uuid.uuid4()
+    csrf_id = str(uuid.uuid4())
     await db.execute(
         "INSERT INTO DashboardCsrfToken "
         "(csrfId,tokenHash,sessionId,method,canonicalRoute,requestId,status,createdAt,expiresAt) "
-        "VALUES ($1,$2,$3,$4,$5,$6,'ACTIVE',$7,$8)", csrf_id, token_hash, session_id, method.upper(), canonical_route, request_id,
-         iso(moment), iso(moment + timedelta(minutes=CSRF_MINUTES)),
+        "VALUES (?,?,?,?,?,?,'ACTIVE',?,?)",
+        (csrf_id, token_hash, session_id, method.upper(), canonical_route, request_id,
+         iso(moment), iso(moment + timedelta(minutes=CSRF_MINUTES))),
     )
     return {"token": raw, "expiresAt": iso(moment + timedelta(minutes=CSRF_MINUTES))}
 
@@ -204,18 +219,19 @@ async def consume_csrf(db, *, raw_token, session_id, method, canonical_route, re
                        session_hash_key, now=None):
     moment = now or utc_now()
     token_hash = keyed_hash(session_hash_key, raw_token)
-    row = await db.fetchrow(
-        "SELECT csrfId,status,expiresAt,sessionId,method,canonicalRoute,requestId FROM DashboardCsrfToken WHERE tokenHash=$1",
+    async with db.execute(
+        "SELECT csrfId,status,expiresAt,sessionId,method,canonicalRoute,requestId FROM DashboardCsrfToken WHERE tokenHash=?",
         (token_hash,),
-    )
+    ) as cursor:
+        row = await cursor.fetchone()
     if (not row or row[1] != "ACTIVE" or row[3] != session_id or row[4] != method.upper()
             or row[5] != canonical_route or row[6] != request_id):
         raise DashboardSecurityError("forbidden", 403)
     if parse_iso(row[2]) <= moment:
-        await db.execute("UPDATE DashboardCsrfToken SET status='EXPIRED' WHERE csrfId=$1", (row[0])
+        await db.execute("UPDATE DashboardCsrfToken SET status='EXPIRED' WHERE csrfId=?", (row[0],))
         raise DashboardSecurityError("expired", 403)
     cursor = await db.execute(
-        "UPDATE DashboardCsrfToken SET status='CONSUMED',consumedAt=$1 WHERE csrfId=$2 AND status='ACTIVE'",
+        "UPDATE DashboardCsrfToken SET status='CONSUMED',consumedAt=? WHERE csrfId=? AND status='ACTIVE'",
         (iso(moment), row[0]),
     )
     if cursor.rowcount != 1:

@@ -17,7 +17,7 @@ def _decimal(value):
 
 
 async def _table_exists(db, table):
-    async with db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=$1", table) as cursor:
+    async with db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)) as cursor:
         return bool(await cursor.fetchone())
 
 
@@ -41,8 +41,8 @@ async def supply_report(db, guild_id, *, now=None):
     await _require(db)
     moment = now or utc_now()
     guild = str(guild_id)
-    wallet_rows = await _rows(db, "SELECT etmBalance,ecyBalance FROM EconomyWallet WHERE guildId=$1", guild)
-    account_rows = await _rows(db, "SELECT accountCode,currency,accountClass,balance FROM EconomySystemAccount WHERE guildId=$1", guild,)
+    wallet_rows = await _rows(db, "SELECT etmBalance,ecyBalance FROM EconomyWallet WHERE guildId=?", (guild,))
+    account_rows = await _rows(db, "SELECT accountCode,currency,accountClass,balance FROM EconomySystemAccount WHERE guildId=?", (guild,))
     totals = {"ETM": 0, "ECY": 0}
     for etm, ecy in wallet_rows:
         totals["ETM"] += int(etm); totals["ECY"] += int(ecy)
@@ -54,7 +54,7 @@ async def supply_report(db, guild_id, *, now=None):
                          "balance": _decimal(balance)})
     ledger_rows = await _rows(
         db, "SELECT l.currency,l.accountId,l.amount FROM EconomyLedger l JOIN EconomyTransaction t "
-            "ON t.transactionId=l.transactionId WHERE t.guildId=$1 AND t.status='COMMITTED' "
+            "ON t.transactionId=l.transactionId WHERE t.guildId=? AND t.status='COMMITTED' "
             "AND l.accountKind='SYSTEM'", (guild,),
     )
     classes = {row[0]: row[2] for row in account_rows}
@@ -72,7 +72,7 @@ async def supply_report(db, guild_id, *, now=None):
 
 
 async def balance_distribution(db, guild_id):
-    rows = await _rows(db, "SELECT ecyBalance FROM EconomyWallet WHERE guildId=$1 ORDER BY ecyBalance", (str(guild_id),))
+    rows = await _rows(db, "SELECT ecyBalance FROM EconomyWallet WHERE guildId=? ORDER BY ecyBalance", (str(guild_id),))
     values = [int(row[0]) for row in rows]
     positive = [value for value in values if value > 0]
     def percentile(percent):
@@ -97,8 +97,8 @@ async def flows_report(db, guild_id, *, window_days, now=None):
     moment = now or utc_now(); start = moment - timedelta(days=int(window_days)); guild = str(guild_id)
     rows = await _rows(
         db, "SELECT t.transactionId,t.operation,l.currency,l.amount,l.accountKind FROM EconomyTransaction t "
-            "JOIN EconomyLedger l ON l.transactionId=t.transactionId WHERE t.guildId=$1 AND t.status='COMMITTED' "
-            "AND t.committedAt>=$1 AND t.committedAt<$2", (guild, iso(start), iso(moment)),
+            "JOIN EconomyLedger l ON l.transactionId=t.transactionId WHERE t.guildId=? AND t.status='COMMITTED' "
+            "AND t.committedAt>=? AND t.committedAt<?", (guild, iso(start), iso(moment)),
     )
     groups = {}; unclassified = set(); transaction_debits = {}
     for transaction_id, operation, currency, amount, account_kind in rows:
@@ -113,6 +113,7 @@ async def flows_report(db, guild_id, *, window_days, now=None):
             if value < 0:
                 transaction_debits[(transaction_id, str(operation), currency)] = (
                     transaction_debits.get((transaction_id, str(operation), currency), 0) + abs(value)
+                )
     fees = {"TRANSFER": {"ETM": 0}, "EXCHANGE": {"ETM": 0},
             "MARKETPLACE": {"ETM": 0}, "CRYPTO": {"ECY": 0}}
     for (_, operation, currency), amount in transaction_debits.items():
@@ -130,8 +131,8 @@ async def flows_report(db, guild_id, *, window_days, now=None):
         columns = {row[1] for row in await _rows(db, f"PRAGMA table_info({table})")}
         time_column = "settledAt" if "settledAt" in columns else "createdAt"
         fee_rows = await _rows(
-            db, f"SELECT {column} FROM {table} WHERE guildId=$1 AND status='COMMITTED' "
-                f"AND {time_column}>=$1 AND {time_column}<$2", (guild, iso(start), iso(moment)),
+            db, f"SELECT {column} FROM {table} WHERE guildId=? AND status='COMMITTED' "
+                f"AND {time_column}>=? AND {time_column}<?", (guild, iso(start), iso(moment)),
         )
         fees[category][currency] += sum(int(row[0]) for row in fee_rows)
     data = {"windowDays": str(window_days), "windowStart": iso(start), "windowEnd": iso(moment),
@@ -157,17 +158,17 @@ async def liabilities_report(db, guild_id, *, now=None):
             result[name] = {"count": "0", "amount": "0", "available": False}; warnings.append(f"source_unavailable:{table}")
             continue
         columns = {row[1] for row in await _rows(db, f"PRAGMA table_info({table})")}
-        guild_clause = "guildId=$1" if "guildId" in columns else "1=1"
+        guild_clause = "guildId=?" if "guildId" in columns else "1=1"
         params = [guild] if "guildId" in columns else []
         where = guild_clause
         if status_column and statuses:
-            where += f" AND {status_column} IN ({','.join('$1' for _ in statuses)})"; params.extend(statuses)
+            where += f" AND {status_column} IN ({','.join('?' for _ in statuses)})"; params.extend(statuses)
         rows = await _rows(db, f"SELECT {amount_column} FROM {table} WHERE {where}", tuple(params))
         result[name] = {"count": _decimal(len(rows)), "amount": _decimal(sum(int(row[0] or 0) for row in rows)), "available": True}
     if await _table_exists(db, "MiningPendingAsset") and await _table_exists(db, "MiningRigInstance"):
         rows = await _rows(
             db, "SELECT p.pendingUnits FROM MiningPendingAsset p JOIN MiningRigInstance r "
-                "ON r.rigInstanceId=p.rigInstanceId WHERE r.guildId=$1", (guild,),
+                "ON r.rigInstanceId=p.rigInstanceId WHERE r.guildId=?", (guild,),
         )
         result["mining"] = {"count": _decimal(len(rows)),
                             "amount": _decimal(sum(int(row[0] or 0) for row in rows)), "available": True}
@@ -196,7 +197,7 @@ async def domain_metrics(db, guild_id, domain, *, now=None):
             warnings.append(f"source_unavailable:{table}")
             continue
         columns = {row[1] for row in await _rows(db, f"PRAGMA table_info({table})")}
-        where, params = (" WHERE guildId=$1", (guild,)) if "guildId" in columns else ("", ())
+        where, params = (" WHERE guildId=?", (guild,)) if "guildId" in columns else ("", ())
         rows = await _rows(db, f"SELECT {status_column},COUNT(*) FROM {table}{where} GROUP BY {status_column}", params)
         statuses.extend({"source": table, "status": row[0], "count": _decimal(row[1])} for row in rows)
     freshness = "STALE" if warnings and statuses else ("UNAVAILABLE" if warnings else "FRESH")
@@ -207,9 +208,9 @@ async def recovery_report(db, guild_id, *, limit=50, now=None):
     await _require(db); moment = now or utc_now(); guild = str(guild_id)
     bounded = max(1, min(int(limit), 100))
     deliveries = await _rows(db, "SELECT deliveryId,category,status,lastFailureCode,createdAt FROM DashboardNotificationDelivery "
-                            "WHERE guildId=$1 AND status IN ('FAILED','REVIEW_REQUIRED') ORDER BY createdAt DESC LIMIT $2", (guild, bounded))
+                            "WHERE guildId=? AND status IN ('FAILED','REVIEW_REQUIRED') ORDER BY createdAt DESC LIMIT ?", (guild, bounded))
     controls = await _rows(db, "SELECT domain,entityType,entityId,status,version,updatedAt FROM DashboardRecoveryControl "
-                           "WHERE guildId=$1 AND status<>'RESOLVED' ORDER BY updatedAt DESC LIMIT $2", (guild, bounded))
+                           "WHERE guildId=? AND status<>'RESOLVED' ORDER BY updatedAt DESC LIMIT ?", (guild, bounded))
     return _envelope(guild, moment, {"deliveries": [{"deliveryId": r[0], "category": r[1], "status": r[2], "failureCode": r[3], "createdAt": r[4]} for r in deliveries],
                                       "reviews": [{"domain": r[0], "entityType": r[1], "entityId": r[2], "status": r[3], "version": _decimal(r[4]), "updatedAt": r[5]} for r in controls]})
 
@@ -218,21 +219,21 @@ async def overview_report(db, guild_id, *, current_non_bot_user_ids=None, now=No
     await _require(db); moment = now or utc_now(); guild = str(guild_id)
     ledger_rows = await _rows(
         db, "SELECT t.transactionId,l.currency,l.amount FROM EconomyTransaction t JOIN EconomyLedger l "
-            "ON l.transactionId=t.transactionId WHERE t.guildId=$1 AND t.status='COMMITTED'", (guild,),
+            "ON l.transactionId=t.transactionId WHERE t.guildId=? AND t.status='COMMITTED'", (guild,),
     )
     balances = {}
     for transaction_id, currency, amount in ledger_rows:
         key = (transaction_id, currency)
         balances[key] = balances.get(key, 0) + int(amount)
     unbalanced = [key for key, amount in balances.items() if amount]
-    reviews = await _rows(db, "SELECT COUNT(*) FROM DashboardNotificationDelivery WHERE guildId=$1 AND status='REVIEW_REQUIRED'", (guild,))
+    reviews = await _rows(db, "SELECT COUNT(*) FROM DashboardNotificationDelivery WHERE guildId=? AND status='REVIEW_REQUIRED'", (guild,))
     routes = await list_notification_routes(db, guild)
     missing = sum(1 for route in routes if route["status"] == "NOT_CONFIGURED")
     window_start = iso(moment - timedelta(days=30))
     economic_rows = await _rows(
         db, "SELECT DISTINCT l.userId FROM EconomyLedger l JOIN EconomyTransaction t "
-            "ON t.transactionId=l.transactionId WHERE t.guildId=$1 AND t.status='COMMITTED' "
-            "AND l.accountKind='USER' AND l.userId IS NOT NULL AND l.createdAt>=$1 AND l.createdAt<$2",
+            "ON t.transactionId=l.transactionId WHERE t.guildId=? AND t.status='COMMITTED' "
+            "AND l.accountKind='USER' AND l.userId IS NOT NULL AND l.createdAt>=? AND l.createdAt<?",
         (guild, window_start, iso(moment)),
     )
     approved_activity_types = (
@@ -241,9 +242,9 @@ async def overview_report(db, guild_id, *, current_non_bot_user_ids=None, now=No
         "WEEKLY_QUEST_COMPLETED", "VOICE_ACTIVITY_30M",
     )
     activity_rows = await _rows(
-        db, "SELECT DISTINCT userId FROM EconomyActivityEvent WHERE guildId=$1 "
-            f"AND eventType IN ({','.join('$1' for _ in approved_activity_types)}) "
-            "AND occurredAt>=$1 AND occurredAt<$2",
+        db, "SELECT DISTINCT userId FROM EconomyActivityEvent WHERE guildId=? "
+            f"AND eventType IN ({','.join('?' for _ in approved_activity_types)}) "
+            "AND occurredAt>=? AND occurredAt<?",
         (guild, *approved_activity_types, window_start, iso(moment)),
     )
     activity_users = {str(row[0]) for row in activity_rows}

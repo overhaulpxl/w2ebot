@@ -7,7 +7,7 @@ from .constants import RPG_PHASE3_CATALOG_VERSION
 
 
 async def stack_schema_is_phase4(db):
-    row = await db.fetchrow("PRAGMA table_info(RpgInventoryStack)") as cursor:
+    async with db.execute("PRAGMA table_info(RpgInventoryStack)") as cursor:
         columns = {row[1] for row in await cursor.fetchall()}
     return {"catalogVersion", "bindingStatus", "status"}.issubset(columns)
 
@@ -26,7 +26,9 @@ async def list_inventory(db_path, guild_id, user_id, *, category="all", limit=20
         if category in ("all", "equipment"):
             async with db.execute(
                 "SELECT equipmentInstanceId,itemId,slot,enhancementLevel,bindingStatus,status,catalogVersion "
-                "FROM RpgEquipmentInstance WHERE guildId=$1 AND ownerId=$2 ORDER BY createdAt,equipmentInstanceId LIMIT $3 OFFSET $4", str(guild_id), str(user_id), limit, offset),
+                "FROM RpgEquipmentInstance WHERE guildId=? AND ownerId=? ORDER BY createdAt,equipmentInstanceId LIMIT ? OFFSET ?",
+                (str(guild_id), str(user_id), limit, offset),
+            ) as cursor:
                 equipment = [dict(row) for row in await cursor.fetchall()]
         if category in ("all", "materials", "consumables"):
             predicate = ""
@@ -40,8 +42,9 @@ async def list_inventory(db_path, guild_id, user_id, *, category="all", limit=20
             else:
                 select = "SELECT itemId,quantity FROM RpgInventoryStack"
             async with db.execute(
-                select + " WHERE guildId=$1 AND userId=$2 AND quantity>0" + predicate +
-                " ORDER BY itemId LIMIT $1 OFFSET $2", *params, limit, offset),
+                select + " WHERE guildId=? AND userId=? AND quantity>0" + predicate +
+                " ORDER BY itemId LIMIT ? OFFSET ?", (*params, limit, offset),
+            ) as cursor:
                 stacks = [dict(row) for row in await cursor.fetchall()]
     return {"equipment": equipment, "stacks": stacks}
 
@@ -50,13 +53,14 @@ async def inventory_quantity(db, guild_id, user_id, item_id, *, catalog_version=
                              binding_status="UNBOUND"):
     if await stack_schema_is_phase4(db):
         catalog_version = str(catalog_version or RPG_PHASE3_CATALOG_VERSION)
-        sql = ("SELECT quantity FROM RpgInventoryStack WHERE guildId=$1 AND userId=$2 AND itemId=$3 "
-               "AND catalogVersion=$1 AND bindingStatus=$2 AND status='ACTIVE'")
-        params = (str(guild_id), str(user_id), str(item_id), catalog_version, str(binding_status)
+        sql = ("SELECT quantity FROM RpgInventoryStack WHERE guildId=? AND userId=? AND itemId=? "
+               "AND catalogVersion=? AND bindingStatus=? AND status='ACTIVE'")
+        params = (str(guild_id), str(user_id), str(item_id), catalog_version, str(binding_status))
     else:
-        sql = "SELECT quantity FROM RpgInventoryStack WHERE guildId=$1 AND userId=$2 AND itemId=$3"
-        params = (str(guild_id), str(user_id), str(item_id)
-    async with db.execute(sql, params)
+        sql = "SELECT quantity FROM RpgInventoryStack WHERE guildId=? AND userId=? AND itemId=?"
+        params = (str(guild_id), str(user_id), str(item_id))
+    async with db.execute(sql, params) as cursor:
+        row = await cursor.fetchone()
     return int(row[0]) if row else 0
 
 
@@ -69,26 +73,26 @@ async def adjust_stack(db, guild_id, user_id, item_id, amount, now, *, catalog_v
         await db.execute(
             "INSERT OR IGNORE INTO RpgInventoryStack "
             "(guildId,userId,itemId,catalogVersion,bindingStatus,status,quantity,version,createdAt,updatedAt) "
-            "VALUES ($1,$2,$3,$4,$5,$6,0,0,$7,$8)",
+            "VALUES (?,?,?,?,?,?,0,0,?,?)",
             (str(guild_id), str(user_id), str(item_id), catalog_version,
              str(binding_status), str(status), now, now),
         )
         cursor = await db.execute(
-            "UPDATE RpgInventoryStack SET quantity=quantity+$1,version=version+1,updatedAt=$2 "
-            "WHERE guildId=$1 AND userId=$2 AND itemId=$3 AND catalogVersion=$4 AND bindingStatus=$5 "
-            "AND status=$1 AND quantity+$2>=0",
+            "UPDATE RpgInventoryStack SET quantity=quantity+?,version=version+1,updatedAt=? "
+            "WHERE guildId=? AND userId=? AND itemId=? AND catalogVersion=? AND bindingStatus=? "
+            "AND status=? AND quantity+?>=0",
             (amount, now, str(guild_id), str(user_id), str(item_id), catalog_version,
              str(binding_status), str(status), amount),
         )
     else:
         await db.execute(
             "INSERT OR IGNORE INTO RpgInventoryStack "
-            "(guildId,userId,itemId,quantity,version,createdAt,updatedAt) VALUES ($1,$2,$3,0,0,$4,$5)",
+            "(guildId,userId,itemId,quantity,version,createdAt,updatedAt) VALUES (?,?,?,0,0,?,?)",
             (str(guild_id), str(user_id), str(item_id), now, now),
         )
         cursor = await db.execute(
-            "UPDATE RpgInventoryStack SET quantity=quantity+$1,version=version+1,updatedAt=$2 "
-            "WHERE guildId=$1 AND userId=$2 AND itemId=$3 AND quantity+$4>=0",
+            "UPDATE RpgInventoryStack SET quantity=quantity+?,version=version+1,updatedAt=? "
+            "WHERE guildId=? AND userId=? AND itemId=? AND quantity+?>=0",
             (amount, now, str(guild_id), str(user_id), str(item_id), amount),
         )
     if cursor.rowcount != 1:

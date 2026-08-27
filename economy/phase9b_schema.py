@@ -181,7 +181,7 @@ def phase9b_capability_sync(connection) -> bool:
     if not phase9a_capability_sync(connection):
         return False
     marker = connection.execute(
-        "SELECT name,checksum,status FROM EconomySchemaMigration WHERE version=$1",
+        "SELECT name,checksum,status FROM EconomySchemaMigration WHERE version=?",
         (PHASE9B_DASHBOARD_MIGRATION_VERSION,),
     ).fetchone()
     if marker != (PHASE9B_MIGRATION_NAME, PHASE9B_SCHEMA_CHECKSUM, "COMPLETED"):

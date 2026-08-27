@@ -63,10 +63,13 @@ async def verify_phase4_staging(db_path):
     async with aiosqlite.connect(db_path) as db:
         await configure_connection(db)
         capable = await phase4_schema_capability(db)
-        marker = await db.fetchrow(
-            "SELECT checksum,status FROM EconomySchemaMigration WHERE version=$1", ECONOMY_PHASE4_MIGRATION_VERSION,),
-        )
-        catalog = await db.fetchrow("SELECT catalogHash FROM RpgCatalogManifest ORDER BY catalogVersion DESC LIMIT 1")
+        async with db.execute(
+            "SELECT checksum,status FROM EconomySchemaMigration WHERE version=?",
+            (ECONOMY_PHASE4_MIGRATION_VERSION,),
+        ) as cursor:
+            marker = await cursor.fetchone()
+        async with db.execute("SELECT catalogHash FROM RpgCatalogManifest ORDER BY catalogVersion DESC LIMIT 1") as cursor:
+            catalog = await cursor.fetchone()
     connection = sqlite3.connect(db_path)
     try:
         stack = _stack_summary(connection)
@@ -121,7 +124,8 @@ async def reconcile_phase4_staging(db_path):
             foreign_keys = len(await cursor.fetchall())
     blocking = sum(checks[key] for key in (
         "listing_escrow_mismatch", "sale_transaction_mismatch", "equipment_escrow_mismatch",
-        "negative_stack_rows", "unbalanced_committed_sales")
+        "negative_stack_rows", "unbalanced_committed_sales",
+    ))
     return {"mode": "RECONCILE", "checks": checks, "blocking": blocking,
             "integrity_check": integrity, "foreign_key_errors": foreign_keys,
             "reconciled": blocking == 0 and integrity == "ok" and foreign_keys == 0}
@@ -179,6 +183,7 @@ async def restore_phase4_staging(target_db, *, backup_path, production_db,
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     safety = _resolved(safety_backup_path) if safety_backup_path else target.with_name(
         f"{target.stem}.pre-restore-{timestamp}{target.suffix}"
+    )
     assert_not_production(safety, production)
     if safety in (target, backup):
         raise ValueError("Path safety backup restore tidak valid.")

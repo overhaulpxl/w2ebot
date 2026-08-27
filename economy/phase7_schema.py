@@ -320,7 +320,7 @@ REQUIRED_PHASE7_TRIGGERS = {re.search(r"TRIGGER IF NOT EXISTS (\w+)", value).gro
 
 def phase3_profile_capability_sync(connection):
     migrations = dict(connection.execute(
-        "SELECT version,checksum FROM EconomySchemaMigration WHERE status='COMPLETED' AND version IN (300,$1)",
+        "SELECT version,checksum FROM EconomySchemaMigration WHERE status='COMPLETED' AND version IN (300,?)",
         (PHASE3_HARDENING_VERSION,),
     ).fetchall())
     if 300 not in migrations or migrations.get(PHASE3_HARDENING_VERSION) != PHASE3_HARDENING_CHECKSUM:
@@ -341,17 +341,21 @@ def phase3_profile_capability_sync(connection):
 
 
 async def phase3_profile_capability(db):
-    info = await db.fetch(
-        "SELECT version,checksum FROM EconomySchemaMigration WHERE status='COMPLETED' AND version IN (300,$1)", PHASE3_HARDENING_VERSION,),
-        migrations = dict(await cursor.fetchall()
+    async with db.execute(
+        "SELECT version,checksum FROM EconomySchemaMigration WHERE status='COMPLETED' AND version IN (300,?)",
+        (PHASE3_HARDENING_VERSION,),
+    ) as cursor:
+        migrations = dict(await cursor.fetchall())
     if 300 not in migrations or migrations.get(PHASE3_HARDENING_VERSION) != PHASE3_HARDENING_CHECKSUM:
         return False
-    row = await db.fetchrow("SELECT sql FROM sqlite_master WHERE type='table' AND name='RpgProfile'")
+    async with db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='RpgProfile'") as cursor:
+        row = await cursor.fetchone()
     if not row:
         return False
     sql = " ".join(row[0].lower().split())
-    marker = await db.fetchrow('PRAGMA table_info("RpgProfile")')
-    definitions = await db.fetch('PRAGMA index_list("RpgProfile")') as cursor:
+    async with db.execute('PRAGMA table_info("RpgProfile")') as cursor:
+        info = await cursor.fetchall()
+    async with db.execute('PRAGMA index_list("RpgProfile")') as cursor:
         indexes = {item[1] for item in await cursor.fetchall()}
     columns = {item[1] for item in info}
     pk = [item[1] for item in sorted(info, key=lambda value: value[5]) if item[5]]
@@ -365,13 +369,14 @@ def phase7_capability_sync(connection):
     if not phase3_profile_capability_sync(connection) or not phase6_capability_sync(connection):
         return False
     marker = connection.execute(
-        "SELECT checksum,status FROM EconomySchemaMigration WHERE version=$1", ECONOMY_PHASE7_MIGRATION_VERSION,),
+        "SELECT checksum,status FROM EconomySchemaMigration WHERE version=?",
+        (ECONOMY_PHASE7_MIGRATION_VERSION,),
     ).fetchone()
     if marker != (PHASE7_SCHEMA_CHECKSUM, "COMPLETED"):
         return False
     objects = dict(connection.execute(
         "SELECT name,type FROM sqlite_master WHERE name LIKE 'Mining%' OR name LIKE 'idx_mining_%' OR name LIKE 'uq_mining_%' OR name LIKE 'trg_mining_%'"
-    ).fetchall()
+    ).fetchall())
     if not all(objects.get(name) == "table" for name in REQUIRED_PHASE7_TABLES):
         return False
     if not all(objects.get(name) == "index" for name in REQUIRED_PHASE7_INDEXES):
@@ -388,13 +393,16 @@ async def phase7_capability(db):
     if not await phase3_profile_capability(db) or not await phase6_capability(db):
         return False
     async with db.execute(
-        "SELECT checksum,status FROM EconomySchemaMigration WHERE version=$1", ECONOMY_PHASE7_MIGRATION_VERSION,),
-    )
+        "SELECT checksum,status FROM EconomySchemaMigration WHERE version=?",
+        (ECONOMY_PHASE7_MIGRATION_VERSION,),
+    ) as cursor:
+        marker = await cursor.fetchone()
     if not marker or tuple(marker) != (PHASE7_SCHEMA_CHECKSUM, "COMPLETED"):
         return False
     async with db.execute(
         "SELECT name,type FROM sqlite_master WHERE name LIKE 'Mining%' OR name LIKE 'idx_mining_%' OR name LIKE 'uq_mining_%' OR name LIKE 'trg_mining_%'"
-        objects = dict(await cursor.fetchall()
+    ) as cursor:
+        objects = dict(await cursor.fetchall())
     if not all(objects.get(name) == "table" for name in REQUIRED_PHASE7_TABLES):
         return False
     if not all(objects.get(name) == "index" for name in REQUIRED_PHASE7_INDEXES):
@@ -403,4 +411,6 @@ async def phase7_capability(db):
         return False
     async with db.execute(
         "SELECT rigDefinitionId,name,purchasePriceEcy,grossEquivalentPerDay,maintenancePriceEcy FROM MiningRigCatalog ORDER BY rigDefinitionId"
+    ) as cursor:
+        definitions = await cursor.fetchall()
     return definitions == sorted((key, *value) for key, value in MINING_RIG_CATALOG.items())

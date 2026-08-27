@@ -16,10 +16,12 @@ async def _require_capability(db):
 
 async def list_notification_routes(db, guild_id):
     await _require_capability(db)
-    row = await db.fetchrow(
+    async with db.execute(
         "SELECT category,enabled,channelId,roleMentionId,eventFilterJson,version,updatedById,updatedAt,"
         "lastSuccessfulDeliveryAt,lastFailedDeliveryAt,lastFailureCode "
-        "FROM DashboardNotificationRoute WHERE guildId=$1 ORDER BY category", str(guild_id),),
+        "FROM DashboardNotificationRoute WHERE guildId=? ORDER BY category",
+        (str(guild_id),),
+    ) as cursor:
         rows = {row[0]: row for row in await cursor.fetchall()}
     result = []
     for category in NOTIFICATION_CATEGORIES:
@@ -46,8 +48,10 @@ async def get_notification_route(db, guild_id, category, *, event_type=None):
         raise DashboardSecurityError("not_found", 404)
     async with db.execute(
         "SELECT enabled,channelId,roleMentionId,eventFilterJson,version,updatedAt "
-        "FROM DashboardNotificationRoute WHERE guildId=$1 AND category=$2", str(guild_id), category),
-    )
+        "FROM DashboardNotificationRoute WHERE guildId=? AND category=?",
+        (str(guild_id), category),
+    ) as cursor:
+        row = await cursor.fetchone()
     if not row:
         return {"category": category, "status": "NOT_CONFIGURED"}
     filters = json.loads(row[3]).get("eventTypes", [])
@@ -68,7 +72,7 @@ async def update_notification_route(db, *, guild_id, actor_id, category, enabled
     category = str(category).upper()
     if category not in NOTIFICATION_CATEGORIES:
         raise DashboardSecurityError("invalid_request", 400)
-    if not isinstance(event_types, (list, tuple):
+    if not isinstance(event_types, (list, tuple)):
         raise DashboardSecurityError("invalid_request", 400)
     try:
         filters = normalize_event_filter(category, event_types)
@@ -82,19 +86,20 @@ async def update_notification_route(db, *, guild_id, actor_id, category, enabled
         raise DashboardSecurityError("invalid_request", 400)
     if role is not None and (not role.isdigit() or len(role) < 17):
         raise DashboardSecurityError("invalid_request", 400)
-    current = await db.fetchrow(
-        "SELECT version FROM DashboardNotificationRoute WHERE guildId=$1 AND category=$2",
+    async with db.execute(
+        "SELECT version FROM DashboardNotificationRoute WHERE guildId=? AND category=?",
         (str(guild_id), category),
-    )
+    ) as cursor:
+        current = await cursor.fetchone()
     expected = int(expected_version)
     if (current and int(current[0]) != expected) or (not current and expected != 0):
         raise DashboardSecurityError("version_conflict", 409)
-    moment = iso(now or utc_now()
+    moment = iso(now or utc_now())
     filter_json = canonical_json({"eventTypes": filters})
     if current:
         cursor = await db.execute(
-            "UPDATE DashboardNotificationRoute SET enabled=$1,channelId=$2,roleMentionId=$3,eventFilterJson=$4,"
-            "version=version+1,updatedById=$1,updatedAt=$2 WHERE guildId=$3 AND category=$4 AND version=$5",
+            "UPDATE DashboardNotificationRoute SET enabled=?,channelId=?,roleMentionId=?,eventFilterJson=?,"
+            "version=version+1,updatedById=?,updatedAt=? WHERE guildId=? AND category=? AND version=?",
             (1 if enabled else 0, channel, role, filter_json, str(actor_id), moment,
              str(guild_id), category, expected),
         )
@@ -105,7 +110,7 @@ async def update_notification_route(db, *, guild_id, actor_id, category, enabled
         await db.execute(
             "INSERT INTO DashboardNotificationRoute "
             "(guildId,category,enabled,channelId,roleMentionId,eventFilterJson,version,updatedById,updatedAt) "
-            "VALUES ($1,$2,$3,$4,$5,$6,0,$7,$8)",
+            "VALUES (?,?,?,?,?,?,0,?,?)",
             (str(guild_id), category, 1 if enabled else 0, channel, role, filter_json,
              str(actor_id), moment),
         )

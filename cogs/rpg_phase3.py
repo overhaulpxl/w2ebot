@@ -54,9 +54,10 @@ async def _autocomplete_ready(interaction, table):
         return False
     import aiosqlite
     try:
-        async with _pool.acquire() as db:
-            rows = await db.fetch(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=$1", table,),
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,),
+            ) as cursor:
                 return await cursor.fetchone() is not None
     except (aiosqlite.Error, OSError):
         return False
@@ -68,16 +69,18 @@ async def _equipment_choices(interaction, current):
     current = str(current or "").lower()
     # Autocomplete hanya membaca instance; tidak membuat profile atau inventory.
     import aiosqlite
-    async with _pool.acquire() as db:
+    async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
             "SELECT equipmentInstanceId,itemId,enhancementLevel FROM RpgEquipmentInstance "
-            "WHERE guildId=$1 AND ownerId=$2 AND status='OWNED' ORDER BY createdAt LIMIT 25", str(interaction.guild_id), str(interaction.user.id),
-        )
+            "WHERE guildId=? AND ownerId=? AND status='OWNED' ORDER BY createdAt LIMIT 25",
+            (str(interaction.guild_id), str(interaction.user.id)),
+        ) as cursor:
+            rows = await cursor.fetchall()
     choices = []
     for instance_id, item_id, enhancement in rows:
         name = f"{EQUIPMENT.get(item_id, {}).get('name', item_id)} +{enhancement}"
         if current in name.lower() or current in str(instance_id).lower():
-            choices.append(app_commands.Choice(name=name[:100], value=str(instance_id))
+            choices.append(app_commands.Choice(name=name[:100], value=str(instance_id)))
     return choices[:25]
 
 
@@ -97,11 +100,13 @@ async def _open_item_choices(interaction, current):
         return []
     current = str(current or "").lower()
     import aiosqlite
-    async with _pool.acquire() as db:
-        rows = await db.fetch(
-            "SELECT itemId,quantity FROM RpgInventoryStack WHERE guildId=$1 AND userId=$2 AND quantity>0 "
-            "AND (itemId LIKE 'egg_pet_%' OR itemId='item_epic_chest') ORDER BY itemId LIMIT 25", str(interaction.guild_id), str(interaction.user.id),
-        )
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT itemId,quantity FROM RpgInventoryStack WHERE guildId=? AND userId=? AND quantity>0 "
+            "AND (itemId LIKE 'egg_pet_%' OR itemId='item_epic_chest') ORDER BY itemId LIMIT 25",
+            (str(interaction.guild_id), str(interaction.user.id)),
+        ) as cursor:
+            rows = await cursor.fetchall()
     return [
         app_commands.Choice(name=f"{item_id} x{quantity}"[:100], value=item_id)
         for item_id, quantity in rows if current in item_id.lower()

@@ -77,7 +77,7 @@ def _source_hash(user_id, symbol, raw_value):
 def _record_legacy(connection, *, user_id, symbol, source_hash, guild_id, units,
                    status, error_code, metadata, now):
     existing = connection.execute(
-        "SELECT sourceHash FROM CryptoLegacyHoldingMigration WHERE sourceUserId=$1 AND sourceSymbol=$2",
+        "SELECT sourceHash FROM CryptoLegacyHoldingMigration WHERE sourceUserId=? AND sourceSymbol=?",
         (str(user_id), str(symbol)),
     ).fetchone()
     if existing:
@@ -85,7 +85,7 @@ def _record_legacy(connection, *, user_id, symbol, source_hash, guild_id, units,
             connection.execute(
                 "INSERT OR IGNORE INTO CryptoRecoveryReview "
                 "(reviewId,guildId,entityType,entityId,errorCode,status,sanitizedMetadataJson,firstDetectedAt,lastAttemptedAt) "
-                "VALUES ($1,$2,$3,$4,$5,'OPEN',$6,$7,$8)",
+                "VALUES (?,?,?,?,?,'OPEN',?,?,?)",
                 (str(uuid.uuid4()), guild_id, "LEGACY_HOLDING", f"{user_id}:{symbol}",
                  "changed_source_hash", "{}", now, now),
             )
@@ -94,7 +94,7 @@ def _record_legacy(connection, *, user_id, symbol, source_hash, guild_id, units,
     connection.execute(
         "INSERT INTO CryptoLegacyHoldingMigration "
         "(sourceUserId,sourceSymbol,sourceHash,targetGuildId,targetUnits,status,errorCode,sanitizedMetadataJson,migratedAt) "
-        "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+        "VALUES (?,?,?,?,?,?,?,?,?)",
         (str(user_id), str(symbol), source_hash, guild_id, units, status, error_code,
          json.dumps(metadata, sort_keys=True, separators=(",", ":")), now),
     )
@@ -157,7 +157,7 @@ def _migrate_legacy_holdings(connection, *, guild_id, users_json_path, now):
                 connection.execute(
                     "INSERT INTO CryptoHolding "
                     "(guildId,userId,symbol,units,totalCostBasisEcy,realizedProfitEcy,status,migrationSourceHash,version,createdAt,updatedAt) "
-                    "VALUES ($1,$2,$3,$4,$5,0,'ACTIVE',$6,0,$7,$8)",
+                    "VALUES (?,?,?,?,?,0,'ACTIVE',?,0,?,?)",
                     (guild_id, str(user_id), symbol, units, cost_basis, row_hash, now, now),
                 )
                 totals["migrated"] += 1
@@ -171,7 +171,7 @@ def verify_phase6_staging(db_path):
     try:
         connection.execute("PRAGMA foreign_keys=ON")
         marker = connection.execute(
-            "SELECT name,checksum,status FROM EconomySchemaMigration WHERE version=$1",
+            "SELECT name,checksum,status FROM EconomySchemaMigration WHERE version=?",
             (ECONOMY_PHASE6_MIGRATION_VERSION,),
         ).fetchone()
         counts = {}
@@ -228,7 +228,7 @@ def apply_phase6_staging(target_db, *, production_db, guild_id=None, users_json_
         resolved_guild, observed_guilds = _phase1_target_guild(connection, guild_id)
         connection.execute(
             "INSERT INTO EconomySchemaMigration (version,name,checksum,status,startedAt,detailsJson) "
-            "VALUES ($1,$2,$3,'RUNNING',$4,'{}')",
+            "VALUES (?,?,?,'RUNNING',?,'{}')",
             (ECONOMY_PHASE6_MIGRATION_VERSION, PHASE6_MIGRATION_NAME, PHASE6_SCHEMA_CHECKSUM, now),
         )
         if failure_stage == "after_marker":
@@ -246,24 +246,24 @@ def apply_phase6_staging(target_db, *, production_db, guild_id=None, users_json_
         initial_tick = "phase6-initial"
         connection.execute(
             "INSERT INTO CryptoMarketTick (tickId,scheduledAt,outcomeJson,status,resultJson,createdAt,committedAt) "
-            "VALUES ($1,$2,$3,'COMMITTED',$4,$5,$6)",
+            "VALUES (?,?,?,'COMMITTED',?,?,?)",
             (initial_tick, now, '{"type":"INITIAL"}', '{"initialized":true}', now, now),
         )
         for symbol, (name, price, maximum_bps, level) in CRYPTO_ASSETS.items():
             connection.execute(
                 "INSERT INTO CryptoAssetDefinition "
                 "(symbol,name,basePriceEcy,minimumPriceEcy,maximumPriceEcy,maximumNormalChangeBps,volatilityLevel,catalogVersion,createdAt) "
-                "VALUES ($1,$2,$3,$4,$5,$6,$7,'crypto-v1.0.0',$8)",
+                "VALUES (?,?,?,?,?,?,?,'crypto-v1.0.0',?)",
                 (symbol, name, price, price * 20 // 100, price * 500 // 100, maximum_bps, level, now),
             )
             connection.execute(
-                "INSERT INTO CryptoMarketState (symbol,currentPriceEcy,lastTickId,version,updatedAt) VALUES ($1,$2,$3,0,$4)",
+                "INSERT INTO CryptoMarketState (symbol,currentPriceEcy,lastTickId,version,updatedAt) VALUES (?,?,?,0,?)",
                 (symbol, price, initial_tick, now),
             )
             connection.execute(
                 "INSERT INTO CryptoPriceHistory "
                 "(historyId,tickId,symbol,previousPriceEcy,currentPriceEcy,movementBps,movementType,occurredAt) "
-                "VALUES ($1,$2,$3,$4,$5,0,'INITIAL',$6)",
+                "VALUES (?,?,?,?,?,0,'INITIAL',?)",
                 (str(uuid.uuid4()), initial_tick, symbol, price, price, now),
             )
         legacy = _migrate_legacy_holdings(
@@ -272,7 +272,7 @@ def apply_phase6_staging(target_db, *, production_db, guild_id=None, users_json_
         details = {"legacy": legacy, "phase1TargetGuilds": observed_guilds,
                    "resolvedTargetGuild": resolved_guild, "financialSeedApplied": False}
         connection.execute(
-            "UPDATE EconomySchemaMigration SET status='COMPLETED',completedAt=$1,detailsJson=$2 WHERE version=$3",
+            "UPDATE EconomySchemaMigration SET status='COMPLETED',completedAt=?,detailsJson=? WHERE version=?",
             (now, json.dumps(details, sort_keys=True, separators=(",", ":")), ECONOMY_PHASE6_MIGRATION_VERSION),
         )
         if not phase6_capability_sync(connection):

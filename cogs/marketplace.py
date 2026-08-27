@@ -39,7 +39,7 @@ async def _require_marketplace(interaction):
         await _reply(interaction, "Marketplace Phase 4 belum diaktifkan.", ephemeral=True)
         return False
     try:
-        async with _pool.acquire() as db:
+        async with aiosqlite.connect(DB_PATH) as db:
             if not await phase4_schema_capability(db):
                 await _reply(interaction, "Marketplace Phase 4 belum dimigrasikan.", ephemeral=True)
                 return False
@@ -88,21 +88,22 @@ async def _listing_choices(interaction, current, *, seller_only=False, include_t
     if not marketplace_enabled() or not interaction.guild_id or not getattr(interaction, "user", None):
         return []
     try:
-        async with _pool.acquire() as db:
+        async with aiosqlite.connect(DB_PATH) as db:
             if not await phase4_schema_capability(db):
                 return []
-            clauses = ["guildId=$1"]
+            clauses = ["guildId=?"]
             params = [str(interaction.guild_id)]
             if seller_only:
-                clauses.extend(("sellerId=$1", "status IN ('ACTIVE','PARTIALLY_FILLED')"))
+                clauses.extend(("sellerId=?", "status IN ('ACTIVE','PARTIALLY_FILLED')"))
                 params.append(str(interaction.user.id))
             elif not include_terminal:
                 clauses.append("status IN ('ACTIVE','PARTIALLY_FILLED')")
-            rows = await db.fetch(
+            async with db.execute(
                 "SELECT listingId,assetType,equipmentInstanceId,stackItemId,remainingQuantity "
                 "FROM MarketplaceListing WHERE " + " AND ".join(clauses) + " ORDER BY createdAt DESC LIMIT 25",
                 tuple(params),
-            )
+            ) as cursor:
+                rows = await cursor.fetchall()
         needle = str(current or "").lower()
         choices = []
         for listing_id, asset_type, equipment_id, item_id, quantity in rows:
@@ -119,12 +120,14 @@ async def _catalog_version_choices(interaction, current):
     if not marketplace_enabled() or not interaction.guild_id:
         return []
     try:
-        async with _pool.acquire() as db:
+        async with aiosqlite.connect(DB_PATH) as db:
             if not await phase4_schema_capability(db):
                 return []
             async with db.execute(
                 "SELECT DISTINCT catalogVersion FROM MarketplaceListing "
-                "WHERE guildId=$1 ORDER BY catalogVersion LIMIT 25", str(interaction.guild_id),),
+                "WHERE guildId=? ORDER BY catalogVersion LIMIT 25",
+                (str(interaction.guild_id),),
+            ) as cursor:
                 versions = [row[0] for row in await cursor.fetchall()]
         needle = str(current or "").lower()
         return [
@@ -144,6 +147,7 @@ def _listing_lines(rows):
         lines.append(
             f"`{row['listingId']}` | `{asset}` | {row['remainingQuantity']} x "
             f"{int(row['unitPriceEtm']):,} ETM | {row['status']}"
+        )
     return "\n".join(lines)
 
 
@@ -204,16 +208,20 @@ class MarketGroup(app_commands.Group):
         if not marketplace_enabled() or not interaction.guild_id:
             return []
         try:
-            async with _pool.acquire() as db:
+            async with aiosqlite.connect(DB_PATH) as db:
                 if not await phase4_schema_capability(db): return []
                 rows = []
                 async with db.execute(
                     "SELECT equipmentInstanceId,itemId FROM RpgEquipmentInstance "
-                    "WHERE guildId=$1 AND ownerId=$2 AND status='OWNED' LIMIT 25", str(interaction.guild_id), str(interaction.user.id),
+                    "WHERE guildId=? AND ownerId=? AND status='OWNED' LIMIT 25",
+                    (str(interaction.guild_id), str(interaction.user.id)),
+                ) as cursor:
                     rows.extend((f"{row[1]} ({row[0][:8]})", f"equipment:{row[0]}") for row in await cursor.fetchall())
                 async with db.execute(
                     "SELECT itemId,catalogVersion,bindingStatus,quantity FROM RpgInventoryStack "
-                    "WHERE guildId=$1 AND userId=$2 AND bindingStatus='UNBOUND' AND status='ACTIVE' AND quantity>0 LIMIT 25", str(interaction.guild_id), str(interaction.user.id),
+                    "WHERE guildId=? AND userId=? AND bindingStatus='UNBOUND' AND status='ACTIVE' AND quantity>0 LIMIT 25",
+                    (str(interaction.guild_id), str(interaction.user.id)),
+                ) as cursor:
                     rows.extend((f"{row[0]} x{row[3]}", f"stack:|{row[0]}|{row[1]}|{row[2]}") for row in await cursor.fetchall())
             needle = str(current).lower()
             return [app_commands.Choice(name=name[:100], value=value[:100]) for name, value in rows
@@ -449,8 +457,8 @@ class MarketAdminGroup(app_commands.Group):
     @app_commands.command(name="reports", description="Lihat report marketplace")
     async def reports(self, interaction: discord.Interaction):
         if not await _staff_allowed(interaction, self.client) or not await _require_marketplace(interaction): return
-        async with _pool.acquire() as db:
-            async with db.execute("SELECT reportId,listingId,reasonCategory,status FROM MarketplaceReport WHERE guildId=$1 ORDER BY createdAt DESC LIMIT 20", str(interaction.guild_id) as cursor: rows=await cursor.fetchall()
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT reportId,listingId,reasonCategory,status FROM MarketplaceReport WHERE guildId=? ORDER BY createdAt DESC LIMIT 20", (str(interaction.guild_id),)) as cursor: rows=await cursor.fetchall()
         await _reply(interaction, "\n".join(f"`{r[0]}` | `{r[1]}` | {r[2]} | {r[3]}" for r in rows) or "Tidak ada report.", ephemeral=True)
 
     @app_commands.command(name="resolve-report", description="Selesaikan report")

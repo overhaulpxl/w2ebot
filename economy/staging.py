@@ -18,7 +18,7 @@ def _json_value(value):
 
 def logical_sqlite_manifest(path):
     resolved = Path(path).expanduser().resolve()
-    connection = sqlite3.connect(f"file:{resolved.as_posix()}$1mode=ro", uri=True)
+    connection = sqlite3.connect(f"file:{resolved.as_posix()}?mode=ro", uri=True)
     try:
         objects = connection.execute(
             "SELECT type,name,tbl_name,COALESCE(sql,'') FROM sqlite_master "
@@ -63,7 +63,7 @@ def create_logical_sqlite_backup(source_path, backup_path):
     if source == backup:
         raise ValueError("Path backup harus berbeda dari database sumber.")
     backup.parent.mkdir(parents=True, exist_ok=True)
-    source_connection = sqlite3.connect(f"file:{source.as_posix()}$1mode=ro", uri=True)
+    source_connection = sqlite3.connect(f"file:{source.as_posix()}?mode=ro", uri=True)
     backup_connection = sqlite3.connect(backup)
     try:
         source_connection.backup(backup_connection)
@@ -86,7 +86,7 @@ def restore_logical_sqlite_backup(backup_path, restored_path):
     if backup == restored:
         raise ValueError("Path restore harus berbeda dari backup.")
     restored.parent.mkdir(parents=True, exist_ok=True)
-    source_connection = sqlite3.connect(f"file:{backup.as_posix()}$1mode=ro", uri=True)
+    source_connection = sqlite3.connect(f"file:{backup.as_posix()}?mode=ro", uri=True)
     restored_connection = sqlite3.connect(restored)
     try:
         source_connection.backup(restored_connection)

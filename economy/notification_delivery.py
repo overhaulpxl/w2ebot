@@ -29,10 +29,12 @@ async def reserve_delivery(db, *, guild_id, delivery_kind, source_type, source_k
     if kind not in {"EVENT", "TEST"}:
         raise DashboardSecurityError("invalid_request", 400)
     delivery_id = deterministic_delivery_id(guild_id, kind, source_type, source_key)
-    rows = await db.fetch(
+    async with db.execute(
         "SELECT deliveryId,guildId,deliveryKind,sourceType,sourceKey,category,eventType,payloadHash,status,"
         "channelId,roleMentionId,routeVersion,messageId,receiptJson FROM DashboardNotificationDelivery "
-        "WHERE guildId=$1 AND deliveryKind=$2 AND sourceType=$3 AND sourceKey=$4", str(guild_id), kind, str(source_type), str(source_key),
+        "WHERE guildId=? AND deliveryKind=? AND sourceType=? AND sourceKey=?",
+        (str(guild_id), kind, str(source_type), str(source_key)),
+    ) as cursor:
         existing = await cursor.fetchone()
     payload_json = canonical_json(payload)
     digest = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
@@ -49,7 +51,8 @@ async def reserve_delivery(db, *, guild_id, delivery_kind, source_type, source_k
         "INSERT INTO DashboardNotificationDelivery "
         "(deliveryId,guildId,deliveryKind,sourceType,sourceKey,category,routeVersion,channelId,roleMentionId,"
         "eventType,payloadJson,payloadHash,marker,status,requestId,actorId,createdAt) "
-        "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'RESERVED',$14,$15,$16)", delivery_id, str(guild_id), kind, str(source_type), str(source_key), str(category).upper(),
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'RESERVED',?,?,?)",
+        (delivery_id, str(guild_id), kind, str(source_type), str(source_key), str(category).upper(),
          int(route["version"]), route["channelId"], route.get("roleMentionId"), str(event_type).upper(),
          payload_json, digest, delivery_marker(delivery_id), request_id, actor_id, moment),
     )
@@ -62,11 +65,13 @@ async def reserve_crypto_news_outbox(db, *, limit=100, now=None):
     """Adopt Phase 6's authoritative outbox without creating a second source event."""
     if not await phase9b_capability(db):
         return []
-    row = await db.fetchrow(
+    async with db.execute(
         "SELECT o.outboxId,o.newsId,o.guildId,n.eventKey,n.symbol,n.currentPriceEcy,n.changeBps,n.newsType "
         "FROM CryptoNewsOutbox o JOIN CryptoNewsEvent n ON n.newsId=o.newsId "
-        "WHERE o.status IN ('PENDING','FAILED') ORDER BY o.createdAt,o.outboxId LIMIT $1", max(1, min(int(limit), 100),),
-    )
+        "WHERE o.status IN ('PENDING','FAILED') ORDER BY o.createdAt,o.outboxId LIMIT ?",
+        (max(1, min(int(limit), 100)),),
+    ) as cursor:
+        rows = await cursor.fetchall()
     reserved = []
     for outbox_id, _, guild_id, event_key, symbol, price, change_bps, news_type in rows:
         event_type = f"CRYPTO_MARKET_{news_type}"
@@ -84,8 +89,9 @@ async def reserve_crypto_news_outbox(db, *, limit=100, now=None):
             raise
         lease_owner = f"phase9b:{delivery['deliveryId']}"
         cursor = await db.execute(
-            "UPDATE CryptoNewsOutbox SET status='CLAIMED',leaseOwner=$1,leaseExpiresAt=NULL,"
-            "attemptCount=attemptCount+1,lastErrorCode=NULL WHERE outboxId=$1 AND status IN ('PENDING','FAILED')", lease_owner, outbox_id),
+            "UPDATE CryptoNewsOutbox SET status='CLAIMED',leaseOwner=?,leaseExpiresAt=NULL,"
+            "attemptCount=attemptCount+1,lastErrorCode=NULL WHERE outboxId=? AND status IN ('PENDING','FAILED')",
+            (lease_owner, outbox_id),
         )
         if cursor.rowcount == 1:
             reserved.append(delivery["deliveryId"])
@@ -102,38 +108,44 @@ async def claim_deliveries(db, *, lease_owner, limit=50, lease_seconds=120, now=
     if not await phase9b_capability(db):
         return []
     moment = now or utc_now()
-    expires = moment + timedelta(seconds=int(lease_seconds)
-    candidates = await db.fetch(
+    expires = moment + timedelta(seconds=int(lease_seconds))
+    async with db.execute(
         "SELECT deliveryId,status FROM DashboardNotificationDelivery "
-        "WHERE status IN ('RESERVED','FAILED') OR (status='LEASED' AND leaseExpiresAt<$1) "
-        "ORDER BY createdAt LIMIT $1", iso(moment), max(1, min(int(limit), 100),
-    )
+        "WHERE status IN ('RESERVED','FAILED') OR (status='LEASED' AND leaseExpiresAt<?) "
+        "ORDER BY createdAt LIMIT ?",
+        (iso(moment), max(1, min(int(limit), 100))),
+    ) as cursor:
+        candidates = await cursor.fetchall()
     claimed = []
     for delivery_id, status in candidates:
         if status == "LEASED":
             cursor = await db.execute(
-                "UPDATE DashboardNotificationDelivery SET leaseOwner=$1,leaseExpiresAt=$2,attemptCount=attemptCount+1,"
-                "attemptedAt=$1 WHERE deliveryId=$2 AND status='LEASED' AND leaseExpiresAt<$3", str(lease_owner), iso(expires), iso(moment), delivery_id, iso(moment),
+                "UPDATE DashboardNotificationDelivery SET leaseOwner=?,leaseExpiresAt=?,attemptCount=attemptCount+1,"
+                "attemptedAt=? WHERE deliveryId=? AND status='LEASED' AND leaseExpiresAt<?",
+                (str(lease_owner), iso(expires), iso(moment), delivery_id, iso(moment)),
             )
         else:
             cursor = await db.execute(
-                "UPDATE DashboardNotificationDelivery SET status='LEASED',leaseOwner=$1,leaseExpiresAt=$2,"
-                "attemptCount=attemptCount+1,attemptedAt=$1 WHERE deliveryId=$2 AND status=$3", str(lease_owner), iso(expires), iso(moment), delivery_id, status),
+                "UPDATE DashboardNotificationDelivery SET status='LEASED',leaseOwner=?,leaseExpiresAt=?,"
+                "attemptCount=attemptCount+1,attemptedAt=? WHERE deliveryId=? AND status=?",
+                (str(lease_owner), iso(expires), iso(moment), delivery_id, status),
             )
         if cursor.rowcount == 1:
             claimed.append(delivery_id)
     if not claimed:
         return []
-    marks = ",".join("$1" for _ in claimed)
-    rows = await db.fetch(
+    marks = ",".join("?" for _ in claimed)
+    async with db.execute(
         f"SELECT deliveryId,guildId,deliveryKind,sourceType,sourceKey,category,routeVersion,channelId,"
         f"roleMentionId,eventType,payloadJson,payloadHash,marker,attemptCount FROM DashboardNotificationDelivery "
-        f"WHERE deliveryId IN ({marks}) AND leaseOwner=$1 ORDER BY createdAt", *claimed, str(lease_owner),
-    )
+        f"WHERE deliveryId IN ({marks}) AND leaseOwner=? ORDER BY createdAt",
+        (*claimed, str(lease_owner)),
+    ) as cursor:
+        rows = await cursor.fetchall()
     keys = ("deliveryId", "guildId", "deliveryKind", "sourceType", "sourceKey", "category",
             "routeVersion", "channelId", "roleMentionId", "eventType", "payloadJson", "payloadHash",
             "marker", "attemptCount")
-    return [dict(zip(keys, row) for row in rows]
+    return [dict(zip(keys, row)) for row in rows]
 
 
 async def finalize_delivery(db, *, delivery_id, lease_owner, outcome, message_id=None,
@@ -146,21 +158,24 @@ async def finalize_delivery(db, *, delivery_id, lease_owner, outcome, message_id
     if outcome == "FAILED" and not marker_inspected:
         raise DashboardSecurityError("review_required", 409)
     async with db.execute(
-        "SELECT guildId,category,status,leaseOwner,attemptCount,sourceType,sourceKey FROM DashboardNotificationDelivery WHERE deliveryId=$1", str(delivery_id),),
-    )
+        "SELECT guildId,category,status,leaseOwner,attemptCount,sourceType,sourceKey FROM DashboardNotificationDelivery WHERE deliveryId=?",
+        (str(delivery_id),),
+    ) as cursor:
+        row = await cursor.fetchone()
     if not row or row[2] != "LEASED" or row[3] != str(lease_owner):
         raise DashboardSecurityError("version_conflict", 409)
-    moment = iso(now or utc_now()
+    moment = iso(now or utc_now())
     receipt = {"deliveryId": str(delivery_id), "status": outcome, "messageId": str(message_id) if message_id else None,
                "failureCode": str(failure_code) if failure_code else None, "attemptCount": int(row[4]),
                "markerInspected": bool(marker_inspected)}
     receipt_json = canonical_json(receipt) if outcome != "FAILED" else None
     receipt_hash = hashlib.sha256(receipt_json.encode("utf-8")).hexdigest() if receipt_json else None
     cursor = await db.execute(
-        "UPDATE DashboardNotificationDelivery SET status=$1,leaseOwner=NULL,leaseExpiresAt=NULL,messageId=$2,"
-        "lastFailureCode=$1,receiptJson=$2,receiptHash=$3,completedAt=$4 "
-        "WHERE deliveryId=$1 AND status='LEASED' AND leaseOwner=$2", outcome, str(message_id) if message_id else None, failure_code, receipt_json, receipt_hash,
-         moment if outcome != "FAILED" else None, str(delivery_id), str(lease_owner),
+        "UPDATE DashboardNotificationDelivery SET status=?,leaseOwner=NULL,leaseExpiresAt=NULL,messageId=?,"
+        "lastFailureCode=?,receiptJson=?,receiptHash=?,completedAt=? "
+        "WHERE deliveryId=? AND status='LEASED' AND leaseOwner=?",
+        (outcome, str(message_id) if message_id else None, failure_code, receipt_json, receipt_hash,
+         moment if outcome != "FAILED" else None, str(delivery_id), str(lease_owner)),
     )
     if cursor.rowcount != 1:
         raise DashboardSecurityError("version_conflict", 409)
@@ -168,21 +183,22 @@ async def finalize_delivery(db, *, delivery_id, lease_owner, outcome, message_id
         source_status = outcome
         source_owner = f"phase9b:{delivery_id}"
         source = await db.execute(
-            "UPDATE CryptoNewsOutbox SET status=$1,messageId=COALESCE($2,messageId),lastErrorCode=$3,sentAt=$4,"
-            "leaseOwner=NULL,leaseExpiresAt=NULL WHERE outboxId=$1 AND status='CLAIMED' AND leaseOwner=$2", source_status, str(message_id) if message_id else None,
-             None if outcome == "SENT" else (failure_code or outcome.lower(),
+            "UPDATE CryptoNewsOutbox SET status=?,messageId=COALESCE(?,messageId),lastErrorCode=?,sentAt=?,"
+            "leaseOwner=NULL,leaseExpiresAt=NULL WHERE outboxId=? AND status='CLAIMED' AND leaseOwner=?",
+            (source_status, str(message_id) if message_id else None,
+             None if outcome == "SENT" else (failure_code or outcome.lower()),
              moment if outcome == "SENT" else None, row[6], source_owner),
         )
         if source.rowcount != 1:
             raise DashboardSecurityError("review_required", 409)
     if outcome == "SENT":
         await db.execute(
-            "UPDATE DashboardNotificationRoute SET lastSuccessfulDeliveryAt=$1,lastFailureCode=NULL "
-            "WHERE guildId=$1 AND category=$2", (moment, row[0], row[1]),
+            "UPDATE DashboardNotificationRoute SET lastSuccessfulDeliveryAt=?,lastFailureCode=NULL "
+            "WHERE guildId=? AND category=?", (moment, row[0], row[1]),
         )
     else:
         await db.execute(
-            "UPDATE DashboardNotificationRoute SET lastFailedDeliveryAt=$1,lastFailureCode=$2 "
-            "WHERE guildId=$1 AND category=$2", (moment, failure_code or outcome.lower(), row[0], row[1]),
+            "UPDATE DashboardNotificationRoute SET lastFailedDeliveryAt=?,lastFailureCode=? "
+            "WHERE guildId=? AND category=?", (moment, failure_code or outcome.lower(), row[0], row[1]),
         )
     return receipt

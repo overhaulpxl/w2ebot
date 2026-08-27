@@ -90,6 +90,7 @@ def _deferred_counts(blobs, connection):
         if isinstance(rigs, dict):
             counts["rigs"] += sum(
                 len(v) if isinstance(v, dict) else 1 for v in rigs.values()
+            )
         if data.get("pet"):
             counts["pets"] += 1
         counts["inventory"] += len(data.get("items", {})) if isinstance(data.get("items"), dict) else 0
@@ -136,7 +137,7 @@ def create_backup(source_path, backup_dir):
     backup_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     backup_path = backup_dir / f"{source_path.stem}.{stamp}.{uuid.uuid4().hex[:8]}.db"
-    source = sqlite3.connect(f"file:{source_path.as_posix()}$1mode=ro", uri=True)
+    source = sqlite3.connect(f"file:{source_path.as_posix()}?mode=ro", uri=True)
     target = sqlite3.connect(backup_path)
     try:
         source.backup(target)
@@ -155,7 +156,7 @@ def build_dry_run(source_path, *, guild_id, backup_dir, report_dir, started_by_i
     # The SQLite backup is the immutable logical snapshot used for projection
     # and staging apply. This also includes committed WAL state without writing
     # a checkpoint to the production database.
-    connection = sqlite3.connect(f"file:{Path(backup_path).as_posix()}$1mode=ro", uri=True)
+    connection = sqlite3.connect(f"file:{Path(backup_path).as_posix()}?mode=ro", uri=True)
     try:
         rows = _legacy_rows(connection)
         blobs, blob_hashes = _read_json_store(connection)
@@ -230,14 +231,14 @@ def _ensure_system_accounts_sync(connection, guild_id, now):
         connection.execute(
             "INSERT OR IGNORE INTO EconomySystemAccount "
             "(guildId,accountCode,currency,accountClass,balance,spendable,allowNegative,version,createdAt,updatedAt) "
-            "VALUES ($1,$2,$3,$4,0,$5,$6,0,$7,$8)",
+            "VALUES (?,?,?,?,0,?,?,0,?,?)",
             (str(guild_id), code, currency, account_class, spendable, allow_negative, now, now),
         )
 
 
 def _apply_migration_credit(connection, *, guild_id, user_id, amount, idempotency_key, source_hash, run_id, entity_type):
     existing = connection.execute(
-        "SELECT transactionId,status FROM EconomyTransaction WHERE guildId=$1 AND idempotencyKey=$2",
+        "SELECT transactionId,status FROM EconomyTransaction WHERE guildId=? AND idempotencyKey=?",
         (str(guild_id), idempotency_key),
     ).fetchone()
     if existing:
@@ -248,13 +249,13 @@ def _apply_migration_credit(connection, *, guild_id, user_id, amount, idempotenc
     if amount == 0:
         connection.execute(
             "INSERT OR IGNORE INTO EconomyWallet (guildId,userId,etmBalance,ecyBalance,version,createdAt,updatedAt) "
-            "VALUES ($1,$2,0,0,0,$3,$4)",
+            "VALUES (?,?,0,0,0,?,?)",
             (str(guild_id), str(user_id), now, now),
         )
         connection.execute(
             "INSERT OR REPLACE INTO EconomyMigrationItem "
             "(runId,entityType,sourceKey,sourceHash,targetKey,status,errorCode,attemptCount,updatedAt) "
-            "VALUES ($1,$2,$3,$4,$5,'COMPLETED',NULL,1,$6)",
+            "VALUES (?,?,?,?,?,'COMPLETED',NULL,1,?)",
             (run_id, entity_type, str(user_id), source_hash, f"wallet:{user_id}", now),
         )
         return None, False
@@ -262,35 +263,35 @@ def _apply_migration_credit(connection, *, guild_id, user_id, amount, idempotenc
     connection.execute(
         "INSERT INTO EconomyTransaction "
         "(transactionId,guildId,idempotencyKey,operation,source,referenceId,actorId,reasonCode,reasonText,metadataJson,status,createdAt) "
-        "VALUES ($1,$2,$3,$4,$5,$6,NULL,$7,$8,$9,'PENDING',$10)",
+        "VALUES (?,?,?,?,?,?,NULL,?,?,?,'PENDING',?)",
         (transaction_id, str(guild_id), idempotency_key, entity_type, "MIGRATION",
          str(user_id), entity_type.lower(), "phase 1 legacy migration", "{}", now),
     )
     connection.execute(
         "INSERT OR IGNORE INTO EconomyWallet (guildId,userId,etmBalance,ecyBalance,version,createdAt,updatedAt) "
-        "VALUES ($1,$2,0,0,0,$3,$4)",
+        "VALUES (?,?,0,0,0,?,?)",
         (str(guild_id), str(user_id), now, now),
     )
     if amount > 0:
         issuance_before, issuance_version = connection.execute(
-            "SELECT balance,version FROM EconomySystemAccount WHERE guildId=$1 AND accountCode='ETM_ISSUANCE'",
+            "SELECT balance,version FROM EconomySystemAccount WHERE guildId=? AND accountCode='ETM_ISSUANCE'",
             (str(guild_id),),
         ).fetchone()
         wallet_before, wallet_version = connection.execute(
-            "SELECT etmBalance,version FROM EconomyWallet WHERE guildId=$1 AND userId=$2",
+            "SELECT etmBalance,version FROM EconomyWallet WHERE guildId=? AND userId=?",
             (str(guild_id), str(user_id)),
         ).fetchone()
         issuance_after = int(issuance_before) - amount
         wallet_after = int(wallet_before) + amount
         if connection.execute(
-            "UPDATE EconomySystemAccount SET balance=$1,version=version+1,updatedAt=$2 "
-            "WHERE guildId=$1 AND accountCode='ETM_ISSUANCE' AND version=$2",
+            "UPDATE EconomySystemAccount SET balance=?,version=version+1,updatedAt=? "
+            "WHERE guildId=? AND accountCode='ETM_ISSUANCE' AND version=?",
             (issuance_after, now, str(guild_id), issuance_version),
         ).rowcount != 1:
             raise RuntimeError("stale issuance account")
         if connection.execute(
-            "UPDATE EconomyWallet SET etmBalance=$1,version=version+1,updatedAt=$2 "
-            "WHERE guildId=$1 AND userId=$2 AND version=$3",
+            "UPDATE EconomyWallet SET etmBalance=?,version=version+1,updatedAt=? "
+            "WHERE guildId=? AND userId=? AND version=?",
             (wallet_after, now, str(guild_id), str(user_id), wallet_version),
         ).rowcount != 1:
             raise RuntimeError("stale migration wallet")
@@ -302,27 +303,27 @@ def _apply_migration_credit(connection, *, guild_id, user_id, amount, idempotenc
             connection.execute(
                 "INSERT INTO EconomyLedger "
                 "(transactionId,sequence,guildId,accountKind,accountId,userId,currency,transactionType,amount,balanceBefore,balanceAfter,referenceId,source,createdAt) "
-                "VALUES ($1,$2,$3,$4,$5,$6,'ETM',$7,$8,$9,$10,$11,'MIGRATION',$12)",
+                "VALUES (?,?,?,?,?,?,'ETM',?,?,?,?,?,'MIGRATION',?)",
                 (transaction_id, sequence, str(guild_id), kind, account_id, ledger_user_id,
                  entity_type, delta, before, after, str(user_id), now),
             )
         total = connection.execute(
-            "SELECT COALESCE(SUM(amount),0) FROM EconomyLedger WHERE transactionId=$1 AND currency='ETM'",
+            "SELECT COALESCE(SUM(amount),0) FROM EconomyLedger WHERE transactionId=? AND currency='ETM'",
             (transaction_id,),
         ).fetchone()[0]
         if int(total) != 0:
             raise RuntimeError("migration ledger is unbalanced")
     metadata = json.dumps({"result_code": "migrated", "result_message": "Legacy entity migrated."})
     if connection.execute(
-        "UPDATE EconomyTransaction SET status='COMMITTED',metadataJson=$1,committedAt=$2 "
-        "WHERE transactionId=$1 AND status='PENDING'",
+        "UPDATE EconomyTransaction SET status='COMMITTED',metadataJson=?,committedAt=? "
+        "WHERE transactionId=? AND status='PENDING'",
         (metadata, now, transaction_id),
     ).rowcount != 1:
         raise RuntimeError("migration transaction header did not commit")
     connection.execute(
         "INSERT OR REPLACE INTO EconomyMigrationItem "
         "(runId,entityType,sourceKey,sourceHash,targetKey,status,errorCode,attemptCount,updatedAt) "
-        "VALUES ($1,$2,$3,$4,$5,'COMPLETED',NULL,1,$6)",
+        "VALUES (?,?,?,?,?,'COMPLETED',NULL,1,?)",
         (run_id, entity_type, str(user_id), source_hash, transaction_id, now),
     )
     return transaction_id, False
@@ -344,7 +345,7 @@ def apply_staging_migration(database_path, manifest_path, *, production_path, al
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='EconomyMigrationRun'"
     ).fetchone()
     existing_run = connection.execute(
-        "SELECT status,totalsJson FROM EconomyMigrationRun WHERE runId=$1",
+        "SELECT status,totalsJson FROM EconomyMigrationRun WHERE runId=?",
         (report["run_id"],),
     ).fetchone() if table_exists else None
     connection.close()
@@ -362,7 +363,7 @@ def apply_staging_migration(database_path, manifest_path, *, production_path, al
         connection.execute(
             "INSERT INTO EconomyMigrationRun "
             "(runId,migrationVersion,mode,status,guildId,sourceDbSha256,backupPath,manifestPath,startedById,startedAt,totalsJson) "
-            "VALUES ($1,$2,'APPLY','RUNNING',$3,$4,$5,$6,$7,$8, '{}')",
+            "VALUES (?,?,'APPLY','RUNNING',?,?,?,?,?,?, '{}')",
             (report["run_id"], report["migration_version"], report["guild_id"],
              report["source"]["database_sha256"], report["source"]["backup_path"],
              str(Path(manifest_path).resolve()), report.get("started_by_id"), now),
@@ -397,7 +398,7 @@ def apply_staging_migration(database_path, manifest_path, *, production_path, al
             connection.execute(
                 "INSERT OR IGNORE INTO EconomyMigrationItem "
                 "(runId,entityType,sourceKey,sourceHash,targetKey,status,errorCode,attemptCount,updatedAt) "
-                "VALUES ($1,'LEGACY_JSON',$2,$3,NULL,$4,NULL,0,$5)",
+                "VALUES (?,'LEGACY_JSON',?,?,NULL,?,NULL,0,?)",
                 (report["run_id"], filename, source_hash,
                  deferred_phase.get(filename, "DEFERRED_LATER_PHASE"), _now()),
             )
@@ -408,13 +409,13 @@ def apply_staging_migration(database_path, manifest_path, *, production_path, al
             "binomo_refund_etm_total": report["binomo_refunds"]["projected_etm_total"],
         }
         connection.execute(
-            "UPDATE EconomyMigrationRun SET status='COMPLETED',completedAt=$1,totalsJson=$2 WHERE runId=$3",
+            "UPDATE EconomyMigrationRun SET status='COMPLETED',completedAt=?,totalsJson=? WHERE runId=?",
             (_now(), json.dumps(totals, sort_keys=True), report["run_id"]),
         )
         connection.execute(
             "INSERT OR REPLACE INTO EconomySchemaMigration "
             "(version,name,checksum,status,startedAt,completedAt,backupPath,manifestSha256,detailsJson) "
-            "VALUES ($1,'economy_foundation_v1',$2,'COMPLETED',$3,$4,$5,$6,$7)",
+            "VALUES (?,'economy_foundation_v1',?,'COMPLETED',?,?,?,?,?)",
             (ECONOMY_MIGRATION_VERSION, report["source"]["schema_hash"], now, _now(),
              report["source"]["backup_path"], _sha256_file(manifest_path), json.dumps(totals, sort_keys=True)),
         )
@@ -585,6 +586,7 @@ def _phase2_profile_projection(connection, blobs, generated_at):
             key for key in user_blob
             if key != "lastWork" and "work" in str(key).lower()
             and ("count" in str(key).lower() or "daily" in str(key).lower())
+        )
         if unknown_work_keys:
             counters["unknown_work_state"] += 1
             item_issues.append("UNKNOWN_WORK_COUNT_STATE")
@@ -624,7 +626,7 @@ def build_phase2_dry_run(source_path, *, guild_id, backup_dir, report_dir, start
     source_hash = _sha256_file(source_path)
     backup_path, backup_hash = create_backup(source_path, backup_dir)
     generated = datetime.now(timezone.utc)
-    connection = sqlite3.connect(f"file:{Path(backup_path).as_posix()}$1mode=ro", uri=True)
+    connection = sqlite3.connect(f"file:{Path(backup_path).as_posix()}?mode=ro", uri=True)
     try:
         blobs, blob_hashes = _read_json_store(connection)
         items, counters, issues, reconciliation = _phase2_profile_projection(connection, blobs, generated)
@@ -657,7 +659,7 @@ def _insert_migration_item(connection, run_id, entity_type, user_id, source_hash
     connection.execute(
         "INSERT OR REPLACE INTO EconomyMigrationItem "
         "(runId,entityType,sourceKey,sourceHash,targetKey,status,errorCode,attemptCount,updatedAt) "
-        "VALUES ($1,$2,$3,$4,$5,'COMPLETED',NULL,1,$6)",
+        "VALUES (?,?,?,?,?,'COMPLETED',NULL,1,?)",
         (run_id, entity_type, str(user_id), source_hash, target_key, now),
     )
 
@@ -679,7 +681,7 @@ def apply_phase2_staging_migration(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='EconomyMigrationRun'"
     ).fetchone()
     existing = connection.execute(
-        "SELECT status,totalsJson FROM EconomyMigrationRun WHERE runId=$1", (report["run_id"],)
+        "SELECT status,totalsJson FROM EconomyMigrationRun WHERE runId=?", (report["run_id"],)
     ).fetchone() if table_exists else None
     connection.close()
     if existing and existing[0] == "COMPLETED":
@@ -695,7 +697,7 @@ def apply_phase2_staging_migration(
         connection.execute(
             "INSERT INTO EconomyMigrationRun "
             "(runId,migrationVersion,mode,status,guildId,sourceDbSha256,backupPath,manifestPath,startedById,startedAt,totalsJson) "
-            "VALUES ($1,$2,'APPLY','RUNNING',$3,$4,$5,$6,$7,$8, '{}')",
+            "VALUES (?,?,'APPLY','RUNNING',?,?,?,?,?,?, '{}')",
             (report["run_id"], ECONOMY_PHASE2_MIGRATION_VERSION, report["guild_id"],
              report["source"]["database_sha256"], report["source"]["backup_path"],
              str(Path(manifest_path).resolve()), report.get("started_by_id"), now),
@@ -703,7 +705,7 @@ def apply_phase2_staging_migration(
         migrated = replayed = conflicts = 0
         for item in report["profile_projection"]["items"]:
             current = connection.execute(
-                "SELECT migrationSourceHash FROM RpgProfile WHERE guildId=$1 AND userId=$2",
+                "SELECT migrationSourceHash FROM RpgProfile WHERE guildId=? AND userId=?",
                 (report["guild_id"], item["user_id"]),
             ).fetchone()
             if current:
@@ -715,7 +717,7 @@ def apply_phase2_staging_migration(
             connection.execute(
                 "INSERT INTO RpgProfile "
                 "(guildId,userId,level,xp,maxHp,currentHp,attack,defense,critBps,energy,energyUpdatedAt,"
-                "migrationSourceHash,version,createdAt,updatedAt) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,0,$13,$14)",
+                "migrationSourceHash,version,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)",
                 (report["guild_id"], item["user_id"], item["level"], item["xp"], item["max_hp"],
                  item["current_hp"], item["attack"], item["defense"], item["crit_bps"], item["energy"],
                  item["energy_updated_at"], item["source_hash"], now, now),
@@ -729,14 +731,14 @@ def apply_phase2_staging_migration(
                     connection.execute(
                         "INSERT INTO EconomyClaimState "
                         "(guildId,userId,claimType,lastClaimAt,nextEligibleAt,lastTransactionId,migrationSourceHash,version,createdAt,updatedAt) "
-                        "VALUES ($1,$2,$3,$4,$5,NULL,$6,0,$7,$8)",
+                        "VALUES (?,?,?,?,?,NULL,?,0,?,?)",
                         (report["guild_id"], item["user_id"], claim_type, claim_at, next_at,
                          item["source_hash"], now, now),
                     )
             connection.execute(
                 "INSERT INTO EconomyWorkState "
                 "(guildId,userId,periodDate,successCount,lastSuccessAt,pendingRollId,migrationSourceHash,version,createdAt,updatedAt) "
-                "VALUES ($1,$2,NULL,0,$3,NULL,$4,0,$5,$6)",
+                "VALUES (?,?,NULL,0,?,NULL,?,0,?,?)",
                 (report["guild_id"], item["user_id"], item["work_at"], item["source_hash"], now, now),
             )
             _insert_migration_item(
@@ -750,13 +752,13 @@ def apply_phase2_staging_migration(
             **report["profile_projection"]["totals"],
         }
         connection.execute(
-            "UPDATE EconomyMigrationRun SET status='COMPLETED',completedAt=$1,totalsJson=$2 WHERE runId=$3",
+            "UPDATE EconomyMigrationRun SET status='COMPLETED',completedAt=?,totalsJson=? WHERE runId=?",
             (_now(), json.dumps(totals, sort_keys=True), report["run_id"]),
         )
         connection.execute(
             "INSERT OR REPLACE INTO EconomySchemaMigration "
             "(version,name,checksum,status,startedAt,completedAt,backupPath,manifestSha256,detailsJson) "
-            "VALUES ($1,'economy_core_phase2',$2,'COMPLETED',$3,$4,$5,$6,$7)",
+            "VALUES (?,'economy_core_phase2',?,'COMPLETED',?,?,?,?,?)",
             (ECONOMY_PHASE2_MIGRATION_VERSION, report["source"]["schema_hash"], now, _now(),
              report["source"]["backup_path"], _sha256_file(manifest_path), json.dumps(totals, sort_keys=True)),
         )

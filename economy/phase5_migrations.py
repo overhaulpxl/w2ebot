@@ -63,7 +63,7 @@ def _legacy_snapshots(connection, guild_id, users_json_path, now):
         connection.execute(
             "INSERT OR IGNORE INTO CasinoLegacyStatistic "
             "(snapshotId,guildId,userId,sourceKey,sourceHash,sanitizedSnapshotJson,migrationStatus,createdAt) "
-            "VALUES ($1,$2,$3,$4,$5,$6,'REVIEW_REQUIRED',$7)",
+            "VALUES (?,?,?,?,?,?,'REVIEW_REQUIRED',?)",
             (str(uuid.uuid4()), str(guild_id), "0", "users.json:malformed", source_hash, "{}", now),
         )
         return {"source": str(path), "sourceSha256": source_hash, "snapshots": 0, "reviews": 1}
@@ -80,7 +80,7 @@ def _legacy_snapshots(connection, guild_id, users_json_path, now):
         row_hash = hashlib.sha256(sanitized.encode("utf-8")).hexdigest()
         source_key = "users.json:games"
         existing = connection.execute(
-            "SELECT sourceHash FROM CasinoLegacyStatistic WHERE guildId=$1 AND userId=$2 AND sourceKey=$3",
+            "SELECT sourceHash FROM CasinoLegacyStatistic WHERE guildId=? AND userId=? AND sourceKey=?",
             (str(guild_id), str(user_id), source_key),
         ).fetchone()
         if existing and existing[0] != row_hash:
@@ -89,7 +89,7 @@ def _legacy_snapshots(connection, guild_id, users_json_path, now):
         connection.execute(
             "INSERT OR IGNORE INTO CasinoLegacyStatistic "
             "(snapshotId,guildId,userId,sourceKey,sourceHash,sanitizedSnapshotJson,migrationStatus,createdAt) "
-            "VALUES ($1,$2,$3,$4,$5,$6,'SNAPSHOT',$7)",
+            "VALUES (?,?,?,?,?,?,'SNAPSHOT',?)",
             (str(uuid.uuid4()), str(guild_id), str(user_id), source_key, row_hash, sanitized, now),
         )
         snapshots += int(existing is None)
@@ -101,7 +101,7 @@ def verify_phase5_staging(db_path):
     try:
         connection.execute("PRAGMA foreign_keys=ON")
         marker = connection.execute(
-            "SELECT name,checksum,status FROM EconomySchemaMigration WHERE version=$1",
+            "SELECT name,checksum,status FROM EconomySchemaMigration WHERE version=?",
             (ECONOMY_PHASE5_MIGRATION_VERSION,),
         ).fetchone()
         capable = phase5_capability_sync(connection)
@@ -169,7 +169,7 @@ def apply_phase5_staging(target_db, *, production_db, guild_id="0", users_json_p
         connection.execute("PRAGMA busy_timeout=5000")
         connection.execute("BEGIN IMMEDIATE")
         existing = connection.execute(
-            "SELECT checksum,status FROM EconomySchemaMigration WHERE version=$1",
+            "SELECT checksum,status FROM EconomySchemaMigration WHERE version=?",
             (ECONOMY_PHASE5_MIGRATION_VERSION,),
         ).fetchone()
         if existing and existing[0] != PHASE5_SCHEMA_CHECKSUM:
@@ -177,7 +177,7 @@ def apply_phase5_staging(target_db, *, production_db, guild_id="0", users_json_p
         now = datetime.now(timezone.utc).isoformat()
         connection.execute(
             "INSERT INTO EconomySchemaMigration "
-            "(version,name,checksum,status,startedAt,detailsJson) VALUES ($1,$2,$3,'RUNNING',$4,'{}') "
+            "(version,name,checksum,status,startedAt,detailsJson) VALUES (?,?,?,'RUNNING',?,'{}') "
             "ON CONFLICT(version) DO UPDATE SET status='RUNNING',startedAt=excluded.startedAt",
             (ECONOMY_PHASE5_MIGRATION_VERSION, PHASE5_MIGRATION_NAME, PHASE5_SCHEMA_CHECKSUM, now),
         )
@@ -195,7 +195,7 @@ def apply_phase5_staging(target_db, *, production_db, guild_id="0", users_json_p
             raise RuntimeError("Injected Phase 5 migration failure")
         legacy = _legacy_snapshots(connection, guild_id, users_json_path, now)
         connection.execute(
-            "UPDATE EconomySchemaMigration SET status='COMPLETED',completedAt=$1,detailsJson=$2 WHERE version=$3",
+            "UPDATE EconomySchemaMigration SET status='COMPLETED',completedAt=?,detailsJson=? WHERE version=?",
             (now, json.dumps({"legacy": legacy}, sort_keys=True, separators=(",", ":")),
              ECONOMY_PHASE5_MIGRATION_VERSION),
         )

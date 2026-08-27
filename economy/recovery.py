@@ -9,9 +9,11 @@ async def inspect_recovery_state(db_path):
     """Return startup safety state without mutating migration records."""
     async with aiosqlite.connect(db_path) as db:
         await configure_connection(db)
-        rows = await db.fetch(
+        async with db.execute(
             "SELECT runId,status,mode,errorCode FROM EconomyMigrationRun "
             "WHERE status IN ('RUNNING','FAILED') ORDER BY startedAt DESC"
+        ) as cursor:
+            rows = await cursor.fetchall()
     return {
         "safe_to_enable": not rows,
         "unfinished": [

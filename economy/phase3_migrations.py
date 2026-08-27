@@ -28,10 +28,11 @@ async def phase3_dry_run(db_path):
     digest = validate_catalog()
     async with aiosqlite.connect(db_path) as db:
         await configure_connection(db)
-        blobs = await db.fetch("SELECT COUNT(*) FROM RpgProfile") as cursor:
+        async with db.execute("SELECT COUNT(*) FROM RpgProfile") as cursor:
             profile_count = int((await cursor.fetchone())[0])
-        marker = await db.fetchrow(
+        async with db.execute(
             "SELECT COUNT(*) FROM RpgProfile WHERE level=100 AND xp>0"
+        ) as cursor:
             level_cap_reviews = int((await cursor.fetchone())[0])
     return {
         "migration_version": ECONOMY_PHASE3_MIGRATION_VERSION,
@@ -51,8 +52,10 @@ async def apply_phase3_staging(target_db, *, production_db, seed=True):
         try:
             digest = await seed_catalog(db) if seed else catalog_hash()
             async with db.execute(
-                "SELECT checksum,status FROM EconomySchemaMigration WHERE version=$1", ECONOMY_PHASE3_MIGRATION_VERSION,),
-            )
+                "SELECT checksum,status FROM EconomySchemaMigration WHERE version=?",
+                (ECONOMY_PHASE3_MIGRATION_VERSION,),
+            ) as cursor:
+                marker = await cursor.fetchone()
             now = utc_iso()
             if marker and tuple(marker) != (digest, "COMPLETED"):
                 raise ValueError("Checksum migration Phase 3 tidak cocok.")
@@ -60,8 +63,9 @@ async def apply_phase3_staging(target_db, *, production_db, seed=True):
                 await db.execute(
                     "INSERT INTO EconomySchemaMigration "
                     "(version,name,checksum,status,startedAt,completedAt,detailsJson) "
-                    "VALUES ($1,$2,$3,'COMPLETED',$4,$5,$6)", ECONOMY_PHASE3_MIGRATION_VERSION, "phase3-rpg", digest, now, now,
-                     json.dumps({"catalogVersion": "rpg-v1.0.0"}, separators=(",", ":"),
+                    "VALUES (?,?,?,'COMPLETED',?,?,?)",
+                    (ECONOMY_PHASE3_MIGRATION_VERSION, "phase3-rpg", digest, now, now,
+                     json.dumps({"catalogVersion": "rpg-v1.0.0"}, separators=(",", ":"))),
                 )
             await db.commit()
         except Exception:
@@ -85,13 +89,16 @@ async def quarantine_legacy_assets(target_db, *, guild_id="legacy"):
               "duplicate_sources": 0, "changed_hashes": 0, "replayed_records": 0}
     async with aiosqlite.connect(target_db) as db:
         await configure_connection(db)
-        has_json_store = await db.fetchrow(
+        async with db.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='json_store'"
-        ) is not None
+        ) as cursor:
+            has_json_store = await cursor.fetchone() is not None
         if has_json_store:
-            existing = await db.fetchrow(
+            async with db.execute(
                 "SELECT filename,content FROM json_store WHERE filename IN "
                 "('users.json','quests.json','boss.json') ORDER BY filename"
+            ) as cursor:
+                blobs = await cursor.fetchall()
         else:
             blobs = []
         decoded = {}
@@ -136,7 +143,7 @@ async def quarantine_legacy_assets(target_db, *, guild_id="legacy"):
                         records.append((str(user_id), "PET", f"{field}:{source_key}", 1,
                                         {"legacy_kind": "pet", "legacy_label": str(value)[:100]},
                                         value))
-        for filename, source_type in (("quests.json", "QUEST_STATE"), "boss.json", "BOSS_STATE"):
+        for filename, source_type in (("quests.json", "QUEST_STATE"), ("boss.json", "BOSS_STATE")):
             value = decoded.get(filename)
             if value is not None:
                 records.append(("0", source_type, filename, 1,
@@ -147,9 +154,11 @@ async def quarantine_legacy_assets(target_db, *, guild_id="legacy"):
             for user_id, source_type, source_key, quantity, metadata, source_value in records:
                 source_hash = _safe_source_hash(source_value)
                 async with db.execute(
-                    "SELECT sourceHash FROM RpgLegacyAsset WHERE guildId=$1 AND userId=$2 "
-                    "AND sourceType=$1 AND sourceKey=$2", str(guild_id), user_id, source_type, source_key),
-                )
+                    "SELECT sourceHash FROM RpgLegacyAsset WHERE guildId=? AND userId=? "
+                    "AND sourceType=? AND sourceKey=?",
+                    (str(guild_id), user_id, source_type, source_key),
+                ) as cursor:
+                    existing = await cursor.fetchone()
                 if existing:
                     if existing[0] == source_hash:
                         report["replayed_records"] += 1
@@ -157,16 +166,17 @@ async def quarantine_legacy_assets(target_db, *, guild_id="legacy"):
                         report["changed_hashes"] += 1
                         await db.execute(
                             "UPDATE RpgLegacyAsset SET migrationStatus='REVIEW_REQUIRED' "
-                            "WHERE guildId=$1 AND userId=$2 AND sourceType=$3 AND sourceKey=$4", str(guild_id), user_id, source_type, source_key),
+                            "WHERE guildId=? AND userId=? AND sourceType=? AND sourceKey=?",
+                            (str(guild_id), user_id, source_type, source_key),
                         )
                     continue
                 await db.execute(
                     "INSERT INTO RpgLegacyAsset "
                     "(assetId,guildId,userId,sourceType,sourceKey,sourceHash,quantity,bindingStatus,"
                     "migrationStatus,metadataJson,migratedAt) "
-                    "VALUES ($1,$2,$3,$4,$5,$6,$7,'LEGACY_BOUND','QUARANTINED',$8,$9)",
-                    (str(uuid.uuid4(), str(guild_id), user_id, source_type, source_key,
-                     source_hash, quantity, json.dumps(metadata, sort_keys=True), utc_iso(),
+                    "VALUES (?,?,?,?,?,?,?,'LEGACY_BOUND','QUARANTINED',?,?)",
+                    (str(uuid.uuid4()), str(guild_id), user_id, source_type, source_key,
+                     source_hash, quantity, json.dumps(metadata, sort_keys=True), utc_iso()),
                 )
                 if source_type == "ITEM":
                     report["quarantined_items"] += 1

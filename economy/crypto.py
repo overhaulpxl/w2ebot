@@ -96,14 +96,18 @@ def _maximum_affordable_units(wallet_balance, price):
 async def _ready_locked(db, guild_id):
     if not await phase6_capability(db):
         return "schema_unavailable"
-    rows = await db.fetch(
-        "SELECT 1 FROM EconomyFeatureState WHERE guildId=$1 AND feature IN ('economy','crypto') AND paused=1 LIMIT 1", str(guild_id),),
+    async with db.execute(
+        "SELECT 1 FROM EconomyFeatureState WHERE guildId=? AND feature IN ('economy','crypto') AND paused=1 LIMIT 1",
+        (str(guild_id),),
+    ) as cursor:
         if await cursor.fetchone():
             return "paused"
-    seed = await db.fetchrow(
+    async with db.execute(
         "SELECT t.status FROM EconomySeedMarker m JOIN EconomyTransaction t ON t.transactionId=m.transactionId "
-        "WHERE m.guildId=$1 AND m.accountCode='ECY_MARKET' ORDER BY m.appliedAt LIMIT 1", str(guild_id),),
-    )
+        "WHERE m.guildId=? AND m.accountCode='ECY_MARKET' ORDER BY m.appliedAt LIMIT 1",
+        (str(guild_id),),
+    ) as cursor:
+        seed = await cursor.fetchone()
     return None if seed and seed[0] == "COMMITTED" else "market_unseeded"
 
 
@@ -114,10 +118,11 @@ async def crypto_readiness(db_path, guild_id):
             if not await phase6_capability(db):
                 return {"ready": False, "code": "schema_unavailable"}
             code = await _ready_locked(db, guild_id)
-            row = await db.fetchrow(
-                "SELECT balance FROM EconomySystemAccount WHERE guildId=$1 AND accountCode='ECY_MARKET'",
+            async with db.execute(
+                "SELECT balance FROM EconomySystemAccount WHERE guildId=? AND accountCode='ECY_MARKET'",
                 (str(guild_id),),
-            )
+            ) as cursor:
+                row = await cursor.fetchone()
             return {"ready": code is None, "code": code or "ready",
                     "marketReserveEcy": int(row[0]) if row else 0}
     except aiosqlite.OperationalError:
@@ -131,10 +136,11 @@ async def is_crypto_authorized(db_path, guild_id, user_id, permission_class):
     try:
         async with aiosqlite.connect(db_path) as db:
             await configure_connection(db)
-            row = await db.fetchrow(
-                "SELECT enabled FROM CryptoAuthorization WHERE guildId=$1 AND userId=$2 AND permissionClass=$3",
+            async with db.execute(
+                "SELECT enabled FROM CryptoAuthorization WHERE guildId=? AND userId=? AND permissionClass=?",
                 (str(guild_id), str(user_id), permission),
-            )
+            ) as cursor:
+                row = await cursor.fetchone()
         return bool(row and row[0])
     except aiosqlite.OperationalError:
         return False
@@ -145,7 +151,7 @@ async def set_crypto_authorization(db_path, *, guild_id, user_id, permission_cla
     permission = str(permission_class).upper()
     if permission not in ("CRYPTO_CONTROL", "CRYPTO_FINANCIAL", "CRYPTO_RECOVERY"):
         raise ValueError("Kelas otorisasi Crypto tidak valid.")
-    cleaned_reason = " ".join(str(reason or "").split()[:200]
+    cleaned_reason = " ".join(str(reason or "").split())[:200]
     if not cleaned_reason:
         raise ValueError("Alasan otorisasi wajib diisi.")
     now = utc_now()
@@ -158,16 +164,18 @@ async def set_crypto_authorization(db_path, *, guild_id, user_id, permission_cla
         await db.execute(
             "INSERT INTO CryptoAuthorization "
             "(guildId,userId,permissionClass,enabled,grantedById,reason,version,createdAt,updatedAt) "
-            "VALUES ($1,$2,$3,$4,$5,$6,0,$7,$8) ON CONFLICT(guildId,userId,permissionClass) DO UPDATE SET "
+            "VALUES (?,?,?,?,?,?,0,?,?) ON CONFLICT(guildId,userId,permissionClass) DO UPDATE SET "
             "enabled=excluded.enabled,grantedById=excluded.grantedById,reason=excluded.reason,"
-            "version=CryptoAuthorization.version+1,updatedAt=excluded.updatedAt", str(guild_id), str(user_id), permission, int(bool(enabled), str(actor_id),
+            "version=CryptoAuthorization.version+1,updatedAt=excluded.updatedAt",
+            (str(guild_id), str(user_id), permission, int(bool(enabled)), str(actor_id),
              cleaned_reason, now, now),
         )
         await db.execute(
             "INSERT INTO CryptoAuthorizationAudit "
             "(auditId,guildId,actorId,subjectId,permissionClass,enabled,reason,createdAt) "
-            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8)", str(uuid.uuid4(), str(guild_id), str(actor_id), str(user_id), permission,
-             int(bool(enabled), cleaned_reason, now),
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (str(uuid.uuid4()), str(guild_id), str(actor_id), str(user_id), permission,
+             int(bool(enabled)), cleaned_reason, now),
         )
         await db.commit()
 
@@ -176,9 +184,10 @@ async def list_crypto_authorizations(db_path, guild_id):
     try:
         async with aiosqlite.connect(db_path) as db:
             await configure_connection(db)
-            existing = await db.fetchrow(
+            async with db.execute(
                 "SELECT userId,permissionClass,enabled,reason,updatedAt FROM CryptoAuthorization "
-                "WHERE guildId=$1 ORDER BY userId,permissionClass", str(guild_id),),
+                "WHERE guildId=? ORDER BY userId,permissionClass", (str(guild_id),),
+            ) as cursor:
                 return await cursor.fetchall()
     except aiosqlite.OperationalError:
         return []
@@ -209,35 +218,39 @@ async def execute_trade(db_path, *, guild_id, user_id, request_id, side, symbol,
     try:
         requested_units = parse_asset_units(quantity_text)
     except ValueError as exc:
-        return CryptoResult(False, "invalid_amount", str(exc)
+        return CryptoResult(False, "invalid_amount", str(exc))
     trade_id, transaction_id, now = str(uuid.uuid4()), str(uuid.uuid4()), utc_now()
     try:
         async with aiosqlite.connect(db_path) as db:
             await configure_connection(db)
             await db.execute("BEGIN IMMEDIATE")
-            row = await db.fetchrow(
-                "SELECT status,receiptJson FROM CryptoTrade WHERE guildId=$1 AND requestId=$2", guild_id, request_id),
-            )
+            async with db.execute(
+                "SELECT status,receiptJson FROM CryptoTrade WHERE guildId=? AND requestId=?",
+                (guild_id, request_id),
+            ) as cursor:
+                existing = await cursor.fetchone()
             if existing:
                 await db.rollback()
                 if existing[0] == "COMMITTED":
                     return CryptoResult(True, "committed", "Perdagangan sudah diproses.",
                                         json.loads(existing[1]), replayed=True)
                 return CryptoResult(False, "idempotency_conflict", "Perdagangan sebelumnya memerlukan recovery.")
-            price_row = await db.fetchrow(
-                "SELECT 1 FROM CryptoTrade WHERE guildId=$1 AND userId=$2 AND status IN ('PENDING','REVIEW_REQUIRED') LIMIT 1", guild_id, user_id),
-            )
-                        if row:
+            async with db.execute(
+                "SELECT 1 FROM CryptoTrade WHERE guildId=? AND userId=? AND status IN ('PENDING','REVIEW_REQUIRED') LIMIT 1",
+                (guild_id, user_id),
+            ) as cursor:
+                if await cursor.fetchone():
                     await db.rollback()
                     return CryptoResult(False, "unresolved_trade", "Perdagangan sebelumnya belum diselesaikan.")
             ready_code = await _ready_locked(db, guild_id)
             if ready_code:
                 await db.rollback()
                 messages = {"paused": "Crypto sedang dijeda.", "market_unseeded": "Market Reserve belum memiliki seed."}
-                return CryptoResult(False, ready_code, messages.get(ready_code, "Schema Crypto belum siap.")
+                return CryptoResult(False, ready_code, messages.get(ready_code, "Schema Crypto belum siap."))
             async with db.execute(
-                "SELECT currentPriceEcy,lastTickId FROM CryptoMarketState WHERE symbol=$1", symbol,),
-            )
+                "SELECT currentPriceEcy,lastTickId FROM CryptoMarketState WHERE symbol=?", (symbol,),
+            ) as cursor:
+                price_row = await cursor.fetchone()
             if not price_row:
                 await db.rollback()
                 return CryptoResult(False, "market_unavailable", "Harga Crypto tidak tersedia.")
@@ -245,15 +258,17 @@ async def execute_trade(db_path, *, guild_id, user_id, request_id, side, symbol,
             await ensure_system_accounts(db, guild_id, now)
             await db.execute(
                 "INSERT OR IGNORE INTO EconomyWallet (guildId,userId,etmBalance,ecyBalance,version,createdAt,updatedAt) "
-                "VALUES ($1,$2,0,0,0,$3,$4)", (guild_id, user_id, now, now),
+                "VALUES (?,?,0,0,0,?,?)", (guild_id, user_id, now, now),
             )
-            holding = await db.fetchrow(
-                "SELECT ecyBalance FROM EconomyWallet WHERE guildId=$1 AND userId=$2", (guild_id, user_id),
-                wallet = int((await cursor.fetchone()[0])
+            async with db.execute(
+                "SELECT ecyBalance FROM EconomyWallet WHERE guildId=? AND userId=?", (guild_id, user_id),
+            ) as cursor:
+                wallet = int((await cursor.fetchone())[0])
             async with db.execute(
                 "SELECT units,totalCostBasisEcy,realizedProfitEcy,status,version FROM CryptoHolding "
-                "WHERE guildId=$1 AND userId=$2 AND symbol=$3", guild_id, user_id, symbol),
-            )
+                "WHERE guildId=? AND userId=? AND symbol=?", (guild_id, user_id, symbol),
+            ) as cursor:
+                holding = await cursor.fetchone()
             held_units = int(holding[0]) if holding else 0
             if holding and holding[3] != "ACTIVE":
                 await db.rollback()
@@ -266,17 +281,18 @@ async def execute_trade(db_path, *, guild_id, user_id, request_id, side, symbol,
                 amounts = trade_amounts(units, price)
             except ValueError as exc:
                 await db.rollback()
-                return CryptoResult(False, "invalid_amount", str(exc)
+                return CryptoResult(False, "invalid_amount", str(exc))
             if side == "BUY" and wallet < amounts["buyTotal"]:
                 await db.rollback()
                 return CryptoResult(False, "insufficient_funds", "Saldo ECY tidak mencukupi.")
             if side == "SELL" and (not holding or units > held_units):
                 await db.rollback()
                 return CryptoResult(False, "insufficient_holding", "Holding Crypto tidak mencukupi.")
-            reserve = await db.fetchrow(
-                "SELECT balance FROM EconomySystemAccount WHERE guildId=$1 AND accountCode='ECY_MARKET'",
+            async with db.execute(
+                "SELECT balance FROM EconomySystemAccount WHERE guildId=? AND accountCode='ECY_MARKET'",
                 (guild_id,),
-            )
+            ) as cursor:
+                reserve = await cursor.fetchone()
             if side == "SELL" and (not reserve or int(reserve[0]) < amounts["gross"]):
                 await db.rollback()
                 return CryptoResult(False, "reserve_insufficient", "Market Reserve tidak mencukupi.")
@@ -295,7 +311,7 @@ async def execute_trade(db_path, *, guild_id, user_id, request_id, side, symbol,
                 realized_delta = amounts["sellNet"] - basis_delta
                 new_units, new_basis = held_units - units, old_basis - basis_delta
                 deltas = [
-                    AccountDelta("SYSTEM", "ECY_MARKET", "ECY", -(amounts["gross"] - amounts["marketFee"]),
+                    AccountDelta("SYSTEM", "ECY_MARKET", "ECY", -(amounts["gross"] - amounts["marketFee"])),
                     AccountDelta("USER", user_id, "ECY", amounts["sellNet"], user_id),
                 ]
             if amounts["treasuryFee"]:
@@ -305,14 +321,15 @@ async def execute_trade(db_path, *, guild_id, user_id, request_id, side, symbol,
             await db.execute(
                 "INSERT INTO EconomyTransaction "
                 "(transactionId,guildId,idempotencyKey,operation,source,referenceId,actorId,reasonCode,reasonText,metadataJson,status,createdAt) "
-                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'PENDING',$11)", transaction_id, guild_id, f"crypto:{guild_id}:{request_id}", f"CRYPTO_{side}",
+                "VALUES (?,?,?,?,?,?,?,?,?,?,'PENDING',?)",
+                (transaction_id, guild_id, f"crypto:{guild_id}:{request_id}", f"CRYPTO_{side}",
                  "MARKET_SETTLEMENT", trade_id, user_id, f"crypto_{side.lower()}",
                  f"Crypto {side.lower()} {symbol}", "{}", now),
             )
             await db.execute(
                 "INSERT INTO CryptoTrade "
                 "(tradeId,requestId,guildId,userId,symbol,side,quantityText,units,priceEcy,priceTickId,grossEcy,feeEcy,marketFeeEcy,treasuryFeeEcy,burnFeeEcy,costBasisDeltaEcy,realizedProfitEcy,transactionId,status,createdAt) "
-                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,'PENDING',$19)",
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'PENDING',?)",
                 (trade_id, request_id, guild_id, user_id, symbol, side, quantity_text, units,
                  price, tick_id, amounts["gross"], amounts["fee"], amounts["marketFee"],
                  amounts["treasuryFee"], amounts["burnFee"], basis_delta, realized_delta,
@@ -322,10 +339,10 @@ async def execute_trade(db_path, *, guild_id, user_id, request_id, side, symbol,
                 raise RuntimeError("Injected Crypto trade failure")
             if holding:
                 cursor = await db.execute(
-                    "UPDATE CryptoHolding SET units=$1,totalCostBasisEcy=$2,realizedProfitEcy=$3,version=version+1,updatedAt=$4 "
-                    "WHERE guildId=$1 AND userId=$2 AND symbol=$3 AND version=$4 AND status='ACTIVE'",
+                    "UPDATE CryptoHolding SET units=?,totalCostBasisEcy=?,realizedProfitEcy=?,version=version+1,updatedAt=? "
+                    "WHERE guildId=? AND userId=? AND symbol=? AND version=? AND status='ACTIVE'",
                     (new_units, new_basis, old_realized + realized_delta, now,
-                     guild_id, user_id, symbol, int(holding[4]),
+                     guild_id, user_id, symbol, int(holding[4])),
                 )
                 if cursor.rowcount != 1:
                     raise EconomyMutationError("stale", "Holding berubah saat perdagangan diproses.")
@@ -333,7 +350,8 @@ async def execute_trade(db_path, *, guild_id, user_id, request_id, side, symbol,
                 await db.execute(
                     "INSERT INTO CryptoHolding "
                     "(guildId,userId,symbol,units,totalCostBasisEcy,realizedProfitEcy,status,version,createdAt,updatedAt) "
-                    "VALUES ($1,$2,$3,$4,$5,0,'ACTIVE',0,$6,$7)", guild_id, user_id, symbol, new_units, new_basis, now, now),
+                    "VALUES (?,?,?,?,?,0,'ACTIVE',0,?,?)",
+                    (guild_id, user_id, symbol, new_units, new_basis, now, now),
                 )
             if _failure_stage == "after_holding":
                 raise RuntimeError("Injected Crypto trade failure")
@@ -353,18 +371,19 @@ async def execute_trade(db_path, *, guild_id, user_id, request_id, side, symbol,
                 "holdingCostBasisEcy": new_basis,
                 "realizedProfitEcy": old_realized + realized_delta,
             }
-            receipt_json = json.dumps(receipt, sort_keys=True, separators=(",", ":")
+            receipt_json = json.dumps(receipt, sort_keys=True, separators=(",", ":"))
             cursor = await db.execute(
-                "UPDATE CryptoTrade SET status='COMMITTED',receiptJson=$1,settledAt=$2 WHERE tradeId=$3 AND status='PENDING'", receipt_json, now, trade_id),
+                "UPDATE CryptoTrade SET status='COMMITTED',receiptJson=?,settledAt=? WHERE tradeId=? AND status='PENDING'",
+                (receipt_json, now, trade_id),
             )
             if cursor.rowcount != 1:
                 raise EconomyMutationError("stale", "Trade Crypto gagal commit.")
             metadata = json.dumps({"result_code": "committed", "result_message": "Trade Crypto berhasil.",
                                    "balances": balances, "receipt": receipt},
-                                  sort_keys=True, separators=(",", ":")
+                                  sort_keys=True, separators=(",", ":"))
             cursor = await db.execute(
-                "UPDATE EconomyTransaction SET status='COMMITTED',metadataJson=$1,committedAt=$2 "
-                "WHERE transactionId=$1 AND status='PENDING'", metadata, now, transaction_id),
+                "UPDATE EconomyTransaction SET status='COMMITTED',metadataJson=?,committedAt=? "
+                "WHERE transactionId=? AND status='PENDING'", (metadata, now, transaction_id),
             )
             if cursor.rowcount != 1:
                 raise EconomyMutationError("stale", "Header transaksi Crypto gagal commit.")
@@ -386,9 +405,10 @@ async def portfolio(db_path, *, guild_id, user_id, history_limit=10):
         await configure_connection(db)
         async with db.execute(
             "SELECT symbol,units,totalCostBasisEcy,realizedProfitEcy,status FROM CryptoHolding "
-            "WHERE guildId=$1 AND userId=$2 AND units>0 ORDER BY symbol",
-            (str(guild_id), str(user_id),
-        )
+            "WHERE guildId=? AND userId=? AND units>0 ORDER BY symbol",
+            (str(guild_id), str(user_id)),
+        ) as cursor:
+            rows = await cursor.fetchall()
         holdings, total_value, total_unrealized = [], 0, 0
         for symbol, units, basis, realized, status in rows:
             price = snapshot["coins"][symbol]["price"]
@@ -403,8 +423,9 @@ async def portfolio(db_path, *, guild_id, user_id, history_limit=10):
                              "costBasisEcy": int(basis), "realizedProfitEcy": int(realized),
                              "unrealizedProfitEcy": unrealized, "status": status})
         async with db.execute(
-            "SELECT receiptJson FROM CryptoTrade WHERE guildId=$1 AND userId=$2 AND status='COMMITTED' "
-            "ORDER BY createdAt DESC LIMIT $1", str(guild_id), str(user_id), int(history_limit),
+            "SELECT receiptJson FROM CryptoTrade WHERE guildId=? AND userId=? AND status='COMMITTED' "
+            "ORDER BY createdAt DESC LIMIT ?", (str(guild_id), str(user_id), int(history_limit)),
+        ) as cursor:
             history = [json.loads(row[0]) for row in await cursor.fetchall()]
     return {"available": True, "holdings": holdings, "history": history,
             "totalValueEcy": total_value, "totalUnrealizedProfitEcy": total_unrealized}

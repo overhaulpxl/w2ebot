@@ -121,7 +121,7 @@ def _import_legacy_routes(connection, *, config, config_hash, manifest, guild_id
         connection.execute(
             "INSERT OR IGNORE INTO DashboardNotificationLegacySnapshot "
             "(snapshotId,guildId,sourceKey,mappedCategory,destinationId,sourceFileHash,sourceValueHash,"
-            "capabilityManifestHash,disposition,evidenceJson,createdAt) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+            "capabilityManifestHash,disposition,evidenceJson,createdAt) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (snapshot_id, str(guild_id), key, mapped, destination or None, config_hash or _sha(b""),
              value_hash, manifest_hash, disposition,
              _canonical_json({"sourceKey": key, "validatedByManifest": bool(manifest_hash)}), now),
@@ -130,7 +130,7 @@ def _import_legacy_routes(connection, *, config, config_hash, manifest, guild_id
             connection.execute(
                 "INSERT INTO DashboardNotificationRoute "
                 "(guildId,category,enabled,channelId,eventFilterJson,version,updatedById,updatedAt) "
-                "VALUES ($1,$2,1,$3,'{\"eventTypes\":[]}',0,'MIGRATION_910',$1) "
+                "VALUES (?,?,1,?,'{\"eventTypes\":[]}',0,'MIGRATION_910',?) "
                 "ON CONFLICT(guildId,category) DO NOTHING",
                 (str(guild_id), mapped, destination, now),
             )
@@ -144,7 +144,7 @@ def phase9b_dry_run(db_path, *, legacy_config_path=None, channel_manifest_path=N
     connection = sqlite3.connect(db_path)
     try:
         marker = connection.execute(
-            "SELECT name,checksum,status FROM EconomySchemaMigration WHERE version=$1",
+            "SELECT name,checksum,status FROM EconomySchemaMigration WHERE version=?",
             (PHASE9B_DASHBOARD_MIGRATION_VERSION,),
         ).fetchone()
         config, _ = _load_json_file(legacy_config_path)
@@ -178,7 +178,7 @@ def apply_phase9b_staging(target_db, *, production_db, backup_path=None, legacy_
         if not phase9a_capability_sync(connection):
             raise RuntimeError("Capability Phase 9A wajib sebelum migrasi Phase 9B.")
         marker = connection.execute(
-            "SELECT name,checksum,status FROM EconomySchemaMigration WHERE version=$1",
+            "SELECT name,checksum,status FROM EconomySchemaMigration WHERE version=?",
             (PHASE9B_DASHBOARD_MIGRATION_VERSION,),
         ).fetchone()
         if marker:
@@ -189,7 +189,7 @@ def apply_phase9b_staging(target_db, *, production_db, backup_path=None, legacy_
             raise RuntimeError("Marker migrasi Phase 9B tidak cocok atau schema tidak lengkap.")
         connection.execute(
             "INSERT INTO EconomySchemaMigration (version,name,checksum,status,startedAt,backupPath) "
-            "VALUES ($1,$2,$3,'RUNNING',$4,$5)",
+            "VALUES (?,?,?,'RUNNING',?,?)",
             (PHASE9B_DASHBOARD_MIGRATION_VERSION, PHASE9B_MIGRATION_NAME,
              PHASE9B_SCHEMA_CHECKSUM, now, str(backup) if backup else None),
         )
@@ -218,7 +218,7 @@ def apply_phase9b_staging(target_db, *, production_db, backup_path=None, legacy_
         if failure_stage == "after_import":
             raise RuntimeError("injected failure after_import")
         connection.execute(
-            "UPDATE EconomySchemaMigration SET status='COMPLETED',completedAt=$1 WHERE version=$2 AND status='RUNNING'",
+            "UPDATE EconomySchemaMigration SET status='COMPLETED',completedAt=? WHERE version=? AND status='RUNNING'",
             (now, PHASE9B_DASHBOARD_MIGRATION_VERSION),
         )
         if failure_stage == "before_commit":
@@ -238,17 +238,17 @@ def _reconciliation_values(connection, guild_id):
     ledger_totals = {}
     for transaction_id, currency, amount in connection.execute(
         "SELECT l.transactionId,l.currency,l.amount FROM EconomyLedger l JOIN EconomyTransaction t "
-        "ON t.transactionId=l.transactionId WHERE t.guildId=$1 AND t.status='COMMITTED'", (guild,),
+        "ON t.transactionId=l.transactionId WHERE t.guildId=? AND t.status='COMMITTED'", (guild,),
     ):
         key = (transaction_id, currency)
         ledger_totals[key] = ledger_totals.get(key, 0) + int(amount)
     unbalanced = sum(1 for value in ledger_totals.values() if value)
     supply_totals = {"ETM": 0, "ECY": 0}
-    for etm, ecy in connection.execute("SELECT etmBalance,ecyBalance FROM EconomyWallet WHERE guildId=$1", (guild,)):
+    for etm, ecy in connection.execute("SELECT etmBalance,ecyBalance FROM EconomyWallet WHERE guildId=?", (guild,)):
         supply_totals["ETM"] += int(etm)
         supply_totals["ECY"] += int(ecy)
     for currency, balance in connection.execute(
-        "SELECT currency,balance FROM EconomySystemAccount WHERE guildId=$1", (guild,),
+        "SELECT currency,balance FROM EconomySystemAccount WHERE guildId=?", (guild,),
     ):
         supply_totals[str(currency)] += int(balance)
     supply_mismatches = sum(1 for value in supply_totals.values() if value)
@@ -257,20 +257,20 @@ def _reconciliation_values(connection, guild_id):
     if {"CasinoBankrollReservation", "CasinoSession"}.issubset(tables):
         liability_mismatches += connection.execute(
             "SELECT COUNT(*) FROM CasinoBankrollReservation r JOIN CasinoSession s ON s.sessionId=r.sessionId "
-            "WHERE r.guildId=$1 AND r.liabilityEcy<>s.maximumGrossLiabilityEcy", (guild,),
+            "WHERE r.guildId=? AND r.liabilityEcy<>s.maximumGrossLiabilityEcy", (guild,),
         ).fetchone()[0]
     if {"EternalOptionReservation", "EternalOptionPosition"}.issubset(tables):
         liability_mismatches += connection.execute(
             "SELECT COUNT(*) FROM EternalOptionReservation r JOIN EternalOptionPosition p ON p.positionId=r.positionId "
-            "WHERE r.guildId=$1 AND r.liabilityEcy<>p.liabilityEcy", (guild,),
+            "WHERE r.guildId=? AND r.liabilityEcy<>p.liabilityEcy", (guild,),
         ).fetchone()[0]
     route_issues = connection.execute(
-        "SELECT (SELECT COUNT(*) FROM DashboardNotificationLegacySnapshot WHERE guildId=$1 AND disposition<>'IMPORTED') "
-        "+ (SELECT COUNT(*) FROM DashboardNotificationRoute WHERE guildId=$1 AND enabled=1 AND channelId IS NULL)",
+        "SELECT (SELECT COUNT(*) FROM DashboardNotificationLegacySnapshot WHERE guildId=? AND disposition<>'IMPORTED') "
+        "+ (SELECT COUNT(*) FROM DashboardNotificationRoute WHERE guildId=? AND enabled=1 AND channelId IS NULL)",
         (guild, guild),
     ).fetchone()[0]
     outbox_issues = connection.execute(
-        "SELECT COUNT(*) FROM DashboardNotificationDelivery WHERE guildId=$1 AND status IN ('FAILED','REVIEW_REQUIRED')",
+        "SELECT COUNT(*) FROM DashboardNotificationDelivery WHERE guildId=? AND status IN ('FAILED','REVIEW_REQUIRED')",
         (guild,),
     ).fetchone()[0]
     integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
@@ -298,7 +298,7 @@ def reconcile_phase9b_staging(db_path, *, guild_id):
             "INSERT INTO DashboardEconomyReconciliationRun "
             "(runId,guildId,schemaChecksum,status,integrityResult,foreignKeyErrorCount,ledgerUnbalancedCount,"
             "supplyMismatchCount,liabilityMismatchCount,routeIssueCount,outboxIssueCount,reportJson,reportHash,startedAt,completedAt) "
-            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)",
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (str(uuid.uuid4()), str(guild_id), PHASE9B_SCHEMA_CHECKSUM, status,
              report["integrityResult"], report["foreignKeyErrors"], report["ledgerUnbalanced"],
              report["supplyMismatches"], report["liabilityMismatches"], report["routeIssues"],

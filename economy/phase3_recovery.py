@@ -18,13 +18,15 @@ async def inspect_phase3_recovery(db_path):
               "boss_awaiting_funds": 0}
     async with aiosqlite.connect(db_path) as db:
         await configure_connection(db)
-        operations = await db.fetch(
+        async with db.execute(
             "SELECT status,COUNT(*) FROM RpgOperation "
             "WHERE status IN ('RESERVED','AWAITING_FUNDS','REVIEW_REQUIRED') GROUP BY status"
+        ) as cursor:
             for status, count in await cursor.fetchall():
                 counts[status.lower()] = int(count)
-        raw = await db.fetchrow(
+        async with db.execute(
             "SELECT COUNT(*) FROM RpgBossRaid WHERE status='AWAITING_FUNDS'"
+        ) as cursor:
             counts["boss_awaiting_funds"] = int((await cursor.fetchone())[0])
     return counts
 
@@ -39,10 +41,16 @@ async def recover_phase3_operations(db_path):
             "SELECT operationId,guildId,userId,operationType,status FROM RpgOperation "
             "WHERE status IN ('RESERVED','AWAITING_FUNDS','REVIEW_REQUIRED') "
             "ORDER BY createdAt,operationId"
-        starter_rows = await db.fetch(
+        ) as cursor:
+            operations = await cursor.fetchall()
+        async with db.execute(
             "SELECT guildId,userId FROM RpgStarterGrant WHERE status IN ('PENDING','REVIEW_REQUIRED')"
-        boss_rows = await db.fetch(
+        ) as cursor:
+            starter_rows = await cursor.fetchall()
+        async with db.execute(
             "SELECT guildId,raidId FROM RpgBossRaid WHERE status='AWAITING_FUNDS'"
+        ) as cursor:
+            boss_rows = await cursor.fetchall()
 
     handlers = {
         "ENHANCEMENT": lambda row: settle_enhancement(
@@ -97,8 +105,9 @@ async def _recover_quest_claim(db_path, row):
     async with aiosqlite.connect(db_path) as db:
         await configure_connection(db)
         async with db.execute(
-            "SELECT outcomeJson FROM RpgOperation WHERE operationId=$1", (row[0],),
-        )
+            "SELECT outcomeJson FROM RpgOperation WHERE operationId=?", (row[0],),
+        ) as cursor:
+            raw = await cursor.fetchone()
     if not raw:
         raise ValueError("Operation quest tidak ditemukan.")
     import json

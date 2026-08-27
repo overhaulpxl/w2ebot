@@ -16,11 +16,13 @@ async def reserve_operation(db_path, *, guild_id, user_id, operation_type, reser
         await configure_connection(db)
         await db.execute("BEGIN IMMEDIATE")
         try:
-            existing = await db.fetchrow(
+            async with db.execute(
                 "SELECT operationId,status,outcomeJson FROM RpgOperation "
-                "WHERE guildId=$1 AND reservationKey=$2 "
-                "AND status IN ('RESERVED','AWAITING_FUNDS','REVIEW_REQUIRED')", str(guild_id), str(reservation_key),
-            )
+                "WHERE guildId=? AND reservationKey=? "
+                "AND status IN ('RESERVED','AWAITING_FUNDS','REVIEW_REQUIRED')",
+                (str(guild_id), str(reservation_key)),
+            ) as cursor:
+                existing = await cursor.fetchone()
             if existing:
                 await db.rollback()
                 return existing[0], existing[1], json.loads(existing[2]), True
@@ -28,19 +30,22 @@ async def reserve_operation(db_path, *, guild_id, user_id, operation_type, reser
             await db.execute(
                 "INSERT INTO RpgOperation "
                 "(operationId,guildId,userId,operationType,reservationKey,status,sourceResourceId,outcomeJson,createdAt,updatedAt) "
-                "VALUES ($1,$2,$3,$4,$5,'RESERVED',$6,$7,$8,$9)", operation_id, str(guild_id), str(user_id), str(operation_type),
+                "VALUES (?,?,?,?,?,'RESERVED',?,?,?,?)",
+                (operation_id, str(guild_id), str(user_id), str(operation_type),
                  str(reservation_key), str(source_resource_id) if source_resource_id else None,
-                 json.dumps(outcome, sort_keys=True, separators=(",", ":"), timestamp, timestamp),
+                 json.dumps(outcome, sort_keys=True, separators=(",", ":")), timestamp, timestamp),
             )
             await db.commit()
             return operation_id, "RESERVED", outcome, False
         except aiosqlite.IntegrityError:
             await db.rollback()
-            existing = await db.fetchrow(
+            async with db.execute(
                 "SELECT operationId,status,outcomeJson FROM RpgOperation "
-                "WHERE guildId=$1 AND reservationKey=$2 "
-                "AND status IN ('RESERVED','AWAITING_FUNDS','REVIEW_REQUIRED')", str(guild_id), str(reservation_key),
-            )
+                "WHERE guildId=? AND reservationKey=? "
+                "AND status IN ('RESERVED','AWAITING_FUNDS','REVIEW_REQUIRED')",
+                (str(guild_id), str(reservation_key)),
+            ) as cursor:
+                existing = await cursor.fetchone()
             if existing:
                 return existing[0], existing[1], json.loads(existing[2]), True
             raise
@@ -53,16 +58,17 @@ async def get_operation(db_path, operation_id):
     async with aiosqlite.connect(db_path) as db:
         await configure_connection(db)
         db.row_factory = aiosqlite.Row
-        row = await db.fetchrow(
+        async with db.execute(
             "SELECT operationId,guildId,userId,operationType,reservationKey,status,sourceResourceId,"
             "outcomeJson,resultJson,transactionId,createdAt,updatedAt,settledAt,"
             "retryCount,lastErrorCode,lastAttemptedAt,recoveryReviewJson "
-            "FROM RpgOperation WHERE operationId=$1", str(operation_id),),
-        )
+            "FROM RpgOperation WHERE operationId=?", (str(operation_id),),
+        ) as cursor:
+            row = await cursor.fetchone()
     if not row:
         return None
     result = dict(row)
-    result["outcome"] = json.loads(result.pop("outcomeJson")
+    result["outcome"] = json.loads(result.pop("outcomeJson"))
     result["result"] = json.loads(result.pop("resultJson")) if result.get("resultJson") else None
     return result
 
@@ -77,11 +83,12 @@ async def void_operation(db_path, *, operation_id, guild_id, user_id, now=None):
     async with aiosqlite.connect(db_path) as db:
         await configure_connection(db)
         cursor = await db.execute(
-            "UPDATE RpgOperation SET status='VOID',reservationKey=NULL,resultJson=$1,"
+            "UPDATE RpgOperation SET status='VOID',reservationKey=NULL,resultJson=?,"
             "recoveryReviewJson=CASE WHEN status='REVIEW_REQUIRED' AND recoveryReviewJson='{}' "
             "THEN '{\"resolution\":\"authorized_void\"}' ELSE recoveryReviewJson END,"
-            "updatedAt=$1,settledAt=$2 WHERE operationId=$3 AND guildId=$4 AND userId=$5 "
-            "AND status IN ('RESERVED','AWAITING_FUNDS','REVIEW_REQUIRED')", receipt, timestamp, timestamp, str(operation_id), str(guild_id), str(user_id),
+            "updatedAt=?,settledAt=? WHERE operationId=? AND guildId=? AND userId=? "
+            "AND status IN ('RESERVED','AWAITING_FUNDS','REVIEW_REQUIRED')",
+            (receipt, timestamp, timestamp, str(operation_id), str(guild_id), str(user_id)),
         )
         await db.commit()
         return cursor.rowcount == 1
@@ -94,10 +101,11 @@ async def record_operation_retry(db_path, operation_id, *, error_code=None, revi
     async with aiosqlite.connect(db_path) as db:
         await configure_connection(db)
         cursor = await db.execute(
-            "UPDATE RpgOperation SET retryCount=retryCount+1,lastErrorCode=$1,"
-            "lastAttemptedAt=$1,recoveryReviewJson=CASE WHEN $2='{}' THEN recoveryReviewJson ELSE $3 END,"
-            "updatedAt=$1 WHERE operationId=$2 AND status IN "
-            "('RESERVED','AWAITING_FUNDS','REVIEW_REQUIRED')", error_code, timestamp, review_json, review_json, timestamp, str(operation_id),
+            "UPDATE RpgOperation SET retryCount=retryCount+1,lastErrorCode=?,"
+            "lastAttemptedAt=?,recoveryReviewJson=CASE WHEN ?='{}' THEN recoveryReviewJson ELSE ? END,"
+            "updatedAt=? WHERE operationId=? AND status IN "
+            "('RESERVED','AWAITING_FUNDS','REVIEW_REQUIRED')",
+            (error_code, timestamp, review_json, review_json, timestamp, str(operation_id)),
         )
         await db.commit()
         return cursor.rowcount == 1

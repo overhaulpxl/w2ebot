@@ -392,10 +392,11 @@ def phase2_activity_capability_sync(connection):
 
 
 async def phase2_activity_capability(db):
-    marker = await db.fetchrow("PRAGMA table_info(EconomyActivityEvent)") as cursor:
+    async with db.execute("PRAGMA table_info(EconomyActivityEvent)") as cursor:
         columns = {row[1] for row in await cursor.fetchall()}
     async with db.execute(
         "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='EconomyActivityEvent'"
+    ) as cursor:
         triggers = {row[0] for row in await cursor.fetchall()}
     return ({"eventId", "guildId", "userId", "eventType", "eventKey", "points", "metricValue",
              "transactionId", "referenceId", "occurredAt", "createdAt"}.issubset(columns)
@@ -404,12 +405,13 @@ async def phase2_activity_capability(db):
 
 def phase8_capability_sync(connection):
     marker = connection.execute(
-        "SELECT checksum,name,status FROM EconomySchemaMigration WHERE version=$1", ECONOMY_PHASE8_MIGRATION_VERSION,),
+        "SELECT checksum,name,status FROM EconomySchemaMigration WHERE version=?",
+        (ECONOMY_PHASE8_MIGRATION_VERSION,),
     ).fetchone()
     if marker != (PHASE8_SCHEMA_CHECKSUM, PHASE8_MIGRATION_NAME, "COMPLETED"):
         return False
     if (not phase2_activity_capability_sync(connection) or not phase5_capability_sync(connection)
-            or not phase6_capability_sync(connection):
+            or not phase6_capability_sync(connection)):
         return False
     objects = {row[0]: row[1] for row in connection.execute(
         "SELECT name,type FROM sqlite_master WHERE type IN ('table','index','trigger')"
@@ -422,15 +424,18 @@ def phase8_capability_sync(connection):
 async def phase8_capability(db):
     try:
         async with db.execute(
-            "SELECT checksum,name,status FROM EconomySchemaMigration WHERE version=$1", ECONOMY_PHASE8_MIGRATION_VERSION,),
-        )
-        if tuple(marker or () != (PHASE8_SCHEMA_CHECKSUM, PHASE8_MIGRATION_NAME, "COMPLETED"):
+            "SELECT checksum,name,status FROM EconomySchemaMigration WHERE version=?",
+            (ECONOMY_PHASE8_MIGRATION_VERSION,),
+        ) as cursor:
+            marker = await cursor.fetchone()
+        if tuple(marker or ()) != (PHASE8_SCHEMA_CHECKSUM, PHASE8_MIGRATION_NAME, "COMPLETED"):
             return False
         if (not await phase2_activity_capability(db) or not await phase5_capability(db)
                 or not await phase6_capability(db)):
             return False
         async with db.execute(
             "SELECT name,type FROM sqlite_master WHERE type IN ('table','index','trigger')"
+        ) as cursor:
             objects = {row[0]: row[1] for row in await cursor.fetchall()}
         return (all(objects.get(name) == "table" for name in REQUIRED_PHASE8_TABLES)
                 and all(objects.get(name) == "index" for name in REQUIRED_PHASE8_INDEXES)
