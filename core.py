@@ -182,11 +182,596 @@ import sqlite3
 import os
 
 def _init_db():
-    pass
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("CREATE TABLE IF NOT EXISTS json_store (filename TEXT PRIMARY KEY, content TEXT)")
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS DiscordStat (
+            id TEXT PRIMARY KEY,
+            displayName TEXT,
+            coins INTEGER DEFAULT 0,
+            xp INTEGER DEFAULT 0,
+            level INTEGER DEFAULT 1,
+            lastDaily TEXT,
+            updatedAt TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS ChatMemory (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            content TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS Reminder (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT,
+            channel_id TEXT,
+            message TEXT,
+            fire_at TEXT,
+            created_at TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS Giveaway (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            channel_id TEXT,
+            message_id TEXT,
+            prize TEXT,
+            host_id TEXT,
+            end_at TEXT,
+            ended INTEGER DEFAULT 0
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS AuditLog (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT,
+            action TEXT,
+            target_id TEXT,
+            detail TEXT,
+            source TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS dealAuditLogConfig (
+            guildId TEXT PRIMARY KEY,
+            channelId TEXT,
+            enabled INTEGER DEFAULT 0,
+            createdAt TEXT,
+            updatedAt TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS DealConfig (
+            guildId TEXT PRIMARY KEY,
+            middlemanRoleId TEXT,
+            ownerRoleId TEXT,
+            dealLogChannelId TEXT,
+            vouchChannelId TEXT,
+            dealStaffRoleIds TEXT DEFAULT '[]',
+            allowedTicketCategoryIds TEXT DEFAULT '[]',
+            dealIdPrefix TEXT DEFAULT 'MM',
+            pingCooldownSeconds INTEGER DEFAULT 3600,
+            reminderEnabled INTEGER DEFAULT 0,
+            reminderIntervals TEXT DEFAULT '{}',
+            requirePaymentProof INTEGER DEFAULT 0,
+            requireTransferProof INTEGER DEFAULT 0,
+            allowUserCancelRequest INTEGER DEFAULT 1,
+            autoTimeoutEnabled INTEGER DEFAULT 0,
+            trustedRoleThreshold INTEGER DEFAULT 0,
+            createdAt TEXT,
+            updatedAt TEXT
+        )
+    ''')
+    existing_config_cols = {row[1] for row in conn.execute("PRAGMA table_info(DealConfig)").fetchall()}
+    if "ownerRoleId" not in existing_config_cols:
+        conn.execute("ALTER TABLE DealConfig ADD COLUMN ownerRoleId TEXT")
+    if "vouchChannelId" not in existing_config_cols:
+        conn.execute("ALTER TABLE DealConfig ADD COLUMN vouchChannelId TEXT")
+    config_columns_to_add = {
+        "dealStaffRoleIds": "TEXT DEFAULT '[]'",
+        "pingCooldownSeconds": "INTEGER DEFAULT 3600",
+        "reminderEnabled": "INTEGER DEFAULT 0",
+        "reminderIntervals": "TEXT DEFAULT '{}'",
+        "requirePaymentProof": "INTEGER DEFAULT 0",
+        "requireTransferProof": "INTEGER DEFAULT 0",
+        "allowUserCancelRequest": "INTEGER DEFAULT 1",
+        "autoTimeoutEnabled": "INTEGER DEFAULT 0",
+        "trustedRoleThreshold": "INTEGER DEFAULT 0",
+    }
+    for col, ddl in config_columns_to_add.items():
+        if col not in existing_config_cols:
+            conn.execute(f"ALTER TABLE DealConfig ADD COLUMN {col} {ddl}")
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS Deal (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            dealId TEXT,
+            guildId TEXT NOT NULL,
+            ticketChannelId TEXT NOT NULL,
+            createdById TEXT NOT NULL,
+            buyerId TEXT NOT NULL,
+            sellerId TEXT NOT NULL,
+            middlemanId TEXT NOT NULL,
+            paymentPenjual TEXT,
+            paymentPembeli TEXT,
+            nominalItem INTEGER,
+            feeType TEXT,
+            mmFee INTEGER,
+            buyerPays INTEGER,
+            sellerReceives INTEGER,
+            description TEXT,
+            status TEXT NOT NULL DEFAULT 'Menunggu Form',
+            warningMessageId TEXT,
+            summaryMessageId TEXT,
+            fundsReceivedStageMessageId TEXT,
+            buyerConfirmStageMessageId TEXT,
+            payoutStageMessageId TEXT,
+            doneStageMessageId TEXT,
+            completedSummaryMessageId TEXT,
+            vouchProgressMessageId TEXT,
+            cancelledById TEXT,
+            cancelledAt TEXT,
+            cancelReason TEXT,
+            disputedById TEXT,
+            disputedAt TEXT,
+            disputeReason TEXT,
+            disputeProofUrl TEXT,
+            disputePreviousStatus TEXT,
+            statusBeforeDispute TEXT,
+            disputeResolvedById TEXT,
+            disputeResolvedAt TEXT,
+            disputeResolution TEXT,
+            paymentProofUrl TEXT,
+            paymentProofNotes TEXT,
+            paymentProofMessageId TEXT,
+            paymentProofChannelId TEXT,
+            paymentProofSubmittedById TEXT,
+            paymentProofSubmittedAt TEXT,
+            paymentProofInvalidatedAt TEXT,
+            paymentProofInvalidatedById TEXT,
+            paymentProofInvalidationReason TEXT,
+            paymentProofConfirmationMessageId TEXT,
+            transferProofUrl TEXT,
+            transferProofNotes TEXT,
+            transferProofMessageId TEXT,
+            transferProofChannelId TEXT,
+            transferProofSubmittedById TEXT,
+            transferProofSubmittedAt TEXT,
+            sellerPayoutPlatform TEXT,
+            sellerPayoutAccount TEXT,
+            sellerPayoutName TEXT,
+            sellerPayoutSubmittedById TEXT,
+            sellerPayoutSubmittedAt TEXT,
+            formSubmittedById TEXT,
+            formSubmittedAt TEXT,
+            paymentInstructionOwnerId TEXT,
+            paymentInstructionMessageId TEXT,
+            paymentInstructionSentAt TEXT,
+            paymentInstructionPayloadHash TEXT,
+            fundsReceivedNotes TEXT,
+            fundsReceivedById TEXT,
+            fundsReceivedAt TEXT,
+            itemSentById TEXT,
+            itemSentAt TEXT,
+            buyerConfirmedById TEXT,
+            buyerConfirmedAt TEXT,
+            buyerConfirmationSource TEXT,
+            completedById TEXT,
+            completedAt TEXT,
+            isVouchEligible INTEGER DEFAULT 0,
+            createdAt TEXT,
+            updatedAt TEXT,
+            UNIQUE(guildId, dealId)
+        )
+    ''')
+    existing_deal_cols = {row[1] for row in conn.execute("PRAGMA table_info(Deal)").fetchall()}
+    required_deal_columns = {"id", "guildId", "dealId", "ticketChannelId"}
+    if not required_deal_columns.issubset(existing_deal_cols):
+        logging.critical("Deal database schema is incompatible and requires manual repair.")
+        raise RuntimeError("Deal database schema is incompatible and requires manual repair.")
+    deal_columns_to_add = {
+        "paymentProofUrl": "TEXT",
+        "paymentProofNotes": "TEXT",
+        "paymentProofMessageId": "TEXT",
+        "paymentProofChannelId": "TEXT",
+        "paymentProofSubmittedById": "TEXT",
+        "paymentProofSubmittedAt": "TEXT",
+        "paymentProofInvalidatedAt": "TEXT",
+        "paymentProofInvalidatedById": "TEXT",
+        "paymentProofInvalidationReason": "TEXT",
+        "paymentProofConfirmationMessageId": "TEXT",
+        "fundsReceivedStageMessageId": "TEXT",
+        "buyerConfirmStageMessageId": "TEXT",
+        "payoutStageMessageId": "TEXT",
+        "doneStageMessageId": "TEXT",
+        "completedSummaryMessageId": "TEXT",
+        "transferProofUrl": "TEXT",
+        "transferProofNotes": "TEXT",
+        "transferProofMessageId": "TEXT",
+        "transferProofChannelId": "TEXT",
+        "transferProofSubmittedById": "TEXT",
+        "transferProofSubmittedAt": "TEXT",
+        "sellerPayoutPlatform": "TEXT",
+        "sellerPayoutAccount": "TEXT",
+        "sellerPayoutName": "TEXT",
+        "sellerPayoutSubmittedById": "TEXT",
+        "sellerPayoutSubmittedAt": "TEXT",
+        "formSubmittedById": "TEXT",
+        "formSubmittedAt": "TEXT",
+        "paymentInstructionOwnerId": "TEXT",
+        "paymentInstructionMessageId": "TEXT",
+        "paymentInstructionSentAt": "TEXT",
+        "paymentInstructionPayloadHash": "TEXT",
+        "fundsReceivedNotes": "TEXT",
+        "fundsReceivedById": "TEXT",
+        "fundsReceivedAt": "TEXT",
+        "itemSentById": "TEXT",
+        "itemSentAt": "TEXT",
+        "buyerConfirmedById": "TEXT",
+        "buyerConfirmedAt": "TEXT",
+        "buyerConfirmationSource": "TEXT",
+        "completedById": "TEXT",
+        "completedAt": "TEXT",
+        "isVouchEligible": "INTEGER DEFAULT 0",
+        "vouchProgressMessageId": "TEXT",
+        "disputedById": "TEXT",
+        "disputedAt": "TEXT",
+        "disputeReason": "TEXT",
+        "disputeProofUrl": "TEXT",
+        "disputePreviousStatus": "TEXT",
+        "statusBeforeDispute": "TEXT",
+        "disputeResolvedById": "TEXT",
+        "disputeResolvedAt": "TEXT",
+        "disputeResolution": "TEXT",
+    }
+    for col, ddl in deal_columns_to_add.items():
+        if col not in existing_deal_cols:
+            conn.execute(f"ALTER TABLE Deal ADD COLUMN {col} {ddl}")
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS DealLog (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guildId TEXT,
+            dealId TEXT,
+            action TEXT,
+            actorId TEXT,
+            oldValue TEXT,
+            newValue TEXT,
+            reason TEXT,
+            createdAt TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS dealPaymentProfiles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guildId TEXT NOT NULL,
+            userId TEXT NOT NULL,
+            title TEXT,
+            paymentText TEXT,
+            qrisNote TEXT,
+            note TEXT,
+            footerText TEXT,
+            imageUrl TEXT,
+            imageFilename TEXT,
+            enabled INTEGER DEFAULT 1,
+            createdAt TEXT,
+            updatedAt TEXT,
+            UNIQUE(guildId, userId)
+        )
+    ''')
+    existing_payment_profile_cols = {row[1] for row in conn.execute("PRAGMA table_info(dealPaymentProfiles)").fetchall()}
+    payment_profile_columns_to_add = {
+        "title": "TEXT",
+        "paymentText": "TEXT",
+        "qrisNote": "TEXT",
+        "note": "TEXT",
+        "footerText": "TEXT",
+        "imageUrl": "TEXT",
+        "imageFilename": "TEXT",
+        "enabled": "INTEGER DEFAULT 1",
+        "createdAt": "TEXT",
+        "updatedAt": "TEXT",
+    }
+    for col, ddl in payment_profile_columns_to_add.items():
+        if col not in existing_payment_profile_cols:
+            conn.execute(f"ALTER TABLE dealPaymentProfiles ADD COLUMN {col} {ddl}")
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS Vouch (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guildId TEXT,
+            dealId TEXT,
+            reviewerId TEXT,
+            targetId TEXT,
+            reviewerRole TEXT,
+            targetRole TEXT,
+            rating INTEGER,
+            review TEXT,
+            proofUrl TEXT,
+            verifiedDeal INTEGER DEFAULT 1,
+            status TEXT DEFAULT 'active',
+            removedBy TEXT,
+            removeReason TEXT,
+            createdAt TEXT,
+            updatedAt TEXT,
+            UNIQUE(guildId, dealId, reviewerId, targetId)
+        )
+    ''')
+    existing_vouch_cols = {row[1] for row in conn.execute("PRAGMA table_info(Vouch)").fetchall()}
+    vouch_columns_to_add = {
+        "vouchType": "TEXT",
+        "approvalStatus": "TEXT",
+        "proofCount": "INTEGER DEFAULT 0",
+        "proofData": "TEXT",
+        "proofSubmittedAt": "TEXT",
+        "approvedById": "TEXT",
+        "approvedAt": "TEXT",
+        "rejectedById": "TEXT",
+        "rejectedAt": "TEXT",
+        "rejectionReason": "TEXT",
+        "context": "TEXT",
+        "staffNotes": "TEXT",
+        "targetRaw": "TEXT",
+        "targetResolved": "INTEGER DEFAULT 1",
+    }
+    for col, ddl in vouch_columns_to_add.items():
+        if col not in existing_vouch_cols:
+            conn.execute(f"ALTER TABLE Vouch ADD COLUMN {col} {ddl}")
+    conn.execute("UPDATE Vouch SET vouchType='verified_deal' WHERE vouchType IS NULL")
+    conn.execute("UPDATE Vouch SET approvalStatus=CASE WHEN status='removed' THEN 'removed' ELSE 'verified' END WHERE approvalStatus IS NULL")
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS DealNote (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guildId TEXT,
+            dealId TEXT,
+            actorId TEXT,
+            note TEXT,
+            createdAt TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS DealReminderLog (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guildId TEXT,
+            dealId TEXT,
+            reminderType TEXT,
+            sentAt TEXT,
+            UNIQUE(guildId, dealId, reminderType)
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS dealArchives (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guildId TEXT,
+            dealId TEXT,
+            channelId TEXT,
+            buyerId TEXT,
+            sellerId TEXT,
+            middlemanId TEXT,
+            finalStatus TEXT,
+            paymentProofSubmitted INTEGER DEFAULT 0,
+            transferProofSubmitted INTEGER DEFAULT 0,
+            vouchEligible INTEGER DEFAULT 0,
+            disputeOpened INTEGER DEFAULT 0,
+            disputeResolved INTEGER DEFAULT 0,
+            cancelled INTEGER DEFAULT 0,
+            completed INTEGER DEFAULT 0,
+            finalActionById TEXT,
+            cancelledById TEXT,
+            completedById TEXT,
+            disputeOpenedById TEXT,
+            disputeResolvedById TEXT,
+            safeReason TEXT,
+            safeResolution TEXT,
+            createdAt TEXT,
+            finalizedAt TEXT,
+            archivedAt TEXT,
+            UNIQUE(guildId, dealId)
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS dealPanels (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guildId TEXT,
+            panelType TEXT,
+            channelId TEXT,
+            messageId TEXT,
+            enabled INTEGER DEFAULT 0,
+            lastPayloadHash TEXT,
+            createdAt TEXT,
+            updatedAt TEXT,
+            UNIQUE(guildId, panelType)
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS dealPanelEvents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guildId TEXT,
+            panelType TEXT,
+            eventType TEXT,
+            eventKey TEXT,
+            messageId TEXT,
+            channelId TEXT,
+            createdAt TEXT,
+            UNIQUE(guildId, panelType, eventKey)
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS middlemanStatus (
+            guildId TEXT,
+            userId TEXT,
+            status TEXT DEFAULT 'offline',
+            note TEXT,
+            updatedAt TEXT,
+            updatedById TEXT,
+            createdAt TEXT,
+            PRIMARY KEY (guildId, userId)
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS rateLimitEvents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guildId TEXT,
+            userId TEXT,
+            actionType TEXT,
+            targetId TEXT,
+            eventKey TEXT,
+            createdAt TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS VouchReport (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guildId TEXT,
+            vouchId INTEGER,
+            reporterId TEXT,
+            reason TEXT,
+            proofUrl TEXT,
+            status TEXT DEFAULT 'open',
+            handledBy TEXT,
+            handledAt TEXT,
+            createdAt TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS manualVouchReviewConfig (
+            guildId TEXT PRIMARY KEY,
+            reviewChannelId TEXT,
+            enabled INTEGER DEFAULT 0,
+            createdAt TEXT,
+            updatedAt TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS manualVouchPanelConfig (
+            guildId TEXT PRIMARY KEY,
+            channelId TEXT,
+            messageId TEXT,
+            enabled INTEGER DEFAULT 0,
+            createdAt TEXT,
+            updatedAt TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS scammerReports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guildId TEXT,
+            reporterId TEXT,
+            reportedUserId TEXT,
+            reportedRaw TEXT,
+            reportedResolved INTEGER DEFAULT 0,
+            reason TEXT,
+            chronology TEXT,
+            nominalItem TEXT,
+            notes TEXT,
+            proofCount INTEGER DEFAULT 0,
+            proofData TEXT,
+            proofSubmittedAt TEXT,
+            status TEXT DEFAULT 'pending',
+            reviewMessageId TEXT,
+            reviewChannelId TEXT,
+            evidenceThreadId TEXT,
+            reviewedById TEXT,
+            rejectedById TEXT,
+            rejectedAt TEXT,
+            rejectionReason TEXT,
+            resolvedById TEXT,
+            resolvedAt TEXT,
+            resolution TEXT,
+            staffNotes TEXT,
+            createdAt TEXT,
+            updatedAt TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS scamReportReviewConfig (
+            guildId TEXT PRIMARY KEY,
+            reviewChannelId TEXT,
+            enabled INTEGER DEFAULT 0,
+            createdAt TEXT,
+            updatedAt TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS scamReportPanelConfig (
+            guildId TEXT PRIMARY KEY,
+            channelId TEXT,
+            messageId TEXT,
+            enabled INTEGER DEFAULT 0,
+            createdAt TEXT,
+            updatedAt TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS trustModerationStatus (
+            guildId TEXT,
+            userId TEXT,
+            status TEXT DEFAULT 'clear',
+            reason TEXT,
+            sourceType TEXT,
+            sourceId TEXT,
+            updatedById TEXT,
+            updatedAt TEXT,
+            createdAt TEXT,
+            PRIMARY KEY (guildId, userId)
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS UserReputation (
+            guildId TEXT,
+            userId TEXT,
+            totalVouches INTEGER DEFAULT 0,
+            verifiedVouches INTEGER DEFAULT 0,
+            verifiedDealVouches INTEGER DEFAULT 0,
+            manualApprovedVouches INTEGER DEFAULT 0,
+            averageRating REAL DEFAULT 0,
+            trustScore REAL DEFAULT 0,
+            buyerVouches INTEGER DEFAULT 0,
+            sellerVouches INTEGER DEFAULT 0,
+            middlemanVouches INTEGER DEFAULT 0,
+            removedVouches INTEGER DEFAULT 0,
+            reports INTEGER DEFAULT 0,
+            trustLevel TEXT DEFAULT 'New User',
+            updatedAt TEXT,
+            PRIMARY KEY (guildId, userId)
+        )
+    ''')
+    existing_rep_cols = {row[1] for row in conn.execute("PRAGMA table_info(UserReputation)").fetchall()}
+    if "verifiedDealVouches" not in existing_rep_cols:
+        conn.execute("ALTER TABLE UserReputation ADD COLUMN verifiedDealVouches INTEGER DEFAULT 0")
+    if "manualApprovedVouches" not in existing_rep_cols:
+        conn.execute("ALTER TABLE UserReputation ADD COLUMN manualApprovedVouches INTEGER DEFAULT 0")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_deal_channel_status ON Deal(ticketChannelId, status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_deal_log_deal ON DealLog(guildId, dealId)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_vouch_deal ON Vouch(guildId, dealId)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_deal_note_deal ON DealNote(guildId, dealId)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_deal_reminder_due ON DealReminderLog(guildId, dealId, reminderType)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_deal_archive_status ON dealArchives(guildId, finalStatus)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_deal_archive_buyer ON dealArchives(guildId, buyerId)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_deal_archive_seller ON dealArchives(guildId, sellerId)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_deal_archive_middleman ON dealArchives(guildId, middlemanId)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_deal_archive_archived ON dealArchives(guildId, archivedAt)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_deal_panels_type ON dealPanels(guildId, panelType)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_deal_panel_events_type ON dealPanelEvents(guildId, panelType)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_deal_panel_events_created ON dealPanelEvents(createdAt)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_deal_payment_profiles_guild ON dealPaymentProfiles(guildId)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_deal_payment_profiles_user ON dealPaymentProfiles(userId)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_middleman_status_status ON middlemanStatus(guildId, status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_rate_limit_events_lookup ON rateLimitEvents(guildId, userId, actionType, createdAt)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_rate_limit_events_key ON rateLimitEvents(guildId, eventKey, createdAt)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_vouch_target ON Vouch(guildId, targetId, status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_vouch_approval ON Vouch(guildId, approvalStatus, vouchType)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_vouch_report_vouch ON VouchReport(guildId, vouchId, status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_scam_report_status ON scammerReports(guildId, status, reportedUserId)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_trust_moderation_status ON trustModerationStatus(guildId, status)")
+    # Economy V1 foundation creates only empty, additive tables. It does not
+    # migrate DiscordStat/json_store or enable Phase 1/2 wallet mutations.
+    ensure_phase1_schema(conn)
+    conn.commit()
+    conn.close()
 
 _init_db()
 
-import asyncpg
+import aiosqlite
 import asyncio
 from math import floor, sqrt
 import json
@@ -200,12 +785,13 @@ async def load_json(filepath):
     if basename in _json_cache:
         return _json_cache[basename]
     try:
-        async with _pool.acquire() as db:
-            row = await db.fetchrow("SELECT content FROM json_store WHERE filename=$1", basename)
-            if row:
-                data = json.loads(row['content'])
-                _json_cache[basename] = data
-                return data
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT content FROM json_store WHERE filename=?", (basename,)) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    data = json.loads(row[0])
+                    _json_cache[basename] = data
+                    return data
     except Exception as e:
         logging.error("DB Load Error exception=%s", type(e).__name__)
     _json_cache[basename] = {}
@@ -215,38 +801,37 @@ async def save_json(filepath, data):
     basename = os.path.basename(filepath)
     _json_cache[basename] = data
     try:
-        async with _pool.acquire() as db:
-            await db.execute(
-                "INSERT INTO json_store (filename, content) VALUES ($1, $2) "
-                "ON CONFLICT (filename) DO UPDATE SET content = $2",
-                basename, json.dumps(data, ensure_ascii=False)
-            )
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("INSERT OR REPLACE INTO json_store (filename, content) VALUES (?, ?)", (basename, json.dumps(data, ensure_ascii=False)))
+            await db.commit()
     except Exception as e:
         logging.error("DB Save Error exception=%s", type(e).__name__)
 
 async def get_discord_stat(uid):
     try:
-        async with _pool.acquire() as db:
-            row = await db.fetchrow("SELECT coins, xp, level, lastDaily FROM DiscordStat WHERE id=$1", str(uid))
-            if row:
-                coins, xp, level, lastDaily = row['coins'], row['xp'], row['level'], row['lastdaily']
-                
-                # O(1) Level Up Math
-                if xp >= level * 100:
-                    a = 50
-                    b = 100 * level - 50
-                    c = -xp
-                    discriminant = b**2 - 4*a*c
-                    if discriminant > 0:
-                        n = floor((-b + sqrt(discriminant)) / (2*a))
-                        if n > 0:
-                            xp_consumed = 100 * n * level + 50 * n * (n - 1)
-                            old_level = level
-                            level += n
-                            xp -= int(xp_consumed)
-                            await db.execute("UPDATE DiscordStat SET xp=$1, level=$2 WHERE id=$3", xp, level, str(uid))
-                            logging.info(f"[LEVELUP] uid={uid} naik level {old_level} -> {level} (sisa XP {xp})")
-                return {'coins': coins, 'xp': xp, 'level': level, 'lastDaily': lastDaily}
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT coins, xp, level, lastDaily FROM DiscordStat WHERE id=?", (str(uid),)) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    coins, xp, level, lastDaily = row[0], row[1], row[2], row[3]
+                    
+                    # O(1) Level Up Math
+                    if xp >= level * 100:
+                        a = 50
+                        b = 100 * level - 50
+                        c = -xp
+                        discriminant = b**2 - 4*a*c
+                        if discriminant > 0:
+                            n = floor((-b + sqrt(discriminant)) / (2*a))
+                            if n > 0:
+                                xp_consumed = 100 * n * level + 50 * n * (n - 1)
+                                old_level = level
+                                level += n
+                                xp -= int(xp_consumed)
+                                await db.execute("UPDATE DiscordStat SET xp=?, level=? WHERE id=?", (xp, level, str(uid)))
+                                await db.commit()
+                                logging.info(f"[LEVELUP] uid={uid} naik level {old_level} -> {level} (sisa XP {xp})")
+                    return {'coins': coins, 'xp': xp, 'level': level, 'lastDaily': lastDaily}
     except Exception as e:
         logging.error("DB Error get exception=%s", type(e).__name__)
     return {'coins': 0, 'xp': 0, 'level': 1, 'lastDaily': ''}
@@ -264,36 +849,39 @@ async def update_discord_stat(uid, display_name, coins, xp, level, last_daily):
                 level += n
                 xp -= int(xp_consumed)
     try:
-        async with _pool.acquire() as db:
+        async with aiosqlite.connect(DB_PATH) as db:
             now = datetime.utcnow().isoformat() + "Z"
             await db.execute("""
                 INSERT INTO DiscordStat (id, displayName, coins, xp, level, lastDaily, updatedAt) 
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET 
-                displayName=EXCLUDED.displayName,
-                coins=EXCLUDED.coins,
-                xp=EXCLUDED.xp,
-                level=EXCLUDED.level,
-                lastDaily=EXCLUDED.lastDaily,
-                updatedAt=EXCLUDED.updatedAt
-            """, str(uid), display_name, coins, xp, level, last_daily, now)
+                displayName=excluded.displayName,
+                coins=excluded.coins,
+                xp=excluded.xp,
+                level=excluded.level,
+                lastDaily=excluded.lastDaily,
+                updatedAt=excluded.updatedAt
+            """, (str(uid), display_name, coins, xp, level, last_daily, now))
+            await db.commit()
     except Exception as e:
         logging.error("DB Error update exception=%s", type(e).__name__)
 
 
 async def adjust_coins(uid, delta, display_name=None):
-    # Atomic coin delta - avoids the read-modify-write race where two concurrent
+    # Atomic coin delta — avoids the read-modify-write race where two concurrent
     # commands read the same balance and the last writer wins. Clamps at 0.
     try:
         now = datetime.utcnow().isoformat() + "Z"
-        async with _pool.acquire() as db:
+        async with aiosqlite.connect(DB_PATH) as db:
             await db.execute(
-                "INSERT INTO DiscordStat (id, displayName, coins, updatedAt) VALUES ($1, $2, GREATEST(0, $3), $4) "
-                "ON CONFLICT(id) DO UPDATE SET coins = GREATEST(0, DiscordStat.coins + $5), "
-                "displayName = COALESCE($6, DiscordStat.displayName), updatedAt = $7",
-                str(uid), display_name or str(uid), delta, now, delta, display_name, now)
-            row = await db.fetchrow("SELECT coins FROM DiscordStat WHERE id=$1", str(uid))
-            saldo = row['coins'] if row else '?'
+                "INSERT INTO DiscordStat (id, displayName, coins, updatedAt) VALUES (?, ?, MAX(0, ?), ?) "
+                "ON CONFLICT(id) DO UPDATE SET coins = MAX(0, coins + ?), "
+                "displayName = COALESCE(?, displayName), updatedAt = ?",
+                (str(uid), display_name or str(uid), delta, now, delta, display_name, now))
+            await db.commit()
+            async with db.execute("SELECT coins FROM DiscordStat WHERE id=?", (str(uid),)) as c:
+                row = await c.fetchone()
+            saldo = row[0] if row else '?'
         arah = '+' if delta >= 0 else ''
         logging.info(f"[ECONOMY] {display_name or uid} ({uid}) koin {arah}{delta} -> saldo {saldo}")
     except Exception as e:
@@ -314,16 +902,18 @@ async def try_spend(uid, amount, display_name=None):
         return True
     try:
         now = datetime.utcnow().isoformat() + "Z"
-        async with _pool.acquire() as db:
-            result = await db.execute(
-                "UPDATE DiscordStat SET coins = coins - $1, "
-                "displayName = COALESCE($2, displayName), updatedAt = $3 "
-                "WHERE id = $4 AND coins >= $5",
-                amount, display_name, now, str(uid), amount)
-            ok = result == "UPDATE 1"
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute(
+                "UPDATE DiscordStat SET coins = coins - ?, "
+                "displayName = COALESCE(?, displayName), updatedAt = ? "
+                "WHERE id = ? AND coins >= ?",
+                (amount, display_name, now, str(uid), amount))
+            await db.commit()
+            ok = cur.rowcount > 0
             if ok:
-                row = await db.fetchrow("SELECT coins FROM DiscordStat WHERE id=$1", str(uid))
-                saldo = row['coins'] if row else '?'
+                async with db.execute("SELECT coins FROM DiscordStat WHERE id=?", (str(uid),)) as c:
+                    row = await c.fetchone()
+                saldo = row[0] if row else '?'
                 logging.info(f"[ECONOMY] {display_name or uid} ({uid}) bayar -{amount} -> saldo {saldo}")
             else:
                 logging.info(f"[ECONOMY] {display_name or uid} ({uid}) GAGAL bayar {amount} (saldo kurang)")
@@ -340,12 +930,13 @@ async def add_xp(uid, display_name, xp_delta):
         return
     try:
         now = datetime.utcnow().isoformat() + "Z"
-        async with _pool.acquire() as db:
+        async with aiosqlite.connect(DB_PATH) as db:
             await db.execute(
-                "INSERT INTO DiscordStat (id, displayName, xp, updatedAt) VALUES ($1, $2, GREATEST(0, $3), $4) "
-                "ON CONFLICT(id) DO UPDATE SET xp = GREATEST(0, DiscordStat.xp + $5), "
-                "displayName = COALESCE($6, DiscordStat.displayName), updatedAt = $7",
-                str(uid), display_name or str(uid), xp_delta, now, xp_delta, display_name, now)
+                "INSERT INTO DiscordStat (id, displayName, xp, updatedAt) VALUES (?, ?, MAX(0, ?), ?) "
+                "ON CONFLICT(id) DO UPDATE SET xp = MAX(0, xp + ?), "
+                "displayName = COALESCE(?, displayName), updatedAt = ?",
+                (str(uid), display_name or str(uid), xp_delta, now, xp_delta, display_name, now))
+            await db.commit()
         logging.info(f"[XP] {display_name or uid} ({uid}) +{xp_delta} XP")
     except Exception as e:
         logging.error("DB Error add_xp exception=%s", type(e).__name__)
@@ -355,12 +946,13 @@ async def set_last_daily(uid, value, display_name=None):
     # Update kolom lastDaily TANPA menyentuh coins/xp (menghindari clobber saldo).
     try:
         now = datetime.utcnow().isoformat() + "Z"
-        async with _pool.acquire() as db:
+        async with aiosqlite.connect(DB_PATH) as db:
             await db.execute(
-                "INSERT INTO DiscordStat (id, displayName, lastDaily, updatedAt) VALUES ($1, $2, $3, $4) "
-                "ON CONFLICT(id) DO UPDATE SET lastDaily = $5, "
-                "displayName = COALESCE($6, DiscordStat.displayName), updatedAt = $7",
-                str(uid), display_name or str(uid), value, now, value, display_name, now)
+                "INSERT INTO DiscordStat (id, displayName, lastDaily, updatedAt) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET lastDaily = ?, "
+                "displayName = COALESCE(?, displayName), updatedAt = ?",
+                (str(uid), display_name or str(uid), value, now, value, display_name, now))
+            await db.commit()
     except Exception as e:
         logging.error("DB Error set_last_daily exception=%s", type(e).__name__)
 
@@ -1320,7 +1912,8 @@ async def reserve_phase9b_legacy_notification(guild, *, category, event_type, so
 
 
 async def phase9b_schema_ready():
-    async with _pool.acquire() as db:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('PRAGMA foreign_keys=ON')
         return await phase9b_capability(db)
 
 async def check_birthdays():
@@ -1621,23 +2214,7 @@ async def crypto_mining_loop():
             logging.info(f"[MINING] {miner_count} penambang: {summary_str}")
 
 @client.event
-_pool = None
-
-async def init_db_pool():
-    global _pool
-    if _pool is None:
-        try:
-            _pool = await asyncpg.create_pool(
-                os.getenv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/postgres"),
-                min_size=2,
-                max_size=10
-            )
-            logging.info("Supabase PostgreSQL connection pool established.")
-        except Exception as e:
-            logging.critical("Failed to connect to Supabase: %s", type(e).__name__)
-
 async def on_ready():
-    await init_db_pool()
     global TREE_SYNC_DONE
     if not clean_caches.is_running():
         clean_caches.start()

@@ -270,4 +270,19 @@ def phase9a_capability_sync(connection) -> bool:
 
 
 async def phase9a_capability(db) -> bool:
-    return True
+    async with db.execute(
+        "SELECT name,checksum,status FROM EconomySchemaMigration WHERE version=?",
+        (PHASE9A_BACKEND_SAFETY_MIGRATION_VERSION,),
+    ) as cursor:
+        marker = await cursor.fetchone()
+    if marker != (PHASE9A_MIGRATION_NAME, PHASE9A_SCHEMA_CHECKSUM, "COMPLETED"):
+        return False
+    async with db.execute(
+        "SELECT name,type FROM sqlite_master WHERE type IN ('table','index','trigger')"
+    ) as cursor:
+        objects = {row[0]: row[1] for row in await cursor.fetchall()}
+    return (
+        all(objects.get(name) == "table" for name in REQUIRED_PHASE9A_TABLES)
+        and all(objects.get(name) == "index" for name in REQUIRED_PHASE9A_INDEXES)
+        and all(objects.get(name) == "trigger" for name in REQUIRED_PHASE9A_TRIGGERS)
+    )
