@@ -5,8 +5,29 @@ services:
     container_name: w2ebot-main
     restart: unless-stopped
     ports:
-      - "8081:8081"
+      - "127.0.0.1:8081:8081"
     volumes:
       - ./w2ebot.db:/app/w2ebot.db
     env_file:
       - .env
+    networks:
+      - w2e-network
+
+  dashboard:
+    build:
+      context: ./dashboard-example
+      dockerfile: Dockerfile
+    container_name: w2e-dashboard
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - dashboard-example/.env
+    depends_on:
+      - w2ebot
+    networks:
+      - w2e-network
+
+networks:
+  w2e-network:
+    driver: bridge
