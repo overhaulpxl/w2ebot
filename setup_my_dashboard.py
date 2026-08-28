@@ -7,7 +7,7 @@ import sys
 def main():
     try:
         from economy.phase9a_schema import PHASE9A_TABLE_SQL, PHASE9A_INDEX_SQL, PHASE9A_TRIGGER_SQL
-        from economy.phase9b_schema import PHASE9B_TABLE_SQL, PHASE9B_INDEX_SQL
+        from economy.phase9b_schema import PHASE9B_TABLE_SQL, PHASE9B_INDEX_SQL, PHASE9B_TRIGGER_SQL
     except ImportError:
         print("Please run this script inside the w2ebot directory or container.")
         sys.exit(1)
@@ -25,6 +25,7 @@ def main():
     for q in PHASE9A_TRIGGER_SQL: db.execute(q)
     db.executescript(PHASE9B_TABLE_SQL)
     for q in PHASE9B_INDEX_SQL: db.execute(q)
+    for q in PHASE9B_TRIGGER_SQL: db.execute(q)
 
     import datetime
     now_str = datetime.datetime.now(datetime.timezone.utc).isoformat()

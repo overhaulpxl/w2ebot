@@ -17,7 +17,7 @@ kill $BOT_PID
 wait $BOT_PID 2>/dev/null
 
 echo "Menyuntikkan Kunci Keamanan Dashboard..."
-python tools/migration/setup_my_dashboard.py
+python setup_my_dashboard.py
 
 echo "Menjalankan W2E Main Bot secara permanen..."
 # Jalankan bot di foreground agar Docker tetap hidup
