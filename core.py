@@ -4215,7 +4215,7 @@ async def start_web_server():
     app = build_web_application()
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, '127.0.0.1', 8081)
+    site = web.TCPSite(runner, '0.0.0.0', 8081)
     await site.start()
     logging.info("Bot API started on port 8081")
     logging.info("Legacy dashboard routes disabled; Phase 9A internal routes fail closed.")
