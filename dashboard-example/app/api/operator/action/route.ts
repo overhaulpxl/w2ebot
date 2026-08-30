@@ -3,7 +3,7 @@ import { internalRequest } from "@/lib/internalRequest";
 import { getDashboardSession } from "@/lib/dashboardAuth";
 
 export async function POST(req: Request) {
-  const session = await getDashboardSession("OPERATOR_WRITE");
+  const session = await getDashboardSession("DASHBOARD_SECURITY_ADMIN");
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   try {

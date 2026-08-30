@@ -3977,7 +3977,7 @@ async def internal_phase9c_discord_channels(request):
 async def internal_phase9c_operator_mint(request):
     payload = await _internal_payload(request)
     _assert_keys(payload, {'userId', 'currency', 'amount', 'reason'})
-    async with _signed_internal(request, payload, permission='OPERATOR_WRITE', rate_limit=10) as (db, envelope, _):
+    async with _signed_internal(request, payload, permission='DASHBOARD_SECURITY_ADMIN', rate_limit=10) as (db, envelope, _):
         from economy.wallets import admin_mint
         import uuid
         try:
@@ -3993,7 +3993,7 @@ async def internal_phase9c_operator_mint(request):
 async def internal_phase9c_operator_remove(request):
     payload = await _internal_payload(request)
     _assert_keys(payload, {'userId', 'currency', 'amount', 'reason'})
-    async with _signed_internal(request, payload, permission='OPERATOR_WRITE', rate_limit=10) as (db, envelope, _):
+    async with _signed_internal(request, payload, permission='DASHBOARD_SECURITY_ADMIN', rate_limit=10) as (db, envelope, _):
         from economy.wallets import admin_remove
         import uuid
         try:
@@ -4009,7 +4009,7 @@ async def internal_phase9c_operator_remove(request):
 async def internal_phase9c_operator_wipe(request):
     payload = await _internal_payload(request)
     _assert_keys(payload, {'userId'})
-    async with _signed_internal(request, payload, permission='OPERATOR_WRITE', rate_limit=5) as (db, envelope, _):
+    async with _signed_internal(request, payload, permission='DASHBOARD_SECURITY_ADMIN', rate_limit=5) as (db, envelope, _):
         uid = str(payload['userId'])
         import uuid
         try:

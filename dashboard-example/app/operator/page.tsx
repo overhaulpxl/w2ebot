@@ -3,7 +3,7 @@ import { redirect } from "next/navigation";
 import { OperatorUserManagement } from "@/components/OperatorUserManagement";
 
 export default async function Page() {
-  const session = await getDashboardSession("OPERATOR_WRITE");
+  const session = await getDashboardSession("DASHBOARD_SECURITY_ADMIN");
   if (!session) redirect("/api/auth/login");
   
   return (
