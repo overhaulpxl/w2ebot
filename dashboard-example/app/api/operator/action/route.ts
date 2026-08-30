@@ -13,7 +13,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Invalid action" }, { status: 400 });
     }
     const endpoint = `/internal/phase9c/operator/${action === 'wipe' ? 'security' : 'economy'}/${action}`;
-    const result = await internalRequest(endpoint, session.identity, payload);
+    const result = await internalRequest(endpoint, session.identity as unknown as Record<string, unknown>, payload);
     return NextResponse.json(result);
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: error.status || 500 });
