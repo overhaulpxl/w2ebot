@@ -6,6 +6,7 @@ const LINKS = [
   ["/economy/casino-options", "Casino & Options"], ["/economy/crypto-mining", "Crypto & Mining"],
   ["/economy/giveaway", "Giveaway"], ["/economy/recovery", "Recovery"],
   ["/economy/notifications", "Notifikasi"], ["/admin/audit", "Audit"],
+  ["/operator", "Operator Panel"],
 ] as const;
 
 export function EconomyNav() {

@@ -4035,6 +4035,128 @@ async def internal_phase9c_operator_wipe(request):
             await db.rollback()
             raise DashboardSecurityError("mutation_failed", 400, details={"message": str(e)})
 
+async def internal_phase9c_operator_spawn_boss(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'tier'})
+    async with _signed_internal(request, payload, permission='DASHBOARD_SECURITY_ADMIN', rate_limit=5) as (db, envelope, _):
+        from economy.bosses import start_boss
+        import uuid
+        try:
+            result = await start_boss(
+                DB_PATH, guild_id=envelope.guild_id, tier=str(payload['tier']),
+                start_key=f"op_spawn:{uuid.uuid4()}", authorized=True
+            )
+            # Log audit
+            await db.execute("INSERT INTO DashboardOperatorAudit (auditId, guildId, operatorId, action, targetId, reason, happenedAt) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), envelope.guild_id, str(envelope.user_id), 'SPAWN_BOSS', str(payload['tier']), 'Dashboard Boss Spawn', utc_now()))
+            await db.commit()
+            return web.json_response({'schemaVersion': '1', 'guildId': envelope.guild_id, 'result': result.to_dict()})
+        except Exception as e:
+            await db.rollback()
+            raise DashboardSecurityError("mutation_failed", 400, details={"message": str(e)})
+
+async def internal_phase9c_operator_grant_item(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'userId', 'itemId', 'quantity'})
+    async with _signed_internal(request, payload, permission='DASHBOARD_SECURITY_ADMIN', rate_limit=10) as (db, envelope, _):
+        from economy.inventory import adjust_stack
+        import uuid
+        try:
+            await adjust_stack(
+                db, guild_id=envelope.guild_id, user_id=str(payload['userId']),
+                item_id=str(payload['itemId']), amount=int(payload['quantity']), now=utc_now()
+            )
+            # Log audit
+            await db.execute("INSERT INTO DashboardOperatorAudit (auditId, guildId, operatorId, action, targetId, reason, happenedAt) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), envelope.guild_id, str(envelope.user_id), 'GRANT_ITEM', f"{payload['userId']}:{payload['itemId']}x{payload['quantity']}", 'Dashboard Grant Item', utc_now()))
+            await db.commit()
+            return web.json_response({'schemaVersion': '1', 'guildId': envelope.guild_id, 'result': 'Item granted'})
+        except Exception as e:
+            await db.rollback()
+            raise DashboardSecurityError("mutation_failed", 400, details={"message": str(e)})
+
+async def internal_phase9c_operator_market_cancel(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'listingId'})
+    async with _signed_internal(request, payload, permission='DASHBOARD_SECURITY_ADMIN', rate_limit=10) as (db, envelope, _):
+        from economy.marketplace import cancel_listing, issue_internal_api_authorization
+        import uuid
+        try:
+            auth = issue_internal_api_authorization(actor_id=str(envelope.user_id), guild_id=envelope.guild_id, request_id=str(uuid.uuid4()), staff=True)
+            result = await cancel_listing(
+                DB_PATH, guild_id=envelope.guild_id, listing_id=str(payload['listingId']),
+                authorization=auth, reason_code="operator_takedown", now=utc_now()
+            )
+            # Log audit
+            await db.execute("INSERT INTO DashboardOperatorAudit (auditId, guildId, operatorId, action, targetId, reason, happenedAt) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), envelope.guild_id, str(envelope.user_id), 'MARKET_TAKEDOWN', str(payload['listingId']), 'Dashboard Marketplace Takedown', utc_now()))
+            await db.commit()
+            return web.json_response({'schemaVersion': '1', 'guildId': envelope.guild_id, 'result': result.to_dict()})
+        except Exception as e:
+            await db.rollback()
+            raise DashboardSecurityError("mutation_failed", 400, details={"message": str(e)})
+
+async def internal_phase9c_operator_casino_terminate(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'sessionId'})
+    async with _signed_internal(request, payload, permission='DASHBOARD_SECURITY_ADMIN', rate_limit=10) as (db, envelope, _):
+        import uuid
+        from economy.casino import resolve_review_session
+        try:
+            # Force status to REVIEW_REQUIRED so it can be refunded
+            await db.execute("UPDATE CasinoSession SET status='REVIEW_REQUIRED' WHERE sessionId=? AND status='ACTIVE'", (str(payload['sessionId']),))
+            await db.commit()
+            
+            # Refund
+            result = await resolve_review_session(
+                DB_PATH, guild_id=envelope.guild_id, actor_id=str(envelope.user_id),
+                session_id=str(payload['sessionId']), resolution="REFUND", request_id=str(uuid.uuid4()),
+                reason="Force Terminate", authorization_override=True
+            )
+            
+            await db.execute("INSERT INTO DashboardOperatorAudit (auditId, guildId, operatorId, action, targetId, reason, happenedAt) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), envelope.guild_id, str(envelope.user_id), 'CASINO_TERMINATE', str(payload['sessionId']), 'Dashboard Casino Terminate', utc_now()))
+            await db.commit()
+            return web.json_response({'schemaVersion': '1', 'guildId': envelope.guild_id, 'result': result.to_dict()})
+        except Exception as e:
+            await db.rollback()
+            raise DashboardSecurityError("mutation_failed", 400, details={"message": str(e)})
+
+async def internal_phase9c_operator_crypto_tick(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, set())
+    async with _signed_internal(request, payload, permission='DASHBOARD_SECURITY_ADMIN', rate_limit=5) as (db, envelope, _):
+        from economy.crypto_market import run_market_tick
+        import uuid
+        try:
+            result = await run_market_tick(DB_PATH)
+            await db.execute("INSERT INTO DashboardOperatorAudit (auditId, guildId, operatorId, action, targetId, reason, happenedAt) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), envelope.guild_id, str(envelope.user_id), 'FORCE_MARKET_TICK', 'CRYPTO', 'Dashboard Force Tick', utc_now()))
+            await db.commit()
+            return web.json_response({'schemaVersion': '1', 'guildId': envelope.guild_id, 'result': result})
+        except Exception as e:
+            await db.rollback()
+            raise DashboardSecurityError("mutation_failed", 400, details={"message": str(e)})
+
+async def internal_phase9c_operator_giveaway_cancel(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'giveawayId'})
+    async with _signed_internal(request, payload, permission='DASHBOARD_SECURITY_ADMIN', rate_limit=5) as (db, envelope, _):
+        from economy.giveaways import cancel_giveaway
+        import uuid
+        try:
+            result = await cancel_giveaway(
+                DB_PATH, guild_id=envelope.guild_id, giveaway_id=str(payload['giveawayId']),
+                actor_id=str(envelope.user_id), request_id=str(uuid.uuid4()), reason="Dashboard Refund All"
+            )
+            await db.execute("INSERT INTO DashboardOperatorAudit (auditId, guildId, operatorId, action, targetId, reason, happenedAt) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), envelope.guild_id, str(envelope.user_id), 'CANCEL_GIVEAWAY', str(payload['giveawayId']), 'Dashboard Giveaway Cancel', utc_now()))
+            await db.commit()
+            return web.json_response({'schemaVersion': '1', 'guildId': envelope.guild_id, 'result': result.to_dict()})
+        except Exception as e:
+            await db.rollback()
+            raise DashboardSecurityError("mutation_failed", 400, details={"message": str(e)})
+
 async def internal_phase9b_route_details(request):
     payload = await _internal_payload(request)
     _assert_keys(payload, {'category'}, {'category'})
@@ -4282,6 +4404,12 @@ def build_web_application():
     app.router.add_post('/internal/phase9c/operator/economy/mint', internal_phase9c_operator_mint)
     app.router.add_post('/internal/phase9c/operator/economy/remove', internal_phase9c_operator_remove)
     app.router.add_post('/internal/phase9c/operator/security/wipe', internal_phase9c_operator_wipe)
+    app.router.add_post('/internal/phase9c/operator/rpg/spawn_boss', internal_phase9c_operator_spawn_boss)
+    app.router.add_post('/internal/phase9c/operator/rpg/grant_item', internal_phase9c_operator_grant_item)
+    app.router.add_post('/internal/phase9c/operator/market/cancel', internal_phase9c_operator_market_cancel)
+    app.router.add_post('/internal/phase9c/operator/casino/terminate', internal_phase9c_operator_casino_terminate)
+    app.router.add_post('/internal/phase9c/operator/crypto/tick', internal_phase9c_operator_crypto_tick)
+    app.router.add_post('/internal/phase9c/operator/giveaway/cancel', internal_phase9c_operator_giveaway_cancel)
     app.router.add_post('/internal/phase9b/notifications/routes/details', internal_phase9b_route_details)
     app.router.add_post('/internal/phase9b/notifications/routes/update', internal_phase9b_route_update)
     app.router.add_post('/internal/phase9b/notifications/routes/test', internal_phase9b_route_test)

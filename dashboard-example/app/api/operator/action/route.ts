@@ -8,11 +8,27 @@ export async function POST(req: Request) {
 
   try {
     const payload = await req.json();
-    const action = payload.action; // mint, remove, wipe
-    if (!action || !['mint', 'remove', 'wipe'].includes(action)) {
+    const action = payload.action; 
+    if (!action || !['mint', 'remove', 'wipe', 'spawn_boss', 'grant_item', 'cancel_listing', 'terminate_casino', 'crypto_tick', 'cancel_giveaway'].includes(action)) {
       return NextResponse.json({ error: "Invalid action" }, { status: 400 });
     }
-    const endpoint = `/internal/phase9c/operator/${action === 'wipe' ? 'security' : 'economy'}/${action}`;
+    
+    let category = "economy";
+    if (action === 'wipe') category = "security";
+    if (action === 'spawn_boss' || action === 'grant_item') category = "rpg";
+    if (action === 'cancel_listing') category = "market";
+    if (action === 'terminate_casino') category = "casino";
+    if (action === 'crypto_tick') category = "crypto";
+    if (action === 'cancel_giveaway') category = "giveaway";
+    
+    // Normalize endpoint name
+    let endpointAction = action;
+    if (action === 'cancel_listing') endpointAction = 'cancel';
+    if (action === 'terminate_casino') endpointAction = 'terminate';
+    if (action === 'crypto_tick') endpointAction = 'tick';
+    if (action === 'cancel_giveaway') endpointAction = 'cancel';
+    
+    const endpoint = `/internal/phase9c/operator/${category}/${endpointAction}`;
     const result = await internalRequest(endpoint, payload, session.identity as any);
     return NextResponse.json(result);
   } catch (error: any) {
