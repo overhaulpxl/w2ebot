@@ -1,9 +1,9 @@
-import { verifySession } from "@/lib/auth";
+import { getDashboardSession } from "@/lib/dashboardAuth";
 import { redirect } from "next/navigation";
 import { OperatorUserManagement } from "@/components/OperatorUserManagement";
 
 export default async function Page() {
-  const session = await verifySession();
+  const session = await getDashboardSession("OPERATOR_WRITE");
   if (!session) redirect("/api/auth/login");
   
   return (

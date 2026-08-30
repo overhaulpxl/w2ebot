@@ -2,14 +2,18 @@ import { EconomyNav } from "@/components/EconomyNav";
 import { PanelState } from "@/components/PanelState";
 import { RouteEditor } from "@/components/RouteEditor";
 import { loadEconomyDashboard } from "@/lib/economyDashboard";
-import { internalFetch } from "@/lib/internal-fetch";
+import { internalRequest } from "@/lib/internalRequest";
+import { getDashboardSession } from "@/lib/dashboardAuth";
 
 export default async function Page() {
   let routes: any[] = []; let channels: any[] = []; let error = "";
   try { 
     routes = (await loadEconomyDashboard<any>("notifications")).routes ?? []; 
-    const res = await internalFetch("/internal/phase9c/discord/channels", {});
-    channels = res.channels || [];
+    const session = await getDashboardSession("DASHBOARD_VIEW");
+    if (session) {
+      const res = await internalRequest<any>("/internal/phase9c/discord/channels", session.internalIdentity, {});
+      channels = res.channels || [];
+    }
   }
   catch (e) { error = e instanceof Error ? e.message : "internal_error"; }
   return <main className="economy-shell"><header className="economy-header"><h1>Routing Notifikasi</h1></header><EconomyNav />

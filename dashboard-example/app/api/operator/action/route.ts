@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
-import { phase9bMutation } from "@/lib/phase9bMutations";
+import { internalRequest } from "@/lib/internalRequest";
+import { getDashboardSession } from "@/lib/dashboardAuth";
 
 export async function POST(req: Request) {
+  const session = await getDashboardSession("OPERATOR_WRITE");
+  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   try {
     const payload = await req.json();
     const action = payload.action; // mint, remove, wipe
@@ -9,7 +13,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Invalid action" }, { status: 400 });
     }
     const endpoint = `/internal/phase9c/operator/${action === 'wipe' ? 'security' : 'economy'}/${action}`;
-    const result = await phase9bMutation(endpoint, payload);
+    const result = await internalRequest(endpoint, session.internalIdentity, payload);
     return NextResponse.json(result);
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: error.status || 500 });

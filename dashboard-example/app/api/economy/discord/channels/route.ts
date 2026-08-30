@@ -1,13 +1,13 @@
 import { NextResponse } from "next/server";
-import { internalFetch } from "@/lib/internal-fetch";
-import { verifySession } from "@/lib/auth";
+import { internalRequest } from "@/lib/internalRequest";
+import { getDashboardSession } from "@/lib/dashboardAuth";
 
 export async function GET() {
-  const session = await verifySession();
+  const session = await getDashboardSession("DASHBOARD_VIEW");
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   try {
-    const data = await internalFetch("/internal/phase9c/discord/channels", {});
+    const data = await internalRequest("/internal/phase9c/discord/channels", session.internalIdentity, {});
     return NextResponse.json(data);
   } catch (error: any) {
     console.error("Failed to fetch discord channels:", error);
