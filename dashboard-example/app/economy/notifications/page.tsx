@@ -11,7 +11,7 @@ export default async function Page() {
     routes = (await loadEconomyDashboard<any>("notifications")).routes ?? []; 
     const session = await getDashboardSession("DASHBOARD_VIEW");
     if (session) {
-      const res = await internalRequest<any>("/internal/phase9c/discord/channels", {}, session.identity as unknown as Record<string, unknown>);
+      const res = await internalRequest<any>("/internal/phase9c/discord/channels", {}, session.identity as any);
       channels = res.channels || [];
     }
   }
