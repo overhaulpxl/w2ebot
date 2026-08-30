@@ -7,7 +7,7 @@ export async function GET() {
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   try {
-    const data = await internalRequest("/internal/phase9c/discord/channels", {}, session.identity);
+    const data = await internalRequest("/internal/phase9c/discord/channels", {}, session.identity as any);
     return NextResponse.json(data);
   } catch (error: any) {
     console.error("Failed to fetch discord channels:", error);
@@ -16,4 +16,5 @@ export async function GET() {
       { status: error.status || 500 }
     );
   }
+}
 }
