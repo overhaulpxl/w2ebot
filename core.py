@@ -3957,6 +3957,84 @@ async def internal_phase9b_routes_list(request):
     return await _phase9b_read(request, read)
 
 
+async def internal_phase9c_discord_channels(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, set())
+    async with _signed_internal(request, payload, permission='DASHBOARD_VIEW', rate_limit=30) as (db, envelope, _):
+        guild = client.get_guild(int(envelope.guild_id))
+        if not guild:
+            raise DashboardSecurityError('guild_not_found', 404)
+        channels = []
+        for ch in guild.text_channels:
+            channels.append({
+                'id': str(ch.id),
+                'name': f"#{ch.name}",
+                'position': ch.position
+            })
+        channels.sort(key=lambda x: x['position'])
+        return web.json_response({'schemaVersion': '1', 'guildId': envelope.guild_id, 'channels': channels})
+
+async def internal_phase9c_operator_mint(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'userId', 'currency', 'amount', 'reason'})
+    async with _signed_internal(request, payload, permission='OPERATOR_WRITE', rate_limit=10) as (db, envelope, _):
+        from economy.wallets import admin_mint
+        import uuid
+        try:
+            result = await admin_mint(
+                DB_PATH, guild_id=envelope.guild_id, actor_id=str(envelope.user_id),
+                target_user_id=str(payload['userId']), currency=str(payload['currency']).upper(),
+                amount=int(payload['amount']), reason=str(payload['reason']), idempotency_key=str(uuid.uuid4())
+            )
+            return web.json_response({'schemaVersion': '1', 'guildId': envelope.guild_id, 'result': result.to_dict()})
+        except Exception as e:
+            raise DashboardSecurityError("mutation_failed", 400, details={"message": str(e)})
+
+async def internal_phase9c_operator_remove(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'userId', 'currency', 'amount', 'reason'})
+    async with _signed_internal(request, payload, permission='OPERATOR_WRITE', rate_limit=10) as (db, envelope, _):
+        from economy.wallets import admin_remove
+        import uuid
+        try:
+            result = await admin_remove(
+                DB_PATH, guild_id=envelope.guild_id, actor_id=str(envelope.user_id),
+                target_user_id=str(payload['userId']), currency=str(payload['currency']).upper(),
+                amount=int(payload['amount']), reason=str(payload['reason']), idempotency_key=str(uuid.uuid4())
+            )
+            return web.json_response({'schemaVersion': '1', 'guildId': envelope.guild_id, 'result': result.to_dict()})
+        except Exception as e:
+            raise DashboardSecurityError("mutation_failed", 400, details={"message": str(e)})
+
+async def internal_phase9c_operator_wipe(request):
+    payload = await _internal_payload(request)
+    _assert_keys(payload, {'userId'})
+    async with _signed_internal(request, payload, permission='OPERATOR_WRITE', rate_limit=5) as (db, envelope, _):
+        uid = str(payload['userId'])
+        import uuid
+        try:
+            # Drop data from basic stats
+            await db.execute("DELETE FROM DiscordStat WHERE userId=?", (uid,))
+            # Drop from wallet
+            await db.execute("DELETE FROM EconomyWallet WHERE userId=?", (uid,))
+            # Drop from RPG
+            await db.execute("DELETE FROM RpgProfile WHERE userId=?", (uid,))
+            await db.execute("DELETE FROM RpgInventoryStack WHERE userId=?", (uid,))
+            await db.execute("DELETE FROM RpgEquipmentInstance WHERE userId=?", (uid,))
+            await db.execute("DELETE FROM RpgPetInstance WHERE userId=?", (uid,))
+            # Drop from Crypto
+            await db.execute("DELETE FROM CryptoHolding WHERE userId=?", (uid,))
+            # Drop from Mining
+            await db.execute("DELETE FROM MiningRigInstance WHERE userId=?", (uid,))
+            # Audit log
+            await db.execute("INSERT INTO DashboardOperatorAudit (auditId, guildId, operatorId, action, targetId, reason, happenedAt) VALUES (?, ?, ?, 'WIPE_USER', ?, 'Dashboard Wipe Button', ?)",
+                (str(uuid.uuid4()), envelope.guild_id, str(envelope.user_id), uid, utc_now()))
+            await db.commit()
+            return web.json_response({'schemaVersion': '1', 'guildId': envelope.guild_id, 'result': 'Wipe successful'})
+        except Exception as e:
+            await db.rollback()
+            raise DashboardSecurityError("mutation_failed", 400, details={"message": str(e)})
+
 async def internal_phase9b_route_details(request):
     payload = await _internal_payload(request)
     _assert_keys(payload, {'category'}, {'category'})
@@ -4200,6 +4278,10 @@ def build_web_application():
     app.router.add_post('/internal/phase9b/dashboard/crypto-mining', internal_phase9b_crypto_mining)
     app.router.add_post('/internal/phase9b/dashboard/recovery', internal_phase9b_recovery)
     app.router.add_post('/internal/phase9b/notifications/routes/list', internal_phase9b_routes_list)
+    app.router.add_post('/internal/phase9c/discord/channels', internal_phase9c_discord_channels)
+    app.router.add_post('/internal/phase9c/operator/economy/mint', internal_phase9c_operator_mint)
+    app.router.add_post('/internal/phase9c/operator/economy/remove', internal_phase9c_operator_remove)
+    app.router.add_post('/internal/phase9c/operator/security/wipe', internal_phase9c_operator_wipe)
     app.router.add_post('/internal/phase9b/notifications/routes/details', internal_phase9b_route_details)
     app.router.add_post('/internal/phase9b/notifications/routes/update', internal_phase9b_route_update)
     app.router.add_post('/internal/phase9b/notifications/routes/test', internal_phase9b_route_test)

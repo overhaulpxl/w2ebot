@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { phase9bMutation } from "@/lib/phase9bMutations";
 
-export function RouteEditor({ route }: { route: any }) {
+export function RouteEditor({ route, channels = [] }: { route: any, channels?: any[] }) {
   const [channelId, setChannelId] = useState(route.channelId ?? "");
   const [result, setResult] = useState("");
   async function save() {
@@ -15,5 +15,13 @@ export function RouteEditor({ route }: { route: any }) {
       setResult("Tersimpan");
     } catch (error) { setResult(error instanceof Error ? error.message : "internal_error"); }
   }
-  return <div className="route-row"><strong>{route.category}</strong><input aria-label={`Channel ${route.category}`} value={channelId} onChange={e => setChannelId(e.target.value)} /><button onClick={save}>Simpan</button><span>{result}</span></div>;
+  return <div className="route-row">
+    <strong>{route.category}</strong>
+    <select aria-label={`Channel ${route.category}`} value={channelId} onChange={e => setChannelId(e.target.value)}>
+      <option value="">-- Pilih Channel --</option>
+      {channels.map(ch => <option key={ch.id} value={ch.id}>{ch.name}</option>)}
+    </select>
+    <button onClick={save}>Simpan</button>
+    <span>{result}</span>
+  </div>;
 }
